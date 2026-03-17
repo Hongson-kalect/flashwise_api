@@ -1,0 +1,47 @@
+version: "3.8"
+
+services:
+  db:
+    image: postgres:15
+    container_name: django_db
+    # Không mở port ra ngoài Windows
+    ports:
+      - "5433:5432" # <--- MỞ CỔNG Ở ĐÂY (Ngoài:Trong)
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=flashwise # <--- CHỖ CẦN SỬA 1: Tên Database
+      - POSTGRES_USER=posgres # <--- CHỖ CẦN SỬA 2: User DB
+      - POSTGRES_PASSWORD=hongson01 # <--- CHỖ CẦN SỬA 3: Password DB
+
+  redis:
+    image: redis:7-alpine
+    container_name: django_redis
+    # Không mở port, web và worker vẫn thấy nó qua tên "redis"
+
+  web:
+    build: .
+    container_name: django_web
+    command: uvicorn flashcardApi.asgi:application --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+
+  worker:
+    build: .
+    container_name: django_worker
+    command: celery -A flashcardApi worker -l info --concurrency=4
+    volumes:
+      - .:/app
+      - ./media:/app/media
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+      - db

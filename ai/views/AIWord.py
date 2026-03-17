@@ -17,6 +17,7 @@ from django.db.models import Prefetch, Window, F, Q
 from django.db.models.functions import RowNumber
 from ai.serializers.AIWord import AIWordSerializer
 from core.models.Language import Language
+from utils.celery.word import ai_create_new_word_task
 from utils.utils import uuidv7
 from utils.utils.ai import ai_create_new_word, render_translate
 from utils.utils.background_task import background_task
@@ -97,13 +98,15 @@ class AIWordViewSet(SoftDeleteViewSet):
         # params: value, lang, user_lang
         # client create socket connect with word(md5)+language+user_language
         # user = User.objects.first()  # Thay thế bằng cách lấy user thực tế
-        user =1
+        user = User.objects.get_or_create(username='admin', password='admin', email='admin@gmail.com', is_superuser=True)[0]
         raw_word = request.GET.get('value')
         word = unquote(raw_word).strip().lower()
         language_code = request.GET.get('lang')
         user_language_code = request.GET.get('user_lang')
         socket_room = get_safe_room_id(word, language_code, user_language_code) 
         socket_room = 'test'
+
+        print(1)
 
         # 1. Định nghĩa bộ lọc Sense
         sense_filter = Q(is_official=True) | Q(created_by=user) | Q(updated_by=user)
@@ -114,6 +117,8 @@ class AIWordViewSet(SoftDeleteViewSet):
             language_code=user_language_code, 
             status="PROCESSING"
         ).order_by('-created_at')
+
+        print(1)
 
         # 3. Prefetch Senses
         sense_qs = AISense.objects.filter(sense_filter).select_related('metadata', 'previous').order_by('-updated_at')
@@ -131,21 +136,25 @@ class AIWordViewSet(SoftDeleteViewSet):
 
         # Word not found: Generate new word, return not found. send data via socket when finish
         if not word_instance or word_instance.status == 'FAILED':
-            try:
-                # unique word
-                word_instance = AIWord.objects.create(
-                        value=word,
-                        language_code=language_code,
-                        created_by=user,
-                        is_active =False,
-                        )
-                
-                # Tạo coroutine nhưng CHƯA chạy
-                background_task(ai_create_new_word(user, word_instance, language_code, user_language_code, socket_room))
+            word_instance = AIWord.objects.create(
+            value=word,
+            language_code=language_code,
+            created_by=user,
+            status='PROCESSING'
+            )
 
-                return Response({'detail': 'PROCESSING', 'status': '202'}, status=status.HTTP_202_ACCEPTED)
-            except:
-                return Response({'detail': 'PROCESSING', 'status': '202'}, status=status.HTTP_202_ACCEPTED)
+            print(1)
+            # GỌI CELERY: Bọc phát mất hút ở đây
+            ai_create_new_word_task.delay(
+                user.id, 
+                word_instance.id, 
+                language_code, 
+                user_language_code, 
+                socket_room
+            )
+            # ai_create_new_word(user.id, word_instance.id, language_code, user_language_code, socket_room)
+            print(2)
+            return Response({'detail': 'PROCESSING', 'status': '202'}, status=status.HTTP_202_ACCEPTED)
            
 
         # Word is processing, return not found. send data via socket when finish

@@ -1,0 +1,14 @@
+{
+    "name": "Flash Wise Api",
+    "dockerComposeFile": ["../docker-compose.yml"],
+    "service": "web", // Tên service Django trong file docker-compose.yml của bạn
+    "workspaceFolder": "/app",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-azuretools.vscode-docker"
+            ]
+        }
+    }
+}

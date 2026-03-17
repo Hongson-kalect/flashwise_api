@@ -1,5 +1,6 @@
 import asyncio
 import json
+import uuid
 from venv import logger
 from google import genai
 from django.http.response import StreamingHttpResponse
@@ -22,6 +23,7 @@ from ai.models.AIWord import AIWord
 from ai.models.AISense import AISense
 from ai.models.AISenseMetadata import AISenseMetadata
 from ai.models.AISenseContent import AISenseContent
+from utils.celery.fetch_image import task_fetch_image_single
 from utils.helper.sense_context import SenseContext
 from utils.utils import uuidv7
 from utils.utils.extract_object_from_string import extract_json_fragment
@@ -51,7 +53,7 @@ async def full_data(data, callback=None):
 # def ai_create_translate(user, content, language, user_language, socket_room): 
 
 async def ai_create_new_word(user, word_instance, language_code, user_language_code, socket_room):
-    print("DEBUG: AI Task started") # Thêm log để kiểm tra
+    # word_instance = await sync_to_async(AIWord.objects.get)(id=word_id)
     LATIN_LANGS = ['vi', 'en', 'es', 'fr', 'de', 'it', 'pt', 'nl', 'pl', 'sv', 'no', 'da', 'fi', 'tr', 'cs', 'hu', 'id']
     SIMPLE_NON_LATIN = ['zh', 'ko', 'ru', 'el', 'ar', 'he', 'hi', 'th']
     
@@ -69,6 +71,8 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
     try:
         local_client = genai.Client(api_key=settings.GEMINI_API_KEY)
         ai_trunks =[]
+        is_first_sense_found = False
+        sense_index =0
         async with local_client.aio as client:
             response = await client.models.generate_content_stream(
                 model="gemini-2.5-flash-lite",
@@ -79,46 +83,49 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                     response_schema=current_schema
                 )
             )
-
-            is_first_sense_found = False
-            sense_index =0
-
+            pointer = 0
+            sense_objs=[]
             async for chunk in response:
                 if chunk.text:
                     ai_trunks.append(chunk.text)
 
-                    # Check first sense and flag completed or not. If yes, return via socket
-                    if not is_first_sense_found:
-                        full_response_text = "".join(ai_trunks)
-                        
-                        first_sense_string = extract_json_fragment(full_response_text, "senses", sense_index)
-                        del full_response_text
-                        if(first_sense_string):
-                            is_first_sense_found = True
-                            try:
-                                first_sense = json.loads(first_sense_string)
-                                metadata = first_sense['metadata']
-                                if(metadata):
-                                    is_valid = metadata.get("valid", False)
-                                    should_be_save = metadata.get("should_be_save", False)
-                                    # handle error case or if invalid -> sense_index + 1,...
+                    # --- LOGIC ĐÁNH CHẶN LẤY ẢNH SỚM ---
+                    full_text = "".join(ai_trunks)
+                    sense_str, new_pointer = extract_json_fragment(full_text, "senses", pointer)
+                    
+                    if sense_str:
+                        pointer = new_pointer
+                        try:
+                            sense = json.loads(sense_str)
+                            id = str(uuidv7.generate_uuid7())
 
-                                    await socket_message(socket_room, {
-                                        "type": "PARTIAL_SENSE",
-                                        "payload": first_sense
-                                    })
-                            except json.JSONDecodeError:
-                                continue
+                            sense_obj = {
+                                "id": id,
+                                "word_id": str(word_instance.id),
+                                "word_value":word_instance.value,
+                                "language_code": language_code,
+                                "created_by_id": user.id,
+                            }
+                               
+                            sense["id"] = id
+
+                            sense_objs.append(sense_obj)
+
+                            sense_index += 1
+
+                            await socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": sense})
+                            
+                            # Kích hoạt lấy ảnh 1 ngay lập tức (không đợi stream xong)
+                            img_desc = sense.get('metadata',{}).get('image_describe',None)
+                            if img_desc:
+                               task_fetch_image_single.delay(sense_obj, img_desc, socket_room, temp_index=0)
+                        except Exception as e: 
+                            pass
             
-            
-            # Bạn có thể dùng sync_to_async nếu hàm lưu DB là đồng b
-            # if hasattr(local_client.aio, 'close'):
-            #     print('Closing local client...')
-            #     await local_client.aio.close()
-        print('AI Client auto closed...')
         full_response_text = "".join(ai_trunks)
         data = json.loads(full_response_text)
-        word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, data, socket_room)
+        # word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, data, socket_room)
+        word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, sense_objs, socket_room)
 
         try:
             # ✅ Dùng DjangoJSONEncoder để convert UUID
@@ -129,8 +136,9 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                                     "payload": clean_data}, True)
         except Exception as socket_error:
             print(f"Failed to send full data via socket: {socket_error}")
+    
+
     except Exception as e:
-        print(f"AI Error: {e}")
         try:
             def update_failed_status():
                 word_instance.status = 'FAILED'
@@ -139,8 +147,11 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
             await sync_to_async(update_failed_status)()
             await socket_message(socket_room, {"type": "ERROR", "payload": str(e)})
         except Exception as socket_error:
+            print('socket message error')
             # If socket message fails, just log it
-            print(f"Failed to send error via socket: {socket_error}")
+
+        raise e
+        
 
 def render_all_word_data(user, word_instance, language_code, user_language_code, group):
      # 1. Phân loại ngôn ngữ
@@ -208,7 +219,6 @@ def render_schema(missing_content: dict, need_translation: dict):
     properties = {}
     required = []
 
-    print('need_translation',  missing_content, need_translation)
 
     for sense_id, contents in missing_content.items():
         # required.append(sense_id) # Tùy chọn: có bắt buộc sense_id này phải có trong response không
@@ -245,7 +255,6 @@ def render_schema(missing_content: dict, need_translation: dict):
         }
         required.append(sense_id)
 
-    print(2,  missing_content, need_translation)
     
 
     for sense_id, definition in need_translation.items():
@@ -309,7 +318,6 @@ async def render_translate(
 
     schema = render_schema(missing_content, need_translation)
 
-    print('schema ', schema)
 
     try:
         local_client = genai.Client(api_key=settings.GEMINI_API_KEY)
@@ -350,7 +358,6 @@ async def render_translate(
         )
 
     except Exception as e:
-        print(f"AI Error: {e}")
         try:
             def update_failed_status():
                 translate_instance.status = 'FAILED'
@@ -360,7 +367,7 @@ async def render_translate(
             await socket_message(socket_room, {"type": "TRANSLATE_SENSE_ERROR", "payload": str(e)})
         except Exception as socket_error:
             # If socket message fails, just log it
-            print(f"Failed to send error via socket: {socket_error}")
+            print('render_translate error')
 
 def get_schema(mode):
     if mode == "latin":
@@ -406,7 +413,7 @@ def get_prompt(mode, word, language_code, user_language_code):
     - FOLLOW RESTRICLY LANGUAGE RULES.
     - Sense order by frequency.
     - Accuracy: Do not hallucinate antonyms/synonyms. Use null for "audio" if unknown.
-    - Image Prompt: "image_describe" should be a 5-10 word English prompt for Unsplash.
+    - Image Prompt: "image_describe" is list of tags for image prompt.
     - should_be_saved: This is a dictionary entry. Therefore, this field is TRUE only for single-meaning phrases, not combinations of different words. These are words or phrases that actually carry meaning, not variations, allusions, or rhetorical devices created by other words. 
     - I am paying for this service, please provide full detail for every field
 
@@ -423,10 +430,11 @@ def get_prompt(mode, word, language_code, user_language_code):
     """
 
 # @sync_to_async
-def saveword(user, word_instance, language_code, user_language_code, data, socket_room):
-    print('DEBUG: save word')
-    entries = data.get("entries", [])
+def saveword(user, word_instance, language_code, user_language_code, entries, socket_room):
+    # entries = data.get("entries", [])
     contexts: list[SenseContext] = []
+
+    print('start save word')
 
     with transaction.atomic():
         try:
@@ -436,19 +444,17 @@ def saveword(user, word_instance, language_code, user_language_code, data, socke
             model_fields = {f.name for f in AISenseMetadata._meta.concrete_fields}
             metadata_to_create = []
 
-            for entry in entries:
-                pos = entry.get("pos")
-                for sense_raw in entry.get("senses", []):
-                    metadata_raw = sense_raw.get("metadata", {})
-                    if not metadata_raw.get("should_be_saved"):
-                        continue
+            for sense_raw in entries:
+                metadata_raw = sense_raw.get("metadata", {})
+                if not metadata_raw.get("should_be_saved"):
+                    continue
 
-                    clean_data = {k: v for k, v in metadata_raw.items() if k in model_fields}
-                    metadata = AISenseMetadata(**clean_data, pos=pos, created_by=user)
-                    
-                    metadata_to_create.append(metadata)
-                    # Lưu trữ sense_raw để xử lý content ở phase sau
-                    contexts.append(SenseContext(raw=sense_raw, pos=pos, metadata=metadata))
+                clean_data = {k: v for k, v in metadata_raw.items() if k in model_fields}
+                metadata = AISenseMetadata(**clean_data, created_by=user)
+                
+                metadata_to_create.append(metadata)
+                # Lưu trữ sense_raw để xử lý content ở phase sau
+                contexts.append(SenseContext(raw=sense_raw, pos=metadata_raw.get("pos", None), metadata=metadata))
 
             if not contexts:
                 word_instance.status = "REJECTED"
@@ -585,7 +591,6 @@ def saveword(user, word_instance, language_code, user_language_code, data, socke
         except Exception as e:
             word_instance.status = "FAILED"
             word_instance.save()
-            print(f'Error: {str(e)}')
             raise
 
 def patch_content_id(data, target_id, new_id, lang_dest):
@@ -671,7 +676,6 @@ def save_translate(user, translate_instance, user_language_code, sense_instances
         except Exception as e:
             translate_instance.status = "FAILED"
             translate_instance.save()
-            print(f'Failed to save translate: {e}')
             raise
 
 word_schema = {
@@ -696,6 +700,7 @@ word_schema = {
                                     "properties":{
                                         "is_valid":{"type":"BOOLEAN","description": "Word or phrase is valid or not"},
                                         "is_offensive":{"type":"BOOLEAN"},
+                                        "pos":{"type":"STRING"},
                                         "should_be_saved": {"type":"BOOLEAN","description":"Only True if word is widely known in language and write in correct form"},
                                         "register":{"type":"STRING", "description": "formal, informal, slang, vulgar, technical, etc."},
                                         "ipas": {
@@ -739,14 +744,14 @@ word_schema = {
                                         },
                                         "image_describe": {
                                             "type": "STRING",
-                                            "description": "Short neutral visual description for stock image search"
+                                            "description": "1-5 keywords for stock image search"
                                         },
                                         "level": {
                                             "type": "STRING",
                                             "description": "A1–C2, N1–N5, TOPIC1, etc."
                                         }
                                     },
-                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_describe", "level"]
+                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_describe", "level","pos"]
                                 },
                                 "translations": {
                                             "type": "ARRAY",
@@ -837,6 +842,7 @@ nonlatin_schema = {
                                         "should_be_saved": {"type":"BOOLEAN","description":"Only True if word is widely known in language and write in correct form"},
                                         "is_correct_language": {"type":"BOOLEAN","description":"is the word in the correct language"},
                                         "register":{"type":"STRING", "description": "formal, informal, slang, vulgar, technical, etc."},
+                                        "pos":{"type":"STRING"},
                                         "ipas": {
                                             "type": "ARRAY",
                                             "items": {
@@ -879,14 +885,14 @@ nonlatin_schema = {
                                         },
                                         "image_describe": {
                                             "type": "STRING",
-                                            "description": "Short neutral visual description for stock image search"
+                                            "description": "1-5 keywords for stock image search"
                                         },
                                         "level": {
                                             "type": "STRING",
                                             "description": "A1–C2, N1–N5, TOPIC1, etc."
                                         },
                                     },
-                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_describe", "level"]
+                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_describe", "level", "pos"]
                                 },
                                 "translations": {
                                             "type": "ARRAY",
@@ -980,6 +986,7 @@ complex_schema = {
                                         "should_be_saved": {"type":"BOOLEAN","description":"Only True if word is widely known in language and write in correct form"},
                                         "is_correct_language": {"type":"BOOLEAN","description":"is the word in the correct language"},
                                         "register":{"type":"STRING", "description": "formal, informal, slang, vulgar, technical, etc."},
+                                        "pos":{"type":"STRING"},
                                         "ipas": {
                                             "type": "ARRAY",
                                             "items": {
@@ -1022,14 +1029,14 @@ complex_schema = {
                                         },
                                         "image_describe": {
                                             "type": "STRING",
-                                            "description": "Short neutral visual description for stock image search"
+                                            "description": "1-5 keywords for stock image search"
                                         },
                                         "level": {
                                             "type": "STRING",
                                             "description": "A1–C2, N1–N5, TOPIC1, etc."
                                         },
                                     },
-                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_describe", "level"]
+                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_describe", "level", "pos"]
                                 },
                                 "translations": {
                                             "type": "ARRAY",

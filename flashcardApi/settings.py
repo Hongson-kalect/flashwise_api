@@ -24,6 +24,14 @@ ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 MEDIA_URL = '/upload/'  # hoặc '/media/' nếu bạn thích
 MEDIA_ROOT = os.path.join(BASE_DIR, 'upload')  # Đây là thư mục chứa ảnh
 # MEDIA_ROOT = os.path.join(ROOT_DIR, 'upload')  # Đây là thư mục chứa ảnh
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TASK_ALWAYS_EAGER = False # Đảm bảo cái này không bị True nếu muốn chạy nền
+
+# Địa chỉ của Redis
+CELERY_BROKER_URL = 'redis://redis:6379/0'
+CELERY_RESULT_BACKEND = 'redis://redis:6379/0'
 
 
 # Quick-start development settings - unsuitable for production
@@ -85,7 +93,7 @@ CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [("127.0.0.1", 6379)],
+            "hosts": [("redis", 6379)],
         },
     },
 }
@@ -155,9 +163,9 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'flashwise',
-        'USER': 'postgres',
+        'USER': 'posgres',
         'PASSWORD': 'hongson01',
-        'HOST': 'localhost',
+        'HOST': 'db',
         'PORT': '5432',
     }
 }

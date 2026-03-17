@@ -9,6 +9,8 @@ __pycache__/
 
 # Distribution / packaging
 build/
+upload/
+postgres_data/
 dist/
 *.egg-info/
 .eggs/

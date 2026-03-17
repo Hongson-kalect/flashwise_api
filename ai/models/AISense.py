@@ -13,7 +13,8 @@ class AISense(BaseModel):
     origins = models.JSONField(default=list) # [id1, id2...]
     metadata = models.ForeignKey(AISenseMetadata, on_delete=models.SET_NULL, null=True, related_name='senses')
     preview =models.JSONField(default=dict)
-    image_id = models.ForeignKey('core.Image', null=True, blank=True)
+    image_preview = models.URLField(max_length=500, null=True, blank=True)
+    image_context = models.ForeignKey('core.ImageContext', on_delete=models.SET_NULL, null=True, blank=True)
 
     language_code = models.CharField(max_length=10, blank=True, null=True)
 

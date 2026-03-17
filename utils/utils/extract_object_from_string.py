@@ -1,45 +1,54 @@
-def extract_json_fragment(full_text: str, path_key: str, index: int = None):
-    # 1. Tìm vị trí của key (ví dụ: "senses")
-    start_idx = full_text.find(f'"{path_key}"')
-    if start_idx == -1:
-        return None
+import re
+import json
 
-    # 2. Tìm dấu mở mảng [ sau key đó
-    array_start = full_text.find("[", start_idx)
-    if array_start == -1:
-        return None
-
-    # 3. Nếu yêu cầu lấy CẢ ARRAY (index là None)
-    if index is None:
-        return _extract_balanced_structure(full_text, array_start, "[", "]")
-
-    # 4. Nếu yêu cầu lấy PHẦN TỬ THỨ N
-    current_pos = array_start + 1
-    found_count = 0
+def extract_json_fragment(full_text: str, keyword: str, last_pos: int = 0, start_search_at: int = 0):
+    """
+    Sử dụng Regex để tìm chính xác Key JSON, tránh bắt nhầm keyword trong chuỗi text.
+    """
+    effective_pos = max(last_pos, start_search_at)
     
-    while found_count <= index:
-        # Tìm dấu mở ngoặc { của object tiếp theo trong mảng
-        obj_start = full_text.find("{", current_pos)
-        if obj_start == -1:
-            return None
+    # 1. TRẠNG THÁI: Tìm cụm Keyword mới (ví dụ sau khi hết một mảng cũ)
+    if last_pos == 0 or start_search_at > 0:
+        # Regex này tìm: "keyword" theo sau là dấu hai chấm (có thể có khoảng trắng)
+        # Cách này loại bỏ 99% trường hợp "senses" nằm trong ví dụ hoặc định nghĩa.
+        pattern = re.compile(f'"{re.escape(keyword)}"\s*:')
+        match = pattern.search(full_text, effective_pos)
         
-        # Trích xuất object cân bằng dấu ngoặc
-        obj_string = _extract_balanced_structure(full_text, obj_start, "{", "}")
+        if not match: return None, 0
         
-        if obj_string:
-            if found_count == index:
-                return obj_string
-            # Nếu chưa tới index cần tìm, nhảy qua object này để tìm tiếp
-            current_pos = obj_start + len(obj_string)
-            found_count += 1
-        else:
-            # Object chưa đóng ngoặc (đang stream dở)
-            return None
+        start_idx = match.end() # Vị trí ngay sau dấu ":"
+        
+        # Tìm dấu mở mảng '[' sau key
+        array_start = full_text.find("[", start_idx)
+        if array_start == -1: return None, 0
+        
+        # Tìm dấu mở object '{' đầu tiên
+        obj_start = full_text.find("{", array_start)
+    
+    # 2. TRẠNG THÁI: Đang duyệt tiếp trong mảng
+    else:
+        next_obj = full_text.find("{", last_pos)
+        next_end_array = full_text.find("]", last_pos)
+        
+        if next_obj == -1 and next_end_array == -1: return None, last_pos
+        
+        # Nếu gặp dấu đóng mảng ']' trước -> Chuyển sang tìm Keyword tiếp theo
+        if next_end_array != -1 and (next_obj == -1 or next_end_array < next_obj):
+            return extract_json_fragment(full_text, keyword, last_pos=0, start_search_at=next_end_array + 1)
+        
+        obj_start = next_obj
 
-    return None
+    if obj_start == -1: return None, last_pos
+
+    # 3. TRÍCH XUẤT CÂN BẰNG NGOẶC (Giữ nguyên logic cũ vì nó cực kỳ ổn định)
+    obj_string = _extract_balanced_structure(full_text, obj_start, "{", "}")
+    
+    if obj_string:
+        return obj_string, obj_start + len(obj_string)
+    
+    return None, last_pos
 
 def _extract_balanced_structure(text, start_idx, open_char, close_char):
-    """Hàm phụ trợ để lấy khối cân bằng ngoặc, xử lý cả string và escape."""
     count = 0
     is_in_string = False
     escape_char = False
@@ -57,7 +66,6 @@ def _extract_balanced_structure(text, start_idx, open_char, close_char):
                 count += 1
             elif char == close_char:
                 count -= 1
-            
             if count == 0:
                 return text[start_idx : i + 1]
         escape_char = False

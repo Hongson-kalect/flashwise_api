@@ -1,13 +1,20 @@
 
+from venv import create
 from django.db import models
 from django.db.models import JSONField
+from django.core.files.storage import FileSystemStorage
+from django.conf import settings
+import os
 
 from utils.utils import uuidv7
 
+temp_storage = FileSystemStorage(location=os.path.join(settings.MEDIA_ROOT, 'images'))
+
 class ImageLibrary(models.Model):
     id = models.UUIDField(primary_key=True, default=uuidv7.generate_uuid7, editable=False)
-    description = models.CharField(max_length=255, db_index=True)
-    url = models.URLField(max_length=500)
+
+    file = models.ImageField(storage=temp_storage, upload_to='v1/', null=True)
+    url = models.URLField(max_length=500, null=True)
     thumbnail_url = models.URLField(max_length=500, null=True, blank=True)
     version = models.IntegerField(default=1)
     
@@ -27,9 +34,15 @@ class ImageLibrary(models.Model):
     
     created_at = models.DateTimeField(auto_now_add=True)
 
+    def save(self, *args, **kwargs):
+        # Tự động cập nhật URL mỗi khi lưu
+        if self.file:
+            self.url = self.file.url
+        super().save(*args, **kwargs)
+
     class Meta:
         # Tránh một mô tả bị lặp lại cùng một version ảnh từ cùng một nguồn
-        unique_together = ('description', 'version', 'provider')
+        unique_together = ('provider_id', 'provider')
 
     def soft_delete(self):
         self.is_deleted = True
@@ -37,42 +50,44 @@ class ImageLibrary(models.Model):
         self.save()
 
 # --- Service xử lý lấy ảnh từ Unsplash ---
-import requests
 
-class ImageService:
-    @staticmethod
-    def fetch_and_save_unsplash(query, count=3):
-        """
-        Gọi Unsplash API, lấy ảnh và lưu vào ImageLibrary
-        """
-        UNSPLASH_ACCESS_KEY = 'your_key_here'
-        url = f"https://api.unsplash.com/search/photos?query={query}&per_page={count}"
-        headers = {"Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"}
-        
-        response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            data = response.json()
-            saved_images = []
-            
-            for index, item in enumerate(data['results']):
-                img_obj, created = ImageLibrary.objects.get_or_create(
-                    provider='unsplash',
-                    provider_id=item['id'],
-                    defaults={
-                        'description': query,
-                        'url': item['urls']['regular'],
-                        'thumbnail_url': item['urls']['small'],
-                        'version': index + 1,
-                        'attribution': {
-                            'name': item['user']['name'],
-                            'link': item['user']['links']['html']
-                        },
-                        'metadata': {
-                            'blurhash': item['blur_hash'],
-                            'color': item['color']
-                        }
-                    }
-                )
-                saved_images.append(img_obj)
-            return saved_images
-        return []
+class ImageContext(models.Model):
+    # Quan hệ N-1: Nhiều ngữ cảnh có thể dùng chung 1 ảnh vật lý
+    images = models.ManyToManyField(
+        ImageLibrary, 
+        through='ImageLibraryContext', 
+        related_name='contexts'
+    )
+    
+    # Description tiếng Anh dùng để search local
+    # Đánh index để tra cứu từ điển cực nhanh
+    description = models.CharField(max_length=255, db_index=True)
+    is_active = models.BooleanField(default=True)  # Hiện/Ẩn trong hệ thống
+    
+    provider = models.CharField(max_length=50, default='unsplash') # unsplash, user, ai
+    provider_id = models.CharField(max_length=100, null=True, blank=True)
+    contributor = models.ForeignKey('auth.User', on_delete=models.SET_NULL, null=True, blank=True) 
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # Một ảnh không nên có 2 bản ghi cùng 1 description trùng lặp
+        unique_together = ('description', 'provider')
+
+    def __str__(self):
+        return f"{self.provider} - {self.description}"
+
+class ImageLibraryContext(models.Model):
+    """BẢNG PHỤ THỰC SỰ: Liên kết Ngữ cảnh và Ảnh vật lý"""
+    image = models.ForeignKey(ImageLibrary, on_delete=models.CASCADE)
+    context = models.ForeignKey(ImageContext, on_delete=models.CASCADE)
+    
+    # Các trường metadata cho mối quan hệ
+    order = models.IntegerField(default=0) # Thứ tự ưu tiên hiển thị (0-4)
+    added_by = models.ForeignKey('auth.User', on_delete=models.SET_NULL, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # Quan trọng: Không cho phép trùng cặp (ảnh - ngữ cảnh)
+        unique_together = ('image', 'context')
+        ordering = ['order', '-created_at']

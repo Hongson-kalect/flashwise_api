@@ -28,9 +28,7 @@ def task_fetch_image_single(self, sense_obj, img_desc, socket_room, temp_index=N
 
     sense, is_created = AISense.objects.get_or_create(**sense_obj)
 
-    preview_img = None
-
-    if not is_created:
+    if sense.image_preview:
         print('sense duplicate', sense.id)
         return
     
@@ -103,7 +101,7 @@ def task_fetch_image_single(self, sense_obj, img_desc, socket_room, temp_index=N
 
                     # Tạo liên kết bảng phụ
                     ImageLibraryContext.objects.create(image=img_obj, context=context, order= index)
-                    if not preview_img: preview_img = img_obj.url
+                    preview_img = img_obj.url
 
         except Exception as e:
             raise self.retry(exc=e)

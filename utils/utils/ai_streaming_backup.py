@@ -338,7 +338,7 @@ def get_prompt(mode, word, language, user_language):
     - FOLLOW RESTRICLY LANGUAGE RULES.
     - Sense order by frequency.
     - Accuracy: Do not hallucinate antonyms/synonyms. Use null for "audio" if unknown.
-    - Image Prompt: "image_describe" should be a 5-10 word English prompt for Unsplash.
+    - Image Prompt: "image_keywords" should be a 5-10 word English prompt for Unsplash.
     - should_be_saved: This is a dictionary entry. Therefore, this field is TRUE only for single-meaning phrases, not combinations of different words. These are words or phrases that actually carry meaning, not variations, allusions, or rhetorical devices created by other words. 
     - I am paying for this service, please provide full detail for every field
 
@@ -561,7 +561,7 @@ word_schema = {
                                             "items": {"type":"STRING"},
                                             "description":"additional tags for the sense, for searching, grouping, etc."
                                         },
-                                        "image_describe": {
+                                        "image_keywords": {
                                             "type": "STRING",
                                             "description": "Short neutral visual description for stock image search"
                                         },
@@ -570,7 +570,7 @@ word_schema = {
                                             "description": "A1–C2, N1–N5, TOPIC1, etc."
                                         }
                                     },
-                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_describe", "level"]
+                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_keywords", "level"]
                                 },
                                 "translations": {
                                             "type": "ARRAY",
@@ -702,7 +702,7 @@ nonlatin_schema = {
                                             "items": {"type":"STRING"},
                                             "description":"additional tags for the sense, for searching, grouping, etc."
                                         },
-                                        "image_describe": {
+                                        "image_keywords": {
                                             "type": "STRING",
                                             "description": "Short neutral visual description for stock image search"
                                         },
@@ -711,7 +711,7 @@ nonlatin_schema = {
                                             "description": "A1–C2, N1–N5, TOPIC1, etc."
                                         },
                                     },
-                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_describe", "level"]
+                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_keywords", "level"]
                                 },
                                 "translations": {
                                             "type": "ARRAY",
@@ -850,7 +850,7 @@ complex_schema = {
                                             "items": {"type":"STRING"},
                                             "description":"additional tags for the sense, for searching, grouping, etc."
                                         },
-                                        "image_describe": {
+                                        "image_keywords": {
                                             "type": "STRING",
                                             "description": "Short neutral visual description for stock image search"
                                         },
@@ -859,7 +859,7 @@ complex_schema = {
                                             "description": "A1–C2, N1–N5, TOPIC1, etc."
                                         },
                                     },
-                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_describe", "level"]
+                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_keywords", "level"]
                                 },
                                 "translations": {
                                             "type": "ARRAY",

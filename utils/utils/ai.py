@@ -32,6 +32,8 @@ from utils.utils.kanji import get_ruby_generator
 from utils.utils.limit_prefetch import limit_prefetch
 from utils.utils.sense_handle import serialize_entries, serialize_senses
 from utils.utils.socket import socket_message
+from utils.redis.word_init import WordCacheManager
+
 
 # The client gets the API key from the environment variable `GEMINI_API_KEY`
 client = genai.Client(api_key=settings.GEMINI_API_KEY)
@@ -121,17 +123,28 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                                     "language_code": language_code,
                                     "created_by_id": user.id,
                                 }
+
+                                processed_contents = {
+                                    "id":id,
+                                    "metadata": {id: str(uuidv7.generate_uuid7()),**sense.get("metadata",{})},
+                                    "definition": {"id": str(uuidv7.generate_uuid7()), "text": sense.get("definition")},
+                                    "usage": {"id": str(uuidv7.generate_uuid7()), "text": sense.get("usage")},
+                                    "examples": [
+                                        {"id": str(uuidv7.generate_uuid7()), "text": ex} 
+                                        for ex in sense.get("examples", [])
+                                    ]
+                                }
                                 
                                 sense["id"] = id
-
-                                sense_objs.append(sense_obj)
-
+                                sense_objs.append(processed_contents)
+                                # sense_objs.append(sense_obj)
                                 sense_index += 1
 
-                                await socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": sense})
+                                WordCacheManager.cache_word_add_sense(language_code, word_instance.value, id, processed_contents)
+                                await socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": processed_contents})
                                 
                                 # Kích hoạt lấy ảnh 1 ngay lập tức (không đợi stream xong)
-                                img_desc = sense.get('metadata',{}).get('image_keywords',None)
+                                img_desc = processed_contents.get('metadata',{}).get('image_keywords',None)
                                 if img_desc:
                                     task_fetch_image_single.delay(sense_obj, img_desc, socket_room, temp_index=0)
                             except Exception as e: 
@@ -139,6 +152,16 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
             
         full_response_text = "".join(ai_trunks)
         data = json.loads(full_response_text)
+
+        word_data = WordCacheManager.cache_word_get_data(language_code, word_instance.value)
+        translates= word_data['translates']
+
+        try:
+            asyncio.run(ai_create_new_word(word_data))
+        except Exception as e:
+            print(f"Error creating translate: {e}")
+
+
         # word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, data, socket_room)
         word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, sense_objs, socket_room)
 
@@ -152,7 +175,6 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
         except Exception as socket_error:
             print(f"Failed to send full data via socket: {socket_error}")
     
-
     except Exception as e:
         try:
             def update_failed_status():

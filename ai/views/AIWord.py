@@ -143,7 +143,7 @@ class AIWordViewSet(SoftDeleteViewSet):
             status='PROCESSING'
             )
 
-            print(1)
+            print(12)
             # GỌI CELERY: Bọc phát mất hút ở đây
             ai_create_new_word_task.delay(
                 user.id, 

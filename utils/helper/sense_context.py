@@ -3,6 +3,7 @@ from typing import List, Dict, Any
 
 @dataclass
 class SenseContext:
+    id: str
     raw: dict
     pos: str
     metadata: object = None
@@ -14,4 +15,5 @@ class SenseContext:
     # Các trường cũ nếu bạn vẫn muốn giữ để tương thích code khác
     contents: Dict[str, object] = field(default_factory=dict)
     examples: List[object] = field(default_factory=list)
+    example_count: int = 0
     example_trans: List[object] = field(default_factory=list)

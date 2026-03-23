@@ -53,6 +53,7 @@ async def full_data(data, callback=None):
 # def ai_create_translate(user, content, language, user_language, socket_room): 
 
 async def ai_create_new_word(user, word_instance, language_code, user_language_code, socket_room):
+    print('create new word')
     # word_instance = await sync_to_async(AIWord.objects.get)(id=word_id)
     LATIN_LANGS = ['vi', 'en', 'es', 'fr', 'de', 'it', 'pt', 'nl', 'pl', 'sv', 'no', 'da', 'fi', 'tr', 'cs', 'hu', 'id']
     SIMPLE_NON_LATIN = ['zh', 'ko', 'ru', 'el', 'ar', 'he', 'hi', 'th']
@@ -84,6 +85,7 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                 )
             )
             pointer = 0
+            senses=[]
             sense_objs=[]
             async for chunk in response:
                 if chunk.text:
@@ -110,6 +112,7 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                             sense["id"] = id
 
                             sense_objs.append(sense_obj)
+                            senses.append(sense)
 
                             sense_index += 1
 
@@ -124,8 +127,9 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
             
         full_response_text = "".join(ai_trunks)
         data = json.loads(full_response_text)
+        print('sense_objs', sense_objs, senses)
         # word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, data, socket_room)
-        word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, sense_objs, socket_room)
+        word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, senses, socket_room)
 
         try:
             # ✅ Dùng DjangoJSONEncoder để convert UUID
@@ -454,9 +458,10 @@ def saveword(user, word_instance, language_code, user_language_code, entries, so
                 
                 metadata_to_create.append(metadata)
                 # Lưu trữ sense_raw để xử lý content ở phase sau
-                contexts.append(SenseContext(raw=sense_raw, pos=metadata_raw.get("pos", None), metadata=metadata))
+                contexts.append(SenseContext(raw=sense_raw, pos=metadata_raw.get("pos", None), metadata=metadata, id=sense_raw.get("id")))
 
             if not contexts:
+                print('no contexts', contexts)
                 word_instance.status = "REJECTED"
                 word_instance.save()
                 return
@@ -469,7 +474,7 @@ def saveword(user, word_instance, language_code, user_language_code, entries, so
             ruby_gen = get_ruby_generator()
             all_contents_to_create = []
 
-            def prepare_content_obj(val, lang):
+            def prepare_content_obj(val, lang= language_code):
                 if not val: return None
                 text = val.get("text") if isinstance(val, dict) else val
                 if not text: return None
@@ -494,28 +499,17 @@ def saveword(user, word_instance, language_code, user_language_code, entries, so
                 s = ctx.raw
                 
                 # 1. Định nghĩa & Sử dụng
-                ctx.obj_map["def_orig"] = prepare_content_obj(s.get("definition"), language_code)
-                ctx.obj_map["def_trans"] = prepare_content_obj(s.get("definition", {}).get("translate"), user_language_code)
-                
-                ctx.obj_map["usage_orig"] = prepare_content_obj(s.get("usage"), language_code)
-                ctx.obj_map["usage_trans"] = prepare_content_obj(s.get("usage", {}).get("translate"), user_language_code)
-                
-                ctx.obj_map["extra_trans"] = prepare_content_obj(s.get("translations"), user_language_code)
+                ctx.obj_map["def"] = prepare_content_obj(s.get("definition"))
+                ctx.obj_map["usage"] = prepare_content_obj(s.get("usage"))
+
+
+                ctx.example_count = len(s.get("examples", []))
+                # 2. Ví dụ (Mỗi ví dụ là một cặp Orig-Trans)
+                for index, ex_raw in enumerate(s.get("examples", []), start=1):
+                    ctx.obj_map[f'translate-{index}'] = prepare_content_obj(ex_raw)
 
                 # Gom vào list tổng để bulk create
                 all_contents_to_create.extend([obj for obj in ctx.obj_map.values() if obj])
-
-                # 2. Ví dụ (Mỗi ví dụ là một cặp Orig-Trans)
-                for ex_raw in s.get("examples", []):
-                    ex_orig = prepare_content_obj(ex_raw, language_code)
-                    ex_trans = prepare_content_obj(ex_raw.get("translate"), user_language_code)
-                    
-                    if ex_orig:
-                        ctx.example_objs.append({"orig": ex_orig, "trans": ex_trans})
-                        all_contents_to_create.append(ex_orig)
-                        if ex_trans:
-                            all_contents_to_create.append(ex_trans)
-
             # Bulk create để lấy ID từ database cho toàn bộ content
             AISenseContent.objects.bulk_create(all_contents_to_create)
 
@@ -532,22 +526,16 @@ def saveword(user, word_instance, language_code, user_language_code, entries, so
                 # Đây là nơi quy định quan hệ thay vì dùng Parent_id
                 sense_structure = {
                     "definition": {
-                        language_code: get_id("def_orig"),
-                        user_language_code: get_id("def_trans")
+                        language_code: get_id("def"),
                     },
                     "usage": {
-                        language_code: get_id("usage_orig"),
-                        user_language_code: get_id("usage_trans")
-                    },
-                    "translations": {
-                        user_language_code: get_id("extra_trans")
+                        language_code: get_id("usage"),
                     },
                     "examples": [
                         {
-                            language_code: str(pair["orig"].id),
-                            user_language_code: str(pair["trans"].id) if pair["trans"] else None
+                            language_code: get_id('translate-'+str(index)),
                         }
-                        for pair in ctx.example_objs
+                        for index in range(1, ctx.example_count + 1)
                     ]
                 }
 
@@ -560,10 +548,15 @@ def saveword(user, word_instance, language_code, user_language_code, entries, so
                         contents=sense_structure, # JSON Structure mới
                         is_frozen=True,
                         created_by=user,
+                        id=ctx.id
                     )
                 )
 
-            AISense.objects.bulk_create(senses_to_create)
+            AISense.objects.bulk_create(
+                senses_to_create, update_conflicts=True,
+                unique_fields=['id'],  # Hoặc field nào định danh duy nhất
+                update_fields=['contents', 'metadata']
+                )
 
             # =========================
             # FINAL PHASE: REFRESH & SERIALIZE
@@ -753,20 +746,13 @@ word_schema = {
                                     },
                                     "required": ["should_be_saved","is_valid","ipas", "tags","image_describe", "level","pos"]
                                 },
-                                "translations": {
-                                            "type": "ARRAY",
-                                            "items": {
-                                                "type": "STRING"
-                                            }
-                                        },
 
                                 "definition": {
                                     "type": "OBJECT",
                                     "properties": {
                                         "text": { "type": "STRING" },
-                                        "translate": { "type": "STRING", "description": "Definition in user language" },
                                     },
-                                    "required": ["text","translate"]
+                                    "required": ["text"]
                                 },
                                 "usage": {
                                     "type": "OBJECT",
@@ -775,9 +761,9 @@ word_schema = {
                                             "type": "STRING",
                                             "description": "Technical usage: collocations, specific prepositions, grammatical patterns, or social register (formal/informal). Example: 'Often used with the particle NI' or 'Commonly used in business contexts'."
                                         },
-                                        "translate": { "type": "STRING", "description": "Usage translated to user language" },
+
                                     },
-                                    "required": ["text", "translate"],
+                                    "required": ["text"],
                                 },
 
                                 "examples": {
@@ -786,12 +772,8 @@ word_schema = {
                                         "type": "OBJECT",
                                         "properties": {
                                             "text": { "type": "STRING" },
-                                            "translate": {
-                                                "type": "STRING",
-                                                "description": "Example translated to user language in sense context"
-                                            },
                                         },
-                                        "required": ["text", "translate"]
+                                        "required": ["text"]
                                     },
                                     "maxItems": 2,
                                 },
@@ -801,7 +783,6 @@ word_schema = {
                                 "definition",
                                 "usage",
                                 "examples",
-                                "translations"
                             ]
                         }
                     }
@@ -1133,4 +1114,141 @@ language_map={
     "id":"Indonesian",
     "he":"Hebrew",
     }
+
+word_schema_old = {
+    "type": "OBJECT",
+    "properties": {
+        "entries": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "pos": {
+                        "type": "STRING",
+                        "description": "Part of speech (noun, verb, adjective, etc.)"
+                    },
+                    "senses": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "metadata":{
+                                    "type":"OBJECT",
+                                    "properties":{
+                                        "is_valid":{"type":"BOOLEAN","description": "Word or phrase is valid or not"},
+                                        "is_offensive":{"type":"BOOLEAN"},
+                                        "pos":{"type":"STRING"},
+                                        "should_be_saved": {"type":"BOOLEAN","description":"Only True if word is widely known in language and write in correct form"},
+                                        "register":{"type":"STRING", "description": "formal, informal, slang, vulgar, technical, etc."},
+                                        "ipas": {
+                                            "type": "ARRAY",
+                                            "items": {
+                                                "type": "OBJECT",
+                                                "properties": {
+                                                    "text": { "type": "STRING" },
+                                                    "label": {
+                                                        "type": "STRING",
+                                                        "description": "US, UK, ROMAN, etc."
+                                                    },
+                                                },
+                                                "required": ["text", "label"]
+                                            }
+                                        },
+                                        "synonyms": {
+                                            "type": "ARRAY",
+                                            "items": { "type": "STRING" }
+                                        },
+
+                                        "antonyms": {
+                                            "type": "ARRAY",
+                                            "items": { "type": "STRING" }
+                                        },
+
+                                        "relateds": {
+                                            "type": "ARRAY",
+                                            "items": { "type": "STRING" }
+                                        },
+
+                                        "forms": {
+                                            "type": "ARRAY",
+                                            "items": { "type": "STRING" },
+                                            "description": "Word forms (plural, past tense, etc.)"
+                                        },
+                                        "tags":{
+                                            "type":"ARRAY",
+                                            "items": {"type":"STRING"},
+                                            "description":"additional tags for the sense, for searching, grouping, etc."
+                                        },
+                                        "image_describe": {
+                                            "type": "STRING",
+                                            "description": "1-5 keywords for stock image search"
+                                        },
+                                        "level": {
+                                            "type": "STRING",
+                                            "description": "A1–C2, N1–N5, TOPIC1, etc."
+                                        }
+                                    },
+                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_describe", "level","pos"]
+                                },
+                                "translations": {
+                                            "type": "ARRAY",
+                                            "items": {
+                                                "type": "STRING"
+                                            }
+                                        },
+
+                                "definition": {
+                                    "type": "OBJECT",
+                                    "properties": {
+                                        "text": { "type": "STRING" },
+                                        "translate": { "type": "STRING", "description": "Definition in user language" },
+                                    },
+                                    "required": ["text","translate"]
+                                },
+                                "usage": {
+                                    "type": "OBJECT",
+                                    "properties": {
+                                        "text": { 
+                                            "type": "STRING",
+                                            "description": "Technical usage: collocations, specific prepositions, grammatical patterns, or social register (formal/informal). Example: 'Often used with the particle NI' or 'Commonly used in business contexts'."
+                                        },
+                                        "translate": { "type": "STRING", "description": "Usage translated to user language" },
+                                    },
+                                    "required": ["text", "translate"],
+                                },
+
+                                "examples": {
+                                    "type": "ARRAY",
+                                    "items": {
+                                        "type": "OBJECT",
+                                        "properties": {
+                                            "text": { "type": "STRING" },
+                                            "translate": {
+                                                "type": "STRING",
+                                                "description": "Example translated to user language in sense context"
+                                            },
+                                        },
+                                        "required": ["text", "translate"]
+                                    },
+                                    "maxItems": 2,
+                                },
+                            },
+
+                            "required": [
+                                "definition",
+                                "usage",
+                                "examples",
+                                "translations"
+                            ]
+                        }
+                    }
+                },
+
+                "required": ["pos", "senses"]
+            }
+        },
+        "word": { "type": "STRING" }, 
+    },
+    "required": ["word", "entries"]
+}
 

@@ -32,6 +32,9 @@ from utils.utils.kanji import get_ruby_generator
 from utils.utils.limit_prefetch import limit_prefetch
 from utils.utils.sense_handle import serialize_entries, serialize_senses
 from utils.utils.socket import socket_message
+from utils.redis.word_init import WordCacheManager
+from utils.celery.translate import task_create_translate
+
 
 # The client gets the API key from the environment variable `GEMINI_API_KEY`
 client = genai.Client(api_key=settings.GEMINI_API_KEY)
@@ -87,47 +90,81 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
             pointer = 0
             senses=[]
             sense_objs=[]
+            valid = False
             async for chunk in response:
                 if chunk.text:
                     ai_trunks.append(chunk.text)
 
                     # --- LOGIC ĐÁNH CHẶN LẤY ẢNH SỚM ---
                     full_text = "".join(ai_trunks)
-                    sense_str, new_pointer = extract_json_fragment(full_text, "senses", pointer)
+
+                    if not valid:
+                        word_meta_str, _ = extract_json_fragment(full_text, "metadata") 
+
+                        if word_meta_str:
+                            word_meta = json.loads(word_meta_str)
+                            if not word_meta.get("should_be_saved", True):
+                                print("Word rejected - Stopping stream")
+                                # Gửi socket thông báo từ không hợp lệ
+                                # Ngắt stream/vòng lặp tại đây
+                                break
                     
-                    if sense_str:
-                        pointer = new_pointer
-                        try:
-                            sense = json.loads(sense_str)
-                            id = str(uuidv7.generate_uuid7())
+                    else:
+                        
+                        sense_str, new_pointer = extract_json_fragment(full_text, "senses", pointer)
+                        
+                        if sense_str:
+                            pointer = new_pointer
+                            try:
+                                sense = json.loads(sense_str)
+                                id = str(uuidv7.generate_uuid7())
 
-                            sense_obj = {
-                                "id": id,
-                                "word_id": str(word_instance.id),
-                                "word_value":word_instance.value,
-                                "language_code": language_code,
-                                "created_by_id": user.id,
-                            }
-                               
-                            sense["id"] = id
+                                sense_obj = {
+                                    "id": id,
+                                    "word_id": str(word_instance.id),
+                                    "word_value":word_instance.value,
+                                    "language_code": language_code,
+                                    "created_by_id": user.id,
+                                }
 
-                            sense_objs.append(sense_obj)
-                            senses.append(sense)
+                                processed_contents = {
+                                    "id":id,
+                                    "metadata": {id: str(uuidv7.generate_uuid7()),**sense.get("metadata",{})},
+                                    "definition": {"id": str(uuidv7.generate_uuid7()), "text": sense.get("definition")},
+                                    "usage": {"id": str(uuidv7.generate_uuid7()), "text": sense.get("usage")},
+                                    "examples": [
+                                        {"id": str(uuidv7.generate_uuid7()), "text": ex} 
+                                        for ex in sense.get("examples", [])
+                                    ]
+                                }
+                                
+                                sense["id"] = id
+                                sense_objs.append(processed_contents)
+                                # sense_objs.append(sense_obj)
+                                sense_index += 1
 
-                            sense_index += 1
-
-                            await socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": sense})
-                            
-                            # Kích hoạt lấy ảnh 1 ngay lập tức (không đợi stream xong)
-                            img_desc = sense.get('metadata',{}).get('image_describe',None)
-                            if img_desc:
-                               task_fetch_image_single.delay(sense_obj, img_desc, socket_room, temp_index=0)
-                        except Exception as e: 
-                            pass
+                                WordCacheManager.cache_word_add_sense(language_code, word_instance.value, id, processed_contents)
+                                await socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": processed_contents})
+                                
+                                # Kích hoạt lấy ảnh 1 ngay lập tức (không đợi stream xong)
+                                img_desc = processed_contents.get('metadata',{}).get('image_keywords',None)
+                                if img_desc:
+                                    task_fetch_image_single.delay(sense_obj, img_desc, socket_room, temp_index=0)
+                            except Exception as e: 
+                                pass
             
         full_response_text = "".join(ai_trunks)
         data = json.loads(full_response_text)
-        print('sense_objs', sense_objs, senses)
+
+        word_data = WordCacheManager.cache_word_get_data(language_code, word_instance.value)
+        translates= word_data['translates']
+
+        try:
+            asyncio.run(task_create_translate(word_data))
+        except Exception as e:
+            print(f"Error creating translate: {e}")
+
+
         # word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, data, socket_room)
         word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, senses, socket_room)
 
@@ -141,7 +178,6 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
         except Exception as socket_error:
             print(f"Failed to send full data via socket: {socket_error}")
     
-
     except Exception as e:
         try:
             def update_failed_status():
@@ -417,7 +453,7 @@ def get_prompt(mode, word, language_code, user_language_code):
     - FOLLOW RESTRICLY LANGUAGE RULES.
     - Sense order by frequency.
     - Accuracy: Do not hallucinate antonyms/synonyms. Use null for "audio" if unknown.
-    - Image Prompt: "image_describe" is list of tags for image prompt.
+    - Image Prompt: "image_keywords" is list of tags for image prompt.
     - should_be_saved: This is a dictionary entry. Therefore, this field is TRUE only for single-meaning phrases, not combinations of different words. These are words or phrases that actually carry meaning, not variations, allusions, or rhetorical devices created by other words. 
     - I am paying for this service, please provide full detail for every field
 
@@ -674,6 +710,18 @@ def save_translate(user, translate_instance, user_language_code, sense_instances
 word_schema = {
     "type": "OBJECT",
     "properties": {
+        "metadata": {
+            "type": "OBJECT",
+            "properties": {
+                "should_be_saved": { 
+                    "type": "BOOLEAN", 
+                    "description": "False if the input is gibberish, a typo that doesn't exist, or non-linguistic noise." 
+                },
+                "is_common": { "type": "BOOLEAN" },
+                "language_confidence": { "type": "NUMBER", "description": "0-1 score of how sure AI is about the language" }
+            },
+            "required": ["should_be_saved"]
+        },
         "entries": {
             "type": "ARRAY",
             "items": {
@@ -691,11 +739,16 @@ word_schema = {
                                 "metadata":{
                                     "type":"OBJECT",
                                     "properties":{
-                                        "is_valid":{"type":"BOOLEAN","description": "Word or phrase is valid or not"},
                                         "is_offensive":{"type":"BOOLEAN"},
                                         "pos":{"type":"STRING"},
-                                        "should_be_saved": {"type":"BOOLEAN","description":"Only True if word is widely known in language and write in correct form"},
-                                        "register":{"type":"STRING", "description": "formal, informal, slang, vulgar, technical, etc."},
+                                        "register": {
+                                            "type": "ARRAY",
+                                            "items": {
+                                            "type": "STRING",
+                                            "enum": ["neutral", "formal", "informal", "slang", "vulgar", "technical", "literary", "archaic", "dialect", "humorous"]
+                                            },
+                                            "description": "Danh sách các sắc thái của từ. Nếu là từ phổ thông, chỉ cần trả về ['neutral']."
+                                        },
                                         "ipas": {
                                             "type": "ARRAY",
                                             "items": {
@@ -735,7 +788,7 @@ word_schema = {
                                             "items": {"type":"STRING"},
                                             "description":"additional tags for the sense, for searching, grouping, etc."
                                         },
-                                        "image_describe": {
+                                        "image_keywords": {
                                             "type": "STRING",
                                             "description": "1-5 keywords for stock image search"
                                         },
@@ -744,7 +797,17 @@ word_schema = {
                                             "description": "A1–C2, N1–N5, TOPIC1, etc."
                                         }
                                     },
-                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_describe", "level","pos"]
+                                    "required": ["register", "is_offensive","ipas", "tags","image_keywords", "level","pos"]
+                                },
+                                "collocations": {
+                                    "type": "ARRAY",
+                                    "items": { "type": "STRING" },
+                                    "description": "Common word combinations. e.g. ['heavy rain', 'pour with rain']"
+                                },
+                                "idioms": {
+                                    "type": "ARRAY",
+                                    "items": { "type": "STRING" },
+                                    "description": "Idiomatic expressions related to this sense."
                                 },
 
                                 "definition": {
@@ -793,12 +856,24 @@ word_schema = {
         },
         "word": { "type": "STRING" }, 
     },
-    "required": ["word", "entries"]
+    "required": ["word", "entries", "metadata"]
 }
 
 nonlatin_schema = {
     "type": "OBJECT",
     "properties": {
+        "metadata": {
+            "type": "OBJECT",
+            "properties": {
+                "should_be_saved": { 
+                    "type": "BOOLEAN", 
+                    "description": "False if the input is gibberish, a typo that doesn't exist, or non-linguistic noise." 
+                },
+                "is_common": { "type": "BOOLEAN" },
+                "language_confidence": { "type": "NUMBER", "description": "0-1 score of how sure AI is about the language" }
+            },
+            "required": ["should_be_saved"]
+        },
         "entries": {
             "type": "ARRAY",
             "items": {
@@ -821,7 +896,6 @@ nonlatin_schema = {
                                         "is_offensive":{"type":"BOOLEAN"},
                                         "is_compound": {"type":"BOOLEAN"},
                                         "should_be_saved": {"type":"BOOLEAN","description":"Only True if word is widely known in language and write in correct form"},
-                                        "is_correct_language": {"type":"BOOLEAN","description":"is the word in the correct language"},
                                         "register":{"type":"STRING", "description": "formal, informal, slang, vulgar, technical, etc."},
                                         "pos":{"type":"STRING"},
                                         "ipas": {
@@ -864,7 +938,7 @@ nonlatin_schema = {
                                             "items": {"type":"STRING"},
                                             "description":"additional tags for the sense, for searching, grouping, etc."
                                         },
-                                        "image_describe": {
+                                        "image_keywords": {
                                             "type": "STRING",
                                             "description": "1-5 keywords for stock image search"
                                         },
@@ -873,13 +947,17 @@ nonlatin_schema = {
                                             "description": "A1–C2, N1–N5, TOPIC1, etc."
                                         },
                                     },
-                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_describe", "level", "pos"]
+                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_keywords", "level", "pos"]
                                 },
-                                "translations": {
-                                            "type": "ARRAY",
-                                            "items": {
-                                                "type": "STRING"
-                                            }
+                                "collocations": {
+                                    "type": "ARRAY",
+                                    "items": { "type": "STRING" },
+                                    "description": "Common word combinations. e.g. ['heavy rain', 'pour with rain']"
+                                },
+                                "idioms": {
+                                    "type": "ARRAY",
+                                    "items": { "type": "STRING" },
+                                    "description": "Idiomatic expressions related to this sense."
                                 },
 
                                 "definition": {
@@ -1008,7 +1086,7 @@ complex_schema = {
                                             "items": {"type":"STRING"},
                                             "description":"additional tags for the sense, for searching, grouping, etc."
                                         },
-                                        "image_describe": {
+                                        "image_keywords": {
                                             "type": "STRING",
                                             "description": "1-5 keywords for stock image search"
                                         },
@@ -1017,7 +1095,7 @@ complex_schema = {
                                             "description": "A1–C2, N1–N5, TOPIC1, etc."
                                         },
                                     },
-                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_describe", "level", "pos"]
+                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_keywords", "level", "pos"]
                                 },
                                 "translations": {
                                             "type": "ARRAY",

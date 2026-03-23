@@ -27,6 +27,7 @@ from utils.utils.sense_handle import serialize_entries, serialize_senses
 from utils.utils.socket import get_safe_room_id, run_async_task, socket_close
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 from django.contrib.auth.models import User
+from utils.redis.word_init import WordCacheManager
 
 def detect_missing_content(senses, contents, language_code, user_language_code):
     # Map để lấy value và type nhanh từ danh sách content instance
@@ -136,6 +137,12 @@ class AIWordViewSet(SoftDeleteViewSet):
 
         # Word not found: Generate new word, return not found. send data via socket when finish
         if not word_instance or word_instance.status == 'FAILED':
+            created, init_data = WordCacheManager.cache_word_init(language_code, word)
+
+            if not created:
+                WordCacheManager.cache_word_add_translate(language_code, word, user_language_code)
+                return Response({'detail': 'PROCESSING', 'status': '202'}, status=status.HTTP_202_ACCEPTED, data=init_data)
+
             word_instance = AIWord.objects.create(
             value=word,
             language_code=language_code,
@@ -154,7 +161,7 @@ class AIWordViewSet(SoftDeleteViewSet):
             )
             # ai_create_new_word(user.id, word_instance.id, language_code, user_language_code, socket_room)
             print(2)
-            return Response({'detail': 'PROCESSING', 'status': '202'}, status=status.HTTP_202_ACCEPTED)
+            return Response({'detail': 'PROCESSING', 'status': '202'}, status=status.HTTP_202_ACCEPTED, data=init_data)
            
 
         # Word is processing, return not found. send data via socket when finish

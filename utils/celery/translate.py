@@ -21,23 +21,28 @@ User = get_user_model()
 
 
 @shared_task(bind=True, retry_backoff=True, max_retries=3)
-def task_create_translate(self, word_data):
+def task_create_translate(self, word, senses, user_languages):
     print('vào chỗ lấy image')
-    """Task xử lý ảnh: Check Context -> Fetch Pixabay -> Save Local -> Link"""
+    """Task xử lý ảnh: Check Context -> Fetch Pixabay -> Save Local -> Link
+        word: {id, value, language_code}
+    """
 
     contents = {}
     need_translation = {}
 
-    senses = word_data['senses']
-    word = word_data['word']
-    language_code = word['language_code']
-
     for sense_id, sense in senses.items():
-        data = []
-        for key, value in sense.items():
-            data.append(value)
+        data = {}
+        for key, content in sense.items():
+            if key == 'translates':
+                data['translates'] = {}
+                for item in content:
+                    data["translates"][item.get('id')] = item.get('value')
+
+            data[key] = content.get('value')
+
+        contents[sense_id] = data
     try:
-        asyncio.run(render_translate(user, word, language_code, user_language_code, socket_room))
+        asyncio.run(render_translate(word, contents, user_languages))
     except Exception as e:
         raise self.retry(exc=e, countdown=5)
 

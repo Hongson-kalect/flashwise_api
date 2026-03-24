@@ -21,6 +21,7 @@ class AISense(BaseModel):
     contents = models.JSONField(default=dict)
     news = models.JSONField(default=list) # những content trong news sẽ có thể update tùy ý
 
+    is_offensive = models.BooleanField(default=False, null=True)
     is_frozen = models.BooleanField(default=True, null=True)
     # True = can't update, always create new. False = can update news content. None = can update all
     # When update content not in news with is_frozen = False, create new content, replace in contents and update news 

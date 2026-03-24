@@ -119,7 +119,7 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                                 sense = json.loads(sense_str)
                                 id = str(uuidv7.generate_uuid7())
 
-                                sense_obj = {
+                                sense_word_obj = {
                                     "id": id,
                                     "word_id": str(word_instance.id),
                                     "word_value":word_instance.value,
@@ -130,10 +130,10 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                                 processed_contents = {
                                     "id":id,
                                     "metadata": {id: str(uuidv7.generate_uuid7()),**sense.get("metadata",{})},
-                                    "definition": {"id": str(uuidv7.generate_uuid7()), "text": sense.get("definition")},
-                                    "usage": {"id": str(uuidv7.generate_uuid7()), "text": sense.get("usage")},
+                                    "definition": {"id": str(uuidv7.generate_uuid7()), "value": sense.get("definition")},
+                                    "usage": {"id": str(uuidv7.generate_uuid7()), "value": sense.get("usage")},
                                     "examples": [
-                                        {"id": str(uuidv7.generate_uuid7()), "text": ex} 
+                                        {"id": str(uuidv7.generate_uuid7()), "value": ex} 
                                         for ex in sense.get("examples", [])
                                     ]
                                 }
@@ -149,7 +149,7 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                                 # Kích hoạt lấy ảnh 1 ngay lập tức (không đợi stream xong)
                                 img_desc = processed_contents.get('metadata',{}).get('image_keywords',None)
                                 if img_desc:
-                                    task_fetch_image_single.delay(sense_obj, img_desc, socket_room, temp_index=0)
+                                    task_fetch_image_single.delay(sense_word_obj, img_desc, socket_room, temp_index=0)
                             except Exception as e: 
                                 pass
             
@@ -157,10 +157,12 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
         data = json.loads(full_response_text)
 
         word_data = WordCacheManager.cache_word_get_data(language_code, word_instance.value)
-        translates= word_data['translates']
+        redis_translates= word_data['translates']
+        redis_senses = word_data['senses']
+        redis_word = word_data['word']
 
         try:
-            asyncio.run(task_create_translate(word_data))
+            task_create_translate.delay(redis_word,redis_senses, redis_translates)
         except Exception as e:
             print(f"Error creating translate: {e}")
 
@@ -255,63 +257,64 @@ def render_all_word_data(user, word_instance, language_code, user_language_code,
 
     generator()
 
-def render_schema(missing_content: dict, need_translation: dict):
+def render_schema(word, sense_object: dict, user_language_code: list):
     properties = {}
     required = []
 
+    def render_obj(type):
+        # Tạo properties cho từng ngôn ngữ
+        lang_props = {
+            lang: {
+                "type": "STRING"
+            } for lang in user_language_code
+        }
+        # Trả về cấu trúc đúng của JSON Schema cho một Object
+        return {
+            "type": "OBJECT",
+            "properties": lang_props,
+            "required": user_language_code,
+            "description": f"Translate {type} to {", ".join(user_language_code)}"
+        }
 
-    for sense_id, contents in missing_content.items():
+
+    for sense_id, sense in sense_object.items():
         # required.append(sense_id) # Tùy chọn: có bắt buộc sense_id này phải có trong response không
 
         # Tạo object chứa các content_id
         content_properties = {}
         content_required = []
         
-        for item in contents:
-            c_id = item['id']
-            content_required.append(c_id)
-            content_properties[c_id] = {
-                        "type": "STRING",
-                        "description": f"Translated text for content {c_id}"
-            }
+        for key, item in sense.items():
 
-        need_trans = need_translation.get(sense_id, None)
-        if need_trans:
-            del need_translation[sense_id]
-            content_properties["translations"] = {
-                "type": "ARRAY",
-                "items": {
-                    "type": "STRING",
-                    "description": f"translate word to user language{f', suitable with definition: {need_trans}'}"
-                },
-                "maxItems": 4
-            }
-            content_required.append("translations")
+            if key == 'examples':
+                example_obj = {}
+                example_required = []
 
-        properties[sense_id] = {
-            "type": "OBJECT",
-            "properties": content_properties,
-            "required": content_required
-        }
-        required.append(sense_id)
+                for example_id, example in item.items():
+                    example_obj[example_id] = render_obj("example")
+                    example_required.append(example_id)
+                
+                content_properties[key] = {
+                    "type": "OBJECT",
+                    "properties": example_obj,
+                    "required": example_required
+                }
+                content_required.append(key)
 
-    
+            else:
+                content_properties[key] = render_obj(key)
+                content_required.append(key)
 
-    for sense_id, definition in need_translation.items():
-        if not definition:
-            continue
-        content_properties = {}
-        content_required = []
+            # c_id = item['id']
+            # content_required.append(c_id)
+            # content_properties[c_id] = {
+            #             "type": "STRING",
+            #             "description": f"Translated text for content {c_id}"
+            # }
 
-        content_properties["translations"] = {
-            "type": "ARRAY",
-            "items": {
-                "type": "STRING",
-                "description": f"translate word to user language{f', suitable with definition: {definition}'}"
-            },
-            "maxItems": 4
-        }
-        content_required.append("translations")
+        # Tạo object chúa các translation
+        content_properties["translations"] = render_obj("translations")
+        content_required.append(f" word {word} in this sense")
 
         properties[sense_id] = {
             "type": "OBJECT",
@@ -319,7 +322,6 @@ def render_schema(missing_content: dict, need_translation: dict):
             "required": content_required
         }
         required.append(sense_id)
-
 
     return {
         "type": "OBJECT",
@@ -328,35 +330,35 @@ def render_schema(missing_content: dict, need_translation: dict):
     }
 
 async def render_translate(
-    user,
-    translate_instance,
-    word,
-    sense_instances,
-    missing_content,
-    need_translation,
-    language_code,
+    word_object,
+    senses,
     user_language_code,
-    socket_room
 ):
+    # Cấu trúc missing_content: { sense_id: {definition: "", usage:"", example:{id:"",id2:""}} }
+    # Cấu trúc need_translation: { sense_id: language_code[] }
+    language_code = word_object.get("language_code", None)
+    word = word_object.get("word", None)
+
     prompt = f"""
     # ROLE: Translator
     # WORD: {word}
     # INPUT LANGUAGE: {language_code}
-    # TARGET LANGUAGE: {user_language_code}
+    # TARGET LANGUAGE: {", ".join(user_language_code)}
     # TRANSLATE CONTENTS:
-    {json.dumps(missing_content, ensure_ascii=False)}
+    {json.dumps(senses, ensure_ascii=False)}
 
     # TASK:
-    Translate the dictionary contents from {language_code} to {user_language_code}.
+    Translate the dictionary contents from {language_code} to {", ".join(user_language_code)}.
 
     # OUTPUT RULE:
     - Output JSON only
     - Only return "translate"
     - DO NOT repeat original text
+    - Use natural language that is appropriate to the context (avoid translating word for word).
     """
 
 
-    schema = render_schema(missing_content, need_translation)
+    schema = render_schema(word, senses, user_language_code)
 
 
     try:
@@ -486,8 +488,6 @@ def saveword(user, word_instance, language_code, user_language_code, entries, so
 
             for sense_raw in entries:
                 metadata_raw = sense_raw.get("metadata", {})
-                if not metadata_raw.get("should_be_saved"):
-                    continue
 
                 clean_data = {k: v for k, v in metadata_raw.items() if k in model_fields}
                 metadata = AISenseMetadata(**clean_data, created_by=user)
@@ -512,7 +512,13 @@ def saveword(user, word_instance, language_code, user_language_code, entries, so
 
             def prepare_content_obj(val, lang= language_code):
                 if not val: return None
-                text = val.get("text") if isinstance(val, dict) else val
+
+                if isinstance(val, dict):
+                    text = val.get("text")
+                    id = val.get("id")
+                else:
+                    text = val.get("value")
+                    id = uuidv7.generate_uuid7()
                 if not text: return None
 
                 ruby = None
@@ -521,6 +527,7 @@ def saveword(user, word_instance, language_code, user_language_code, entries, so
                     except: pass
 
                 return AISenseContent(
+                    id=id,
                     value=text,
                     reading=val.get("reading") if isinstance(val, dict) else None,
                     roman=val.get("roman") if isinstance(val, dict) else None,
@@ -754,13 +761,13 @@ word_schema = {
                                             "items": {
                                                 "type": "OBJECT",
                                                 "properties": {
-                                                    "text": { "type": "STRING" },
+                                                    "value": { "type": "STRING" },
                                                     "label": {
                                                         "type": "STRING",
                                                         "description": "US, UK, ROMAN, etc."
                                                     },
                                                 },
-                                                "required": ["text", "label"]
+                                                "required": ["value", "label"]
                                             }
                                         },
                                         "synonyms": {
@@ -813,20 +820,20 @@ word_schema = {
                                 "definition": {
                                     "type": "OBJECT",
                                     "properties": {
-                                        "text": { "type": "STRING" },
+                                        "value": { "type": "STRING" },
                                     },
-                                    "required": ["text"]
+                                    "required": ["value"]
                                 },
                                 "usage": {
                                     "type": "OBJECT",
                                     "properties": {
-                                        "text": { 
+                                        "value": { 
                                             "type": "STRING",
                                             "description": "Technical usage: collocations, specific prepositions, grammatical patterns, or social register (formal/informal). Example: 'Often used with the particle NI' or 'Commonly used in business contexts'."
                                         },
 
                                     },
-                                    "required": ["text"],
+                                    "required": ["value"],
                                 },
 
                                 "examples": {
@@ -834,9 +841,9 @@ word_schema = {
                                     "items": {
                                         "type": "OBJECT",
                                         "properties": {
-                                            "text": { "type": "STRING" },
+                                            "value": { "type": "STRING" },
                                         },
-                                        "required": ["text"]
+                                        "required": ["value"]
                                     },
                                     "maxItems": 2,
                                 },

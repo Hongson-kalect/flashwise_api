@@ -1,5 +1,6 @@
 from django.db import models
 from config.models import BaseModel
+from django.contrib.postgres.fields import ArrayField
 
 
 class AISenseMetadata(BaseModel):
@@ -20,7 +21,7 @@ class AISenseMetadata(BaseModel):
     
     is_valid = models.BooleanField(default=False)
     is_offensive = models.BooleanField(default=False)
-    register = models.CharField(max_length=50, default='informal')
+    register = ArrayField(default=list, base_field=models.CharField(max_length=50))
     image_desc = models.TextField(null=True, blank=True)
     image_link = models.URLField(max_length=500, null=True, blank=True)
     image_metadata = models.JSONField(default=dict, null=True, blank=True)  # {width, height, size, format, color_mode, etc.}
@@ -31,6 +32,7 @@ class AISenseMetadata(BaseModel):
             models.Index(fields=["likes"]),
             models.Index(fields=["views"]),
             models.Index(fields=["created_at"]),
+            models.Index(fields=["is_offensive"]),
         ]
         ordering = ["-created_at"]
 

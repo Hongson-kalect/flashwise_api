@@ -11,7 +11,7 @@ from django.db import transaction
 from ai.models.AIWord import AIWord
 from core.models.ImageLibrary import ImageContext, ImageLibrary, ImageLibraryContext
 from ai.models.AISense import AISense 
-from utils.utils.ai import ai_create_new_word
+from utils.ai.word_render import ai_create_new_word
 from utils.utils.socket import socket_message
 from django.contrib.auth import get_user_model
 

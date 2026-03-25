@@ -273,7 +273,7 @@ def render_schema(word, sense_object: dict, user_language_code: list):
             "type": "OBJECT",
             "properties": lang_props,
             "required": user_language_code,
-            "description": f"Translate {type} to {", ".join(user_language_code)}"
+            "description": f"Translate {type} to {', '.join(user_language_code)}"
         }
 
 

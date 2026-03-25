@@ -1,0 +1,528 @@
+def render_translate_schema(word, sense_object: dict, user_language_code: list):
+    properties = {}
+    required = []
+
+    def render_obj(type):
+        # Tạo properties cho từng ngôn ngữ
+        lang_props = {
+            lang: {
+                "type": "STRING"
+            } for lang in user_language_code
+        }
+        # Trả về cấu trúc đúng của JSON Schema cho một Object
+        return {
+            "type": "OBJECT",
+            "properties": lang_props,
+            "required": user_language_code,
+            "description": f"Translate {type} to {', '.join(user_language_code)}"
+        }
+
+
+    for sense_id, sense in sense_object.items():
+        # required.append(sense_id) # Tùy chọn: có bắt buộc sense_id này phải có trong response không
+
+        # Tạo object chứa các content_id
+        content_properties = {}
+        content_required = []
+        
+        for key, item in sense.items():
+
+            if key == 'examples':
+                example_obj = {}
+                example_required = []
+
+                for example_id, example in item.items():
+                    example_obj[example_id] = render_obj("example")
+                    example_required.append(example_id)
+                
+                content_properties[key] = {
+                    "type": "OBJECT",
+                    "properties": example_obj,
+                    "required": example_required
+                }
+                content_required.append(key)
+
+            else:
+                content_properties[key] = render_obj(key)
+                content_required.append(key)
+
+            # c_id = item['id']
+            # content_required.append(c_id)
+            # content_properties[c_id] = {
+            #             "type": "STRING",
+            #             "description": f"Translated text for content {c_id}"
+            # }
+
+        # Tạo object chúa các translation
+        content_properties["translations"] = render_obj("translations")
+        content_required.append(f" word {word} in this sense")
+
+        properties[sense_id] = {
+            "type": "OBJECT",
+            "properties": content_properties,
+            "required": content_required
+        }
+        required.append(sense_id)
+
+    return {
+        "type": "OBJECT",
+        "properties": properties,
+        "required": required
+    }
+
+word_schema = {
+    "type": "OBJECT",
+    "properties": {
+        "metadata": {
+            "type": "OBJECT",
+            "properties": {
+                "should_be_saved": { 
+                    "type": "BOOLEAN", 
+                    "description": "False if the input is gibberish, a typo that doesn't exist, or non-linguistic noise." 
+                },
+                "is_common": { "type": "BOOLEAN" },
+                "language_confidence": { "type": "NUMBER", "description": "0-1 score of how sure AI is about the language" }
+            },
+            "required": ["should_be_saved"]
+        },
+        "entries": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "pos": {
+                        "type": "STRING",
+                        "description": "Part of speech (noun, verb, adjective, etc.)"
+                    },
+                    "senses": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "metadata":{
+                                    "type":"OBJECT",
+                                    "properties":{
+                                        "is_offensive":{"type":"BOOLEAN"},
+                                        "pos":{"type":"STRING"},
+                                        "register": {
+                                            "type": "ARRAY",
+                                            "items": {
+                                            "type": "STRING",
+                                            "enum": ["neutral", "formal", "informal", "slang", "vulgar", "technical", "literary", "archaic", "dialect", "humorous"]
+                                            },
+                                            "description": "Danh sách các sắc thái của từ. Nếu là từ phổ thông, chỉ cần trả về ['neutral']."
+                                        },
+                                        "ipas": {
+                                            "type": "ARRAY",
+                                            "items": {
+                                                "type": "OBJECT",
+                                                "properties": {
+                                                    "value": { "type": "STRING" },
+                                                    "label": {
+                                                        "type": "STRING",
+                                                        "description": "US, UK, ROMAN, etc."
+                                                    },
+                                                },
+                                                "required": ["value", "label"]
+                                            }
+                                        },
+                                        "synonyms": {
+                                            "type": "ARRAY",
+                                            "items": { "type": "STRING" }
+                                        },
+
+                                        "antonyms": {
+                                            "type": "ARRAY",
+                                            "items": { "type": "STRING" }
+                                        },
+
+                                        "relateds": {
+                                            "type": "ARRAY",
+                                            "items": { "type": "STRING" }
+                                        },
+
+                                        "forms": {
+                                            "type": "ARRAY",
+                                            "items": { "type": "STRING" },
+                                            "description": "Word forms (plural, past tense, etc.)"
+                                        },
+                                        "tags":{
+                                            "type":"ARRAY",
+                                            "items": {"type":"STRING"},
+                                            "description":"additional tags for the sense, for searching, grouping, etc."
+                                        },
+                                        "image_keywords": {
+                                            "type": "STRING",
+                                            "description": "1-5 keywords for stock image search"
+                                        },
+                                        "level": {
+                                            "type": "STRING",
+                                            "description": "A1–C2, N1–N5, TOPIC1, etc."
+                                        }
+                                    },
+                                    "required": ["register", "is_offensive","ipas", "tags","image_keywords", "level","pos"]
+                                },
+                                "collocations": {
+                                    "type": "ARRAY",
+                                    "items": { "type": "STRING" },
+                                    "description": "Common word combinations. e.g. ['heavy rain', 'pour with rain']"
+                                },
+                                "idioms": {
+                                    "type": "ARRAY",
+                                    "items": { "type": "STRING" },
+                                    "description": "Idiomatic expressions related to this sense."
+                                },
+
+                                "definition": {
+                                    "type": "OBJECT",
+                                    "properties": {
+                                        "value": { "type": "STRING" },
+                                    },
+                                    "required": ["value"]
+                                },
+                                "usage": {
+                                    "type": "OBJECT",
+                                    "properties": {
+                                        "value": { 
+                                            "type": "STRING",
+                                            "description": "Technical usage: collocations, specific prepositions, grammatical patterns, or social register (formal/informal). Example: 'Often used with the particle NI' or 'Commonly used in business contexts'."
+                                        },
+
+                                    },
+                                    "required": ["value"],
+                                },
+
+                                "examples": {
+                                    "type": "ARRAY",
+                                    "items": {
+                                        "type": "OBJECT",
+                                        "properties": {
+                                            "value": { "type": "STRING" },
+                                        },
+                                        "required": ["value"]
+                                    },
+                                    "maxItems": 2,
+                                },
+                            },
+
+                            "required": [
+                                "definition",
+                                "usage",
+                                "examples",
+                            ]
+                        }
+                    }
+                },
+
+                "required": ["pos", "senses"]
+            }
+        },
+        "word": { "type": "STRING" }, 
+    },
+    "required": ["word", "entries", "metadata"]
+}
+
+nonlatin_schema = {
+    "type": "OBJECT",
+    "properties": {
+        "metadata": {
+            "type": "OBJECT",
+            "properties": {
+                "should_be_saved": { 
+                    "type": "BOOLEAN", 
+                    "description": "False if the input is gibberish, a typo that doesn't exist, or non-linguistic noise." 
+                },
+                "is_common": { "type": "BOOLEAN" },
+                "language_confidence": { "type": "NUMBER", "description": "0-1 score of how sure AI is about the language" }
+            },
+            "required": ["should_be_saved"]
+        },
+        "entries": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "pos": {
+                        "type": "STRING",
+                        "description": "Part of speech (noun, verb, adjective, etc.)"
+                    },
+
+                    "senses": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "OBJECT",
+                            "properties": {
+                                 "metadata":{
+                                    "type":"OBJECT",
+                                    "properties":{
+                                        "is_valid":{"type":"BOOLEAN","description": "Word or phrase is valid or not"},
+                                        "is_offensive":{"type":"BOOLEAN"},
+                                        "is_compound": {"type":"BOOLEAN"},
+                                        "should_be_saved": {"type":"BOOLEAN","description":"Only True if word is widely known in language and write in correct form"},
+                                        "register":{"type":"STRING", "description": "formal, informal, slang, vulgar, technical, etc."},
+                                        "pos":{"type":"STRING"},
+                                        "ipas": {
+                                            "type": "ARRAY",
+                                            "items": {
+                                                "type": "OBJECT",
+                                                "properties": {
+                                                    "text": { "type": "STRING" },
+                                                    "label": {
+                                                        "type": "STRING",
+                                                        "description": "US, UK, ROMAN, etc."
+                                                    },
+                                                    "roman": { "type": "STRING" },
+                                                },
+                                                "required": ["text", "label"]
+                                            }
+                                        },
+                                        "synonyms": {
+                                            "type": "ARRAY",
+                                            "items": { "type": "STRING" }
+                                        },
+
+                                        "antonyms": {
+                                            "type": "ARRAY",
+                                            "items": { "type": "STRING" }
+                                        },
+
+                                        "relateds": {
+                                            "type": "ARRAY",
+                                            "items": { "type": "STRING" }
+                                        },
+
+                                        "forms": {
+                                            "type": "ARRAY",
+                                            "items": { "type": "STRING" },
+                                            "description": "Word forms (plural, past tense, etc.)"
+                                        },
+                                        "tags":{
+                                            "type":"ARRAY",
+                                            "items": {"type":"STRING"},
+                                            "description":"additional tags for the sense, for searching, grouping, etc."
+                                        },
+                                        "image_keywords": {
+                                            "type": "STRING",
+                                            "description": "1-5 keywords for stock image search"
+                                        },
+                                        "level": {
+                                            "type": "STRING",
+                                            "description": "A1–C2, N1–N5, TOPIC1, etc."
+                                        },
+                                    },
+                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_keywords", "level", "pos"]
+                                },
+                                "collocations": {
+                                    "type": "ARRAY",
+                                    "items": { "type": "STRING" },
+                                    "description": "Common word combinations. e.g. ['heavy rain', 'pour with rain']"
+                                },
+                                "idioms": {
+                                    "type": "ARRAY",
+                                    "items": { "type": "STRING" },
+                                    "description": "Idiomatic expressions related to this sense."
+                                },
+
+                                "definition": {
+                                    "type": "OBJECT",
+                                    "properties": {
+                                        "text": { "type": "STRING" },
+                                        "translate": { "type": "STRING", "description": "Definition in user language" },
+                                        "roman": { "type": "STRING" },
+                                    },
+                                    "required": ["text","translate"]
+                                },
+
+                                "usage": {
+                                    "type": "OBJECT",
+                                    "properties": {
+                                        "text": { 
+                                            "type": "STRING",
+                                            "description": "Technical usage: collocations, specific prepositions, grammatical patterns, or social register (formal/informal). Example: 'Often used with the particle NI' or 'Commonly used in business contexts'."
+                                        },
+                                        "translate": { "type": "STRING", "description": "Usage translated to user language" },
+                                        "roman": { "type": "STRING" },
+                                    },
+                                    "required": ["text", "translate"],
+                                },
+
+                                "examples": {
+                                    "type": "ARRAY",
+                                    "items": {
+                                        "type": "OBJECT",
+                                        "properties": {
+                                            "text": { "type": "STRING" },
+                                            "translate": {
+                                                "type": "STRING",
+                                                "description": "Example translated to user language in sense context"
+                                            },
+                                        },
+                                        "required": ["text", "translate"]
+                                    },
+                                    "description": "1 Example only"
+                                },
+                                
+                            },
+
+                            "required": [
+                                "definition",
+                                "usage",
+                                "examples"
+                            ]
+                        }
+                    }
+                },
+
+                "required": ["pos", "senses"]
+            }
+        },
+        "word": { "type": "STRING"}
+    },
+    "required": ["word", "entries"]
+}
+
+complex_schema = {
+    "type": "OBJECT",
+    "properties": {
+        "entries": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "pos": {
+                        "type": "STRING",
+                        "description": "Part of speech (noun, verb, adjective, etc.)"
+                    },
+
+                    "senses": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "OBJECT",
+                            "properties": {
+                                 "metadata":{
+                                     "type":"OBJECT",
+                                     "properties":{
+                                        "is_valid":{"type":"BOOLEAN","description": "Word or phrase is valid or not"},
+                                        "is_offensive":{"type":"BOOLEAN"},
+                                        "is_compound": {"type":"BOOLEAN"},
+                                        "should_be_saved": {"type":"BOOLEAN","description":"Only True if word is widely known in language and write in correct form"},
+                                        "is_correct_language": {"type":"BOOLEAN","description":"is the word in the correct language"},
+                                        "register":{"type":"STRING", "description": "formal, informal, slang, vulgar, technical, etc."},
+                                        "pos":{"type":"STRING"},
+                                        "ipas": {
+                                            "type": "ARRAY",
+                                            "items": {
+                                                "type": "OBJECT",
+                                                "properties": {
+                                                    "text": { "type": "STRING" },
+                                                    "label": {
+                                                        "type": "STRING",
+                                                        "description": "US, UK, ROMAN, etc."
+                                                    },
+                                                    "roman": { "type": "STRING" },
+                                                },
+                                                "required": ["text", "label"]
+                                            }
+                                        },
+                                        "synonyms": {
+                                            "type": "ARRAY",
+                                            "items": { "type": "STRING" }
+                                        },
+
+                                        "antonyms": {
+                                            "type": "ARRAY",
+                                            "items": { "type": "STRING" }
+                                        },
+
+                                        "relateds": {
+                                            "type": "ARRAY",
+                                            "items": { "type": "STRING" }
+                                        },
+
+                                        "forms": {
+                                            "type": "ARRAY",
+                                            "items": { "type": "STRING" },
+                                            "description": "Word forms (plural, past tense, etc.)"
+                                        },
+                                        "tags":{
+                                            "type":"ARRAY",
+                                            "items": {"type":"STRING"},
+                                            "description":"additional tags for the sense, for searching, grouping, etc."
+                                        },
+                                        "image_keywords": {
+                                            "type": "STRING",
+                                            "description": "1-5 keywords for stock image search"
+                                        },
+                                        "level": {
+                                            "type": "STRING",
+                                            "description": "A1–C2, N1–N5, TOPIC1, etc."
+                                        },
+                                    },
+                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_keywords", "level", "pos"]
+                                },
+                                "translations": {
+                                            "type": "ARRAY",
+                                            "items": {
+                                                "type": "STRING"
+                                            }
+                                        },
+
+                                "definition": {
+                                    "type": "OBJECT",
+                                    "properties": {
+                                        "text": { "type": "STRING" },
+                                        "translate": { "type": "STRING", "description": "Definition in user language" },
+                                        "roman": { "type": "STRING" },
+                                    },
+                                    "required": ["text","translate", "roman"],
+                                },
+                                "usage": {
+                                    "type": "OBJECT",
+                                    "properties": {
+                                        "text": { 
+                                            "type": "STRING",
+                                            "description": "Technical usage: collocations, specific prepositions, grammatical patterns, or social register (formal/informal). Example: 'Often used with the particle NI' or 'Commonly used in business contexts'."
+                                        },
+                                        "translate": { "type": "STRING", "description": "Usage translated to user language" },
+                                        "roman": { "type": "STRING" },
+                                    },
+                                    "required": ["text", "translate", "roman"],
+                                },
+
+                                "examples": {
+                                    "type": "ARRAY",
+                                    "items": {
+                                        "type": "OBJECT",
+                                        "properties": {
+                                            "text": { "type": "STRING" },
+                                            "translate": {
+                                                "type": "STRING",
+                                                "description": "Example translated to user language in sense context"
+                                            },
+                                            "roman": { "type": "STRING" },
+                                        },
+                                        "required": ["text", "translate", "roman"],
+                                    },
+                                    "description": "1 Example only"
+                                },
+
+                            },
+
+                            "required": [
+                                "definition",
+                                "usage",
+                                "examples"
+                            ]
+                        }
+                    }
+                },
+
+                "required": ["pos", "senses"]
+            }
+        },
+        "word": { "type": "STRING"}
+    },
+
+    "required": ["word", "entries"]
+}
+

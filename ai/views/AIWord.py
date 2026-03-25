@@ -137,10 +137,12 @@ class AIWordViewSet(SoftDeleteViewSet):
 
         # Word not found: Generate new word, return not found. send data via socket when finish
         if not word_instance or word_instance.status == 'FAILED':
-            created, init_data = WordCacheManager.cache_word_init(language_code, word)
+            cache_manager = WordCacheManager()
+
+            created, init_data = cache_manager.cache_word_init(language_code, word, user_language_code)
 
             if not created:
-                WordCacheManager.cache_word_add_translate(language_code, word, user_language_code)
+                cache_manager.cache_word_add_translate(language_code, word, user_language_code)
                 return Response({'detail': 'PROCESSING', 'status': '202'}, status=status.HTTP_202_ACCEPTED, data=init_data)
 
             word_instance = AIWord.objects.create(
@@ -161,7 +163,7 @@ class AIWordViewSet(SoftDeleteViewSet):
             )
             # ai_create_new_word(user.id, word_instance.id, language_code, user_language_code, socket_room)
             print(2)
-            return Response({'detail': 'PROCESSING', 'status': '202'}, status=status.HTTP_202_ACCEPTED, data=init_data)
+            return Response({'detail': 'PROCESSING', 'status': '202', 'data': init_data}, status=status.HTTP_202_ACCEPTED)
            
 
         # Word is processing, return not found. send data via socket when finish

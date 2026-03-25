@@ -3,7 +3,7 @@ from redis.commands.json.path import Path
 
 class WordCacheManager:
     def __init__(self):
-        self.r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+        self.r = redis.Redis(host='redis', port=6379, decode_responses=True)
 
     def cache_word_init(self, language_code, word_val, user_language_code):
         key = f"word:{language_code}:{word_val}"
@@ -54,6 +54,8 @@ class WordCacheManager:
     
     def cache_word_add_translate(self, language_code, word_val, user_language_code):
         key = f"word:{language_code}:{word_val}"
+
+        print("exist key", self.r.exists(key))
         
         # 1. Lấy danh sách hiện tại
         current_translates = self.r.json().get(key, Path(".translates"))

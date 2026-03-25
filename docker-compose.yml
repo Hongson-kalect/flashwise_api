@@ -15,7 +15,7 @@ services:
       - POSTGRES_PASSWORD=hongson01 # <--- CHỖ CẦN SỬA 3: Password DB
 
   redis:
-    image: redis:7-alpine
+    image: redis/redis-stack-server:latest # redis:7-alpine
     container_name: django_redis
     # Không mở port, web và worker vẫn thấy nó qua tên "redis"
 

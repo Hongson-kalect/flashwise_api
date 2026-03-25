@@ -15,7 +15,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # 2. TỰ ĐỘNG JOIN ROOM TEST (Để debug nhanh)
         # Bạn có thể comment dòng này lại sau khi test xong logic Subscribe từ Client
-        self.debug_room = "test_room_123" 
+        self.debug_room = "test_room" 
         await self.channel_layer.group_add(
             self.debug_room,
             self.channel_name

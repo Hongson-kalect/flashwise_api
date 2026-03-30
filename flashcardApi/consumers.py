@@ -4,10 +4,13 @@ import json
 class ChatConsumer(AsyncWebsocketConsumer):
     
     async def disconnect(self, close_code):
-        await self.channel_layer.group_discard(
-            self.room_group,
-            self.channel_name
-        )
+        try:
+            await self.channel_layer.group_discard(
+                self.room_group,
+                self.channel_name
+            )
+        except:
+            pass
 
     async def connect(self):
         # Chỉ chấp nhận kết nối, chưa sub vào đâu cả
@@ -15,7 +18,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # 2. TỰ ĐỘNG JOIN ROOM TEST (Để debug nhanh)
         # Bạn có thể comment dòng này lại sau khi test xong logic Subscribe từ Client
-        self.debug_room = "test_room" 
+        self.debug_room = "test" 
         await self.channel_layer.group_add(
             self.debug_room,
             self.channel_name

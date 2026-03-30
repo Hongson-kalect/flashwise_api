@@ -38,6 +38,7 @@ async def render_translate(
 ):
     # Cấu trúc missing_content: { sense_id: {definition: "", usage:"", example:{id:"",id2:""}} }
     # Cấu trúc need_translation: { sense_id: language_code[] }
+    print('word', word_object)
     language_code = word_object.get("language_code", None)
     word = word_object.get("word", None)
 
@@ -45,7 +46,6 @@ async def render_translate(
     language_str = user_language_code
 
     if(isinstance(user_language_code, list)):
-        senses = json.loads(senses)
         language_str = ", ".join(user_language_code)
         mode = 'multiple'
 
@@ -53,7 +53,7 @@ async def render_translate(
     # ROLE: Translator
     # WORD: {word}
     # INPUT LANGUAGE: {language_code}
-    # TARGET LANGUAGE: {", ".join(user_language_code)}
+    # TARGET LANGUAGE: {language_str}
     # TRANSLATE CONTENTS:
     {json.dumps(senses, ensure_ascii=False)}
 

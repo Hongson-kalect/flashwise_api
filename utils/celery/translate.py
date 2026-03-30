@@ -22,7 +22,7 @@ User = get_user_model()
 
 @shared_task(bind=True, retry_backoff=True, max_retries=3)
 def task_create_translate(self, word, senses, user_languages):
-    print('vào chỗ lấy image')
+    print('vào bắt đầu dịch', user_languages)
     """Task xử lý ảnh: Check Context -> Fetch Pixabay -> Save Local -> Link
         word: {id, value, language_code}
     """
@@ -33,12 +33,13 @@ def task_create_translate(self, word, senses, user_languages):
     for sense_id, sense in senses.items():
         data = {}
         for key, content in sense.items():
-            if key == 'translates':
-                data['translates'] = {}
+            if key == 'examples':
+                data['examples'] = {}
                 for item in content:
-                    data["translates"][item.get('id')] = item.get('value')
+                    data["examples"][item.get('id')] = item.get('value')
 
-            data[key] = content.get('value')
+            elif key in ['definition', 'usage']:
+                data[key] = content
 
         contents[sense_id] = data
     try:

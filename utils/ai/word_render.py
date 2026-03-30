@@ -66,9 +66,9 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                 )
             )
             pointer = 0
-            senses=[]
             sense_objs=[]
             valid = False
+            word_cache = WordCacheManager()
             async for chunk in response:
                 if chunk.text:
                     ai_trunks.append(chunk.text)
@@ -86,58 +86,72 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                                 # Gửi socket thông báo từ không hợp lệ
                                 # Ngắt stream/vòng lặp tại đây
                                 break
+                            else:
+                                valid = True
+
+                                print("Word accepted", full_text)
                     
-                    else:
-                        
-                        sense_str, new_pointer = extract_json_fragment(full_text, "senses", pointer)
-                        
-                        if sense_str:
-                            pointer = new_pointer
-                            try:
-                                sense = json.loads(sense_str)
-                                id = str(uuidv7.generate_uuid7())
+                    if valid:
+                        while True:
 
-                                sense_word_obj = {
-                                    "id": id,
-                                    "word_id": str(word_instance.id),
-                                    "word_value":word_instance.value,
-                                    "language_code": language_code,
-                                    "created_by_id": user.id,
-                                }
+                            sense_str, new_pointer = extract_json_fragment(full_text, "senses", pointer)
+                            
+                            if sense_str:
+                                pointer = new_pointer
+                                try:
+                                    sense = json.loads(sense_str)
+                                    id = str(uuidv7.generate_uuid7())
 
-                                processed_contents = {
-                                    "id":id,
-                                    "metadata": {id: str(uuidv7.generate_uuid7()),**sense.get("metadata",{})},
-                                    "definition": {"id": str(uuidv7.generate_uuid7()), "value": sense.get("definition")},
-                                    "usage": {"id": str(uuidv7.generate_uuid7()), "value": sense.get("usage")},
-                                    "examples": [
-                                        {"id": str(uuidv7.generate_uuid7()), "value": ex} 
-                                        for ex in sense.get("examples", [])
-                                    ]
-                                }
-                                
-                                sense["id"] = id
-                                sense_objs.append(processed_contents)
-                                # sense_objs.append(sense_obj)
-                                sense_index += 1
+                                    sense_word_obj = {
+                                        "id": id,
+                                        "word_id": str(word_instance.id),
+                                        "word_value":word_instance.value,
+                                        "language_code": language_code,
+                                        "created_by_id": user.id,
+                                    }
 
-                                WordCacheManager.cache_word_add_sense(language_code, word_instance.value, id, processed_contents)
-                                await socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": processed_contents})
-                                
-                                # Kích hoạt lấy ảnh 1 ngay lập tức (không đợi stream xong)
-                                img_desc = processed_contents.get('metadata',{}).get('image_keywords',None)
-                                if img_desc:
-                                    task_fetch_image_single.delay(sense_word_obj, img_desc, socket_room, temp_index=0)
-                            except Exception as e: 
-                                pass
+                                    processed_contents = {
+                                        "id":id,
+                                        "metadata": {id: str(uuidv7.generate_uuid7()),**sense.get("metadata",{})},
+                                        "definition": {"id": str(uuidv7.generate_uuid7()), "value": sense.get("definition")},
+                                        "usage": {"id": str(uuidv7.generate_uuid7()), "value": sense.get("usage")},
+                                        "examples": [
+                                            {"id": str(uuidv7.generate_uuid7()), "value": ex} 
+                                            for ex in sense.get("examples", [])
+                                        ]
+                                    }
+                                    
+                                    sense["id"] = id
+                                    sense_objs.append(processed_contents)
+                                    # sense_objs.append(sense_obj)
+                                    sense_index += 1
+
+                                    word_cache.cache_word_add_sense(language_code, word_instance.value, id, processed_contents)
+                                    await socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": processed_contents})
+                                    
+                                    # Kích hoạt lấy ảnh 1 ngay lập tức (không đợi stream xong)
+                                    img_desc = processed_contents.get('metadata',{}).get('image_keywords',None)
+                                    print('img_desc', img_desc)
+                                    if img_desc:
+                                        print('Lấy ảnh, máy cty pixabay hoạt động hơi lỏ nên tạm tắt')
+                                        # task_fetch_image_single.delay(sense_word_obj, img_desc, socket_room, temp_index=0)
+                                except Exception as e: 
+                                    pass
+                            else:
+                                break
+
+            print('is valied', valid)
             
         full_response_text = "".join(ai_trunks)
+        print('full_response_text', full_response_text)
         data = json.loads(full_response_text)
 
-        word_data = WordCacheManager.cache_word_get_data(language_code, word_instance.value)
+        word_data = word_cache.cache_word_get_data(language_code, word_instance.value)
         redis_translates= word_data['translates']
         redis_senses = word_data['senses']
         redis_word = word_data['word']
+
+        print('get_data', redis_word, redis_senses, redis_translates)
 
         try:
             task_create_translate.delay(redis_word,redis_senses, redis_translates)
@@ -145,7 +159,7 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
             print(f"Error creating translate: {e}")
 
         # word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, data, socket_room)
-        word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, senses, socket_room)
+        word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, sense_objs, socket_room)
 
         try:
             # ✅ Dùng DjangoJSONEncoder để convert UUID

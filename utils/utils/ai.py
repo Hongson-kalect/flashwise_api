@@ -91,6 +91,7 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
             senses=[]
             sense_objs=[]
             valid = False
+            word_cache = WordCacheManager()
             async for chunk in response:
                 if chunk.text:
                     ai_trunks.append(chunk.text)
@@ -143,7 +144,7 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                                 # sense_objs.append(sense_obj)
                                 sense_index += 1
 
-                                WordCacheManager.cache_word_add_sense(language_code, word_instance.value, id, processed_contents)
+                                word_cache.cache_word_add_sense(language_code, word_instance.value, id, processed_contents)
                                 await socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": processed_contents})
                                 
                                 # Kích hoạt lấy ảnh 1 ngay lập tức (không đợi stream xong)
@@ -156,7 +157,7 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
         full_response_text = "".join(ai_trunks)
         data = json.loads(full_response_text)
 
-        word_data = WordCacheManager.cache_word_get_data(language_code, word_instance.value)
+        word_data = word_cache.cache_word_get_data(language_code, word_instance.value)
         redis_translates= word_data['translates']
         redis_senses = word_data['senses']
         redis_word = word_data['word']
@@ -168,7 +169,7 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
 
 
         # word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, data, socket_room)
-        word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, senses, socket_room)
+        word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, sense_objs, socket_room)
 
         try:
             # ✅ Dùng DjangoJSONEncoder để convert UUID

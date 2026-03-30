@@ -7,11 +7,12 @@ import threading
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
-from rest_framework.permissions import IsAuthenticatedOrReadOnly
+from rest_framework.permissions import IsAuthenticatedOrReadOnly, AllowAny
 from ai.models.AISense import AISense
 from ai.models.AISenseContent import AISenseContent
+from ai.models.AISenseMetadata import AISenseMetadata
 from ai.models.TranslateLog import TranslateLog
-from core.models import Defination, Example, ExampleTranslate, Translate, WordForm
+from core.models import Defination, Example, ExampleTranslate, Translate, WordForm, ImageLibrary, ImageContext, ImageLibraryContext
 from ai.models.AIWord import AIWord
 from django.db.models import Prefetch, Window, F, Q
 from django.db.models.functions import RowNumber
@@ -90,7 +91,8 @@ def detect_missing_content(senses, contents, language_code, user_language_code):
 class AIWordViewSet(SoftDeleteViewSet):
     queryset = AIWord.objects.all()
     serializer_class = AIWordSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    # permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [AllowAny]
 
     @action(detail=False, methods=['get'], url_path='get-word')
     def get_word(self, request, pk=None, *args, **kwargs):
@@ -142,8 +144,9 @@ class AIWordViewSet(SoftDeleteViewSet):
             created, init_data = cache_manager.cache_word_init(language_code, word, user_language_code)
 
             if not created:
+                print("Word is processing")
                 cache_manager.cache_word_add_translate(language_code, word, user_language_code)
-                return Response({'detail': 'PROCESSING', 'status': '202'}, status=status.HTTP_202_ACCEPTED, data=init_data)
+                return Response({'detail': 'PROCESSING', 'status': '202', 'data':init_data}, status=status.HTTP_202_ACCEPTED)
 
             word_instance = AIWord.objects.create(
             value=word,
@@ -266,6 +269,31 @@ class AIWordViewSet(SoftDeleteViewSet):
         value = request.query_params.get('value')
         lang = request.query_params.get('lang')
         user_lang = request.query_params.get('user_lang')
+
+    @action(detail=False, methods=['delete'], url_path='clear')
+    def clear(self, request):
+        try:
+            # Xoá toàn bộ dữ liệu trên các bảng chỉ định
+            # Lưu ý: .all().delete() sẽ kích hoạt các tín hiệu (signals)
+            # Nếu muốn xoá cực nhanh và không cần signals, dùng ._raw_delete()
+            AISenseMetadata.objects.all().delete()
+            ImageLibraryContext.objects.all().delete()
+            ImageLibrary.objects.all().delete()
+            ImageContext.objects.all().delete()
+            AISenseContent.objects.all().delete()
+            AISense.objects.all().delete()
+            AIWord.objects.all().delete()
+
+            return Response(
+                {"message": "Đã xoá sạch dữ liệu trên các bảng được chỉ định!"}, 
+                status=status.HTTP_200_OK
+            )
+        except Exception as e:
+            return Response(
+                {"error": str(e)}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
     def get_queryset(self):
         # Nếu muốn lọc theo người dùng hoặc trạng thái
         queryset = super().get_queryset()

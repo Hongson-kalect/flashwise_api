@@ -11,8 +11,18 @@ services:
       - ./postgres_data:/var/lib/postgresql/data
     environment:
       - POSTGRES_DB=flashwise # <--- CHỖ CẦN SỬA 1: Tên Database
-      - POSTGRES_USER=posgres # <--- CHỖ CẦN SỬA 2: User DB
+      - POSTGRES_USER=postgres # <--- CHỖ CẦN SỬA 2: User DB
       - POSTGRES_PASSWORD=hongson01 # <--- CHỖ CẦN SỬA 3: Password DB
+  
+  pgadmin:
+    image: dpage/pgadmin4
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      ["5050:80"]
+    depends_on:
+      - db
 
   redis:
     image: redis/redis-stack-server:latest # redis:7-alpine

@@ -163,7 +163,7 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'flashwise',
-        'USER': 'posgres',
+        'USER': 'postgres',
         'PASSWORD': 'hongson01',
         'HOST': 'db',
         'PORT': '5432',

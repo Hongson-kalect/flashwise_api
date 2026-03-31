@@ -36,7 +36,7 @@ def task_create_translate(self, word, senses, user_languages):
             if key == 'examples':
                 data['examples'] = {}
                 for item in content:
-                    data["examples"][item.get('id')] = item.get('value')
+                    data["examples"][item.get('id')] = item
 
             elif key in ['definition', 'usage']:
                 data[key] = content

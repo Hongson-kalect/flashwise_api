@@ -276,6 +276,7 @@ class AIWordViewSet(SoftDeleteViewSet):
             # Xoá toàn bộ dữ liệu trên các bảng chỉ định
             # Lưu ý: .all().delete() sẽ kích hoạt các tín hiệu (signals)
             # Nếu muốn xoá cực nhanh và không cần signals, dùng ._raw_delete()
+            cache = WordCacheManager()
             AISenseMetadata.objects.all().delete()
             ImageLibraryContext.objects.all().delete()
             ImageLibrary.objects.all().delete()
@@ -283,6 +284,8 @@ class AIWordViewSet(SoftDeleteViewSet):
             AISenseContent.objects.all().delete()
             AISense.objects.all().delete()
             AIWord.objects.all().delete()
+
+            cache.cache_word_clear_all()
 
             return Response(
                 {"message": "Đã xoá sạch dữ liệu trên các bảng được chỉ định!"}, 

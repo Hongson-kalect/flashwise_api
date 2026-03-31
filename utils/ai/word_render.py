@@ -112,11 +112,11 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
 
                                     processed_contents = {
                                         "id":id,
-                                        "metadata": {id: str(uuidv7.generate_uuid7()),**sense.get("metadata",{})},
-                                        "definition": {"id": str(uuidv7.generate_uuid7()), "value": sense.get("definition")},
-                                        "usage": {"id": str(uuidv7.generate_uuid7()), "value": sense.get("usage")},
+                                        "metadata": {"id": str(uuidv7.generate_uuid7()),**sense.get("metadata",{})},
+                                        "definition": {"id": str(uuidv7.generate_uuid7()), **sense.get("definition")},
+                                        "usage": {"id": str(uuidv7.generate_uuid7()), **sense.get("usage")},
                                         "examples": [
-                                            {"id": str(uuidv7.generate_uuid7()), "value": ex} 
+                                            {"id": str(uuidv7.generate_uuid7()), **ex} 
                                             for ex in sense.get("examples", [])
                                         ]
                                     }
@@ -191,7 +191,7 @@ def saveword(user, word_instance, language_code, user_language_code, entries, so
     # entries = data.get("entries", [])
     contexts: list[SenseContext] = []
 
-    print('start save word')
+    print('start save word', entries)
 
     with transaction.atomic():
         try:
@@ -225,25 +225,25 @@ def saveword(user, word_instance, language_code, user_language_code, entries, so
             ruby_gen = get_ruby_generator()
             all_contents_to_create = []
 
-            def prepare_content_obj(val, lang= language_code):
+            def prepare_content_obj(val, lang=language_code):
                 if not val: return None
 
                 if isinstance(val, dict):
-                    text = val.get("text")
+                    value = val.get("value")
                     id = val.get("id")
                 else:
-                    text = val.get("value")
+                    value = val.get("value")
                     id = uuidv7.generate_uuid7()
-                if not text: return None
+                if not value: return None
 
                 ruby = None
                 if lang == "ja" and isinstance(val, dict):
-                    try: ruby = ruby_gen.generate(text)
+                    try: ruby = ruby_gen.generate(value)
                     except: pass
 
                 return AISenseContent(
                     id=id,
-                    value=text,
+                    value=value,
                     reading=val.get("reading") if isinstance(val, dict) else None,
                     roman=val.get("roman") if isinstance(val, dict) else None,
                     ruby=ruby,

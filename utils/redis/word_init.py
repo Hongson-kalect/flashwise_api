@@ -75,3 +75,24 @@ class WordCacheManager:
         except Exception as e:
             print(f"Redis Get Error: {e}")
             return None
+
+    def cache_word_clear_specific(self, language_code, word_val):
+        """1. Xóa sạch cache của một từ cụ thể dựa trên word và language."""
+        key = f"word:{language_code}:{word_val}"
+        try:
+            # Lệnh delete trả về số lượng key đã xóa (1 nếu thành công, 0 nếu không tìm thấy)
+            result = self.r.delete(key)
+            return result > 0
+        except Exception as e:
+            print(f"Redis Delete Error: {e}")
+            return False
+
+    def cache_word_clear_all(self):
+        """2. Xóa sạch sành sanh toàn bộ dữ liệu trong database hiện tại."""
+        try:
+            # flushdb() chỉ xóa các key trong DB mà bạn đang kết nối (thường là DB 0)
+            # Nếu muốn xóa mọi DB trên server thì dùng flushall()
+            return self.r.flushdb()
+        except Exception as e:
+            print(f"Redis Flush Error: {e}")
+            return False

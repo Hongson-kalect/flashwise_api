@@ -1,20 +1,30 @@
-def render_translate_schema(word, sense_object: dict, user_language_code: list):
+def render_translate_schema(word, word_lang, sense_object: dict, user_language_code:list):
     properties = {}
     required = []
+    base_lang = ['en','zh','es','fr','ar','ja','ko','de','pt','vi'] # Sau còn cần kiểm tra xem đã dịch những ngôn ngữ nào nữa...
 
-    def render_obj(type):
+    # B1: Gộp 2 list và chuyển thành set để lọc trùng
+    merged_set = set(user_language_code + base_lang)
+
+    # B2: Loại bỏ string (dùng discard để không bị lỗi nếu string không tồn tại)
+    merged_set.discard(word_lang)
+
+    # B3: Chuyển ngược lại thành list (nếu cần)
+    translate_lang = list(merged_set)
+
+    def render_obj(key, type="STRING"):
         # Tạo properties cho từng ngôn ngữ
         lang_props = {
             lang: {
-                "type": "STRING"
-            } for lang in user_language_code
+                "type": type
+            } if type == "STRING" else {"type": "ARRAY", "items": {"type": 'STRING'}} for lang in translate_lang
         }
         # Trả về cấu trúc đúng của JSON Schema cho một Object
         return {
             "type": "OBJECT",
             "properties": lang_props,
-            "required": user_language_code,
-            "description": f"Translate {type} to {', '.join(user_language_code)}"
+            "required": translate_lang,
+            # "description": f"Translate {key} to {', '.join(translate_lang)}"
         }
 
 
@@ -54,8 +64,8 @@ def render_translate_schema(word, sense_object: dict, user_language_code: list):
             # }
 
         # Tạo object chúa các translation
-        content_properties["translations"] = render_obj("translations")
-        content_required.append(f" word {word} in this sense")
+        content_properties["translations"] = render_obj("this word", "ARRAY")
+        content_required.append("translations")
 
         properties[sense_id] = {
             "type": "OBJECT",

@@ -1,4 +1,5 @@
 import json
+import asyncio
 from google import genai
 from google.genai import types
 from flashcardApi import settings
@@ -11,6 +12,94 @@ from utils.utils.socket import socket_message
 from asgiref.sync import sync_to_async
 
 from utils.ai.schema import render_translate_schema
+
+def get_minified_schema(sense_ids, langs):
+    lang_props = {l: {"type": "string"} for l in langs}
+    lang_array_props = {l: {"type": "array", "items": {"type": "string"}} for l in langs}
+    
+    sense_props = {}
+    for s_id in sense_ids:
+        sense_props[s_id] = {
+            "type": "object",
+            "properties": {
+                "d": {"type": "object", "properties": lang_props, "required": langs}, # definition
+                "u": {"type": "object", "properties": lang_props, "required": langs}, # usage
+                "tr": {"type": "object", "properties": lang_array_props, "required": langs} # translations
+            },
+            "required": ["d", "u", "tr"]
+        }
+    
+    return {
+        "type": "object",
+        "properties": sense_props,
+        "required": list(sense_props.keys())
+    }
+
+# 2. Hàm chia nhóm Senses
+def chunk_dict(data, size=3):
+    it = iter(data.items())
+    for i in range(0, len(data), size):
+        yield {k: v for k, v in [next(it) for _ in range(min(size, len(data) - i))]}
+
+async def process_translation_chunk(chunk, word, language_code, language_str, translate_lang, mapping_table, socket_room):
+    try:
+        # 1. Khởi tạo Schema và Client cho riêng Task này
+        sense_ids = list(chunk.keys())
+        schema = render_translate_schema(word, language_code, chunk, translate_lang)
+
+        print('schema', schema)
+        
+        prompt = f"""
+        # ROLE: Translator
+        # WORD: {word} | FROM: {language_code} | TO: {language_str}
+        # CONTENTS: {json.dumps(chunk, ensure_ascii=False)}
+        # TASK: Translate into {language_str}. Output MINIFIED JSON only.
+        """
+
+        local_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        async with local_client.aio as client:
+            response = await client.models.generate_content(
+                model="gemini-2.5-flash-lite", # Đã cập nhật bản lite mới nhất 2026
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    max_output_tokens=8192,
+                    response_mime_type="application/json",
+                    response_schema=schema
+                )
+            )
+        
+        data = json.loads(response.text.strip())
+        
+        # 2. Hồi nguyên UUID (Logic mapping của bạn)
+        final_chunk_data = {}
+        for s_key, s_trans in data.items():
+            original_s_uuid = mapping_table.get(s_key)
+            if not original_s_uuid: continue
+            
+            original_examples = {}
+            for e_key, e_trans in s_trans.get('examples', {}).items():
+                original_e_uuid = mapping_table.get(e_key)
+                if original_e_uuid:
+                    original_examples[original_e_uuid] = e_trans
+            
+            final_chunk_data[original_s_uuid] = s_trans
+            final_chunk_data[original_s_uuid]['examples'] = original_examples
+
+        # 3. BẮN SOCKET NGAY LẬP TỨC (Xong cái nào bắn cái đó)
+        await socket_message(
+            socket_room,
+            {
+                "type": "TRANSLATE_SENSE_SUCCESS",
+                "payload": final_chunk_data # Trả về data đã hồi nguyên UUID
+            },
+            True
+        )
+        return final_chunk_data
+
+    except Exception as e:
+        print(f"Error in chunk {list(chunk.keys())}: {e}")
+        await socket_message(socket_room, {"type": "TRANSLATE_SENSE_ERROR", "payload": str(e)})
+        return None # Hoặc trả về lỗi để gather xử lý
 
 def patch_content_id(data, target_id, new_id, lang_dest):
     """
@@ -37,6 +126,8 @@ async def render_translate(
     user_language_code,
 ):
     print('word', word_object,senses)
+    socket_room = 'test'
+
     language_code = word_object.get("language_code", None)
     word = word_object.get("value", None)
 
@@ -60,103 +151,47 @@ async def render_translate(
             "examples": temp_examples
         }
 
+    base_lang = ['en','zh','es','fr','ar','ja','ko','de','pt','vi'] # Sau còn cần kiểm tra xem đã dịch những ngôn ngữ nào nữa...
+
+    # B1: Gộp 2 list và chuyển thành set để lọc trùng
+    merged_set = set(user_language_code + base_lang)
+
+    # B2: Loại bỏ string (dùng discard để không bị lỗi nếu string không tồn tại)
+    merged_set.discard(language_code)
+
+    # B3: Chuyển ngược lại thành list (nếu cần)
+    translate_lang = list(merged_set)
+
     language_str = user_language_code
 
     if(isinstance(user_language_code, list)):
-        language_str = ", ".join(user_language_code)
+        language_str = ", ".join(translate_lang)
         mode = 'multiple'
 
-    prompt = f"""
-    # ROLE: Translator
-    # WORD: {word}
-    # INPUT LANGUAGE: {language_code}
-    # TARGET LANGUAGE: {language_str}
-    # TRANSLATE CONTENTS:
-    {json.dumps(temp_senses, ensure_ascii=False)}
-
-    # TASK:
-    Translate the dictionary contents from {language_code} to {language_str}.
-
-    # OUTPUT RULE:
-    - Output JSON only
-    - Only return "translate"
-    - DO NOT repeat original text
-    - Use natural language that is appropriate to the context (avoid translating word for word).
-    """
-
-    # Giới hạn tiên trình dịch Khi vào bước này thì sẽ check translate status
-    # Get or create with processing, word + lang for lang in list if is_list 
-    # Hàm này chỉ dịch các sense nguyên bản, không phải patch, nên nó sẽ chỉ dịch 1 lần cho mỗi word / ngôn ngữ
-    # Failed or not Exit -> Add translate process.
-    # Processing -> Exit
-
-    schema = render_translate_schema(word, language_code, temp_senses, user_language_code)
-
-    print('schema', schema)
-
-    # return
-
-    try:
-        local_client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        async with local_client.aio as client:
-            response = await client.models.generate_content(
-                model="gemini-2.5-flash-lite",
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    max_output_tokens=8192, # Tăng từ 2048 lên 8192
-                    response_mime_type="application/json",
-                    response_schema=schema
-                )
+    # Tạo danh sách các Task
+    tasks = []
+    for chunk in chunk_dict(temp_senses, size=3):
+        tasks.append(
+            process_translation_chunk(
+                chunk, word, language_code, language_str, 
+                translate_lang, mapping_table, socket_room
             )
-        clean_json = response.text.strip()
-        data = json.loads(clean_json)
-
-        print('clean_json',clean_json)
-
-        final_data = {}
-        for s_key, s_trans in data.items():
-            original_s_uuid = mapping_table.get(s_key)
-            if not original_s_uuid: continue
-            
-            # Khôi phục Examples
-            original_examples = {}
-            for e_key, e_trans in s_trans.get('examples', {}).items():
-                original_e_uuid = mapping_table.get(e_key)
-                if original_e_uuid:
-                    original_examples[original_e_uuid] = e_trans
-            
-            # Ghi đè lại data với UUID thật
-            final_data[original_s_uuid] = s_trans
-            final_data[original_s_uuid]['examples'] = original_examples
-
-        # Trả về final_data cho Socket/DB
-        print("Data đã hồi nguyên UUID:", final_data)
-
-        socket_room = "test" # mode = multiple => word+language; single = word+language+language_str
-
-        await socket_message(
-            socket_room,
-            {
-                "type": "TRANSLATE_SENSE_SUCCESS",
-                "payload": data
-            },
-            True
         )
 
-    except Exception as e:
-        try:
-            def update_failed_status():
-                print('update_failed_status',e)
-                pass
-                # cập nhật lại instance
-                # translate_instance.status = 'FAILED'
-                # translate_instance.save()
-            
-            await sync_to_async(update_failed_status)()
-            await socket_message(socket_room, {"type": "TRANSLATE_SENSE_ERROR", "payload": str(e)})
-        except Exception as socket_error:
-            # If socket message fails, just log it
-            print('render_translate error')
+    # Vít ga song song
+    # Kết quả trả về sẽ là một list các final_chunk_data
+    results = await asyncio.gather(*tasks)
+
+    # Lọc bỏ các kết quả None (do lỗi) và gộp lại nếu cần lưu DB tổng
+    full_translated_data = {}
+    for r in results:
+        print('r',r)
+        if r:
+            full_translated_data.update(r)
+
+    # Báo cáo hoàn tất toàn bộ tiến trình
+    await socket_message(socket_room, {"type": "TRANSLATE_ALL_COMPLETED"})
+    return full_translated_data
 
 
 def save_translate(user, translate_instance, user_language_code, sense_instances, data):

@@ -92,7 +92,7 @@ class WordCacheManager:
         try:
             # flushdb() chỉ xóa các key trong DB mà bạn đang kết nối (thường là DB 0)
             # Nếu muốn xóa mọi DB trên server thì dùng flushall()
-            return self.r.flushdb()
+            return self.r.flushall()
         except Exception as e:
             print(f"Redis Flush Error: {e}")
             return False

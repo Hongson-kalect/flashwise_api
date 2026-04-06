@@ -19,10 +19,9 @@ class AISenseMetadata(BaseModel):
     pos = models.CharField(max_length=50, null=True, blank=True) # Part of Speech
     ipas = models.JSONField(default=list) # {label, audio, value, reading, roman, ruby}
     
-    is_valid = models.BooleanField(default=False)
     is_offensive = models.BooleanField(default=False)
     register = ArrayField(default=list, base_field=models.CharField(max_length=50))
-    image_desc = models.TextField(null=True, blank=True)
+    image_keywords = models.JSONField(null=True, blank=True, default=list)
     image_link = models.URLField(max_length=500, null=True, blank=True)
     image_metadata = models.JSONField(default=dict, null=True, blank=True)  # {width, height, size, format, color_mode, etc.}
 

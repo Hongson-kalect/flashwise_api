@@ -35,6 +35,8 @@ def get_schema(mode):
 
 async def ai_create_new_word(user, word_instance, language_code, user_language_code, socket_room):
     print('create new word')
+    cache_manager = WordCacheManager()
+
     # word_instance = await sync_to_async(AIWord.objects.get)(id=word_id)
     LATIN_LANGS = ['vi', 'en', 'es', 'fr', 'de', 'it', 'pt', 'nl', 'pl', 'sv', 'no', 'da', 'fi', 'tr', 'cs', 'hu', 'id']
     SIMPLE_NON_LATIN = ['zh', 'ko', 'ru', 'el', 'ar', 'he', 'hi', 'th']
@@ -97,6 +99,8 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                             sense_str, new_pointer = extract_json_fragment(full_text, "senses", pointer)
                             
                             if sense_str:
+
+                                print("Found sense", sense_str)
                                 pointer = new_pointer
                                 try:
                                     sense = json.loads(sense_str)
@@ -112,6 +116,8 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
 
                                     processed_contents = {
                                         "id":id,
+                                        "collocations": {"id": str(uuidv7.generate_uuid7()),"value": sense.get("collocations",[])},
+                                        "idioms": {"id": str(uuidv7.generate_uuid7()),"value": sense.get("idioms",[])},
                                         "metadata": {"id": str(uuidv7.generate_uuid7()),**sense.get("metadata",{})},
                                         "definition": {"id": str(uuidv7.generate_uuid7()), **sense.get("definition")},
                                         "usage": {"id": str(uuidv7.generate_uuid7()), **sense.get("usage")},
@@ -136,30 +142,26 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                                         print('Lấy ảnh, máy cty pixabay hoạt động hơi lỏ nên tạm tắt')
                                         # task_fetch_image_single.delay(sense_word_obj, img_desc, socket_room, temp_index=0)
                                 except Exception as e: 
+                                    print('error',e)
                                     pass
                             else:
                                 break
-
-            print('is valied', valid)
             
         full_response_text = "".join(ai_trunks)
-        print('full_response_text', full_response_text)
-        data = json.loads(full_response_text)
+        print('full_response_text', sense_objs)
 
         word_data = word_cache.cache_word_get_data(language_code, word_instance.value)
         redis_translates= word_data['translates']
         redis_senses = word_data['senses']
         redis_word = word_data['word']
 
-        print('get_data', redis_word, redis_senses, redis_translates)
+        # word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, data, socket_room)
+        word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, sense_objs, socket_room)
 
         try:
             task_create_translate.delay(redis_word,redis_senses, redis_translates)
         except Exception as e:
             print(f"Error creating translate: {e}")
-
-        # word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, data, socket_room)
-        word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, sense_objs, socket_room)
 
         try:
             # ✅ Dùng DjangoJSONEncoder để convert UUID
@@ -189,159 +191,169 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
 # @sync_to_async
 def saveword(user, word_instance, language_code, user_language_code, entries, socket_room):
     # entries = data.get("entries", [])
+    ruby_gen = get_ruby_generator()
     contexts: list[SenseContext] = []
+    cache_manager = WordCacheManager()
+    
+    def prepare_content_obj(val, lang=language_code, type=None):
+        if not val: return None
 
-    print('start save word', entries)
+        if isinstance(val, dict):
+            value = val.get("value")
+            id = val.get("id")
+        else:
+            value = val
+            id = uuidv7.generate_uuid7()
+        if not value: return None
 
-    with transaction.atomic():
-        try:
-            # =========================
-            # PHASE 1: METADATA
-            # =========================
-            model_fields = {f.name for f in AISenseMetadata._meta.concrete_fields}
-            metadata_to_create = []
+        ruby = None
+        if lang == "ja" and isinstance(val, dict):
+            try: ruby = ruby_gen.generate(value)
+            except: pass
 
-            for sense_raw in entries:
-                metadata_raw = sense_raw.get("metadata", {})
+        return AISenseContent(
+            id=id,
+            value=value,
+            reading=val.get("reading") if isinstance(val, dict) else None,
+            roman=val.get("roman") if isinstance(val, dict) else None,
+            ruby=ruby,
+            language_code=lang,
+            created_by=user,
+            type=type,
+            # TYPE VÀ PARENT ĐÃ BỎ THEO YÊU CẦU
+        )
 
-                clean_data = {k: v for k, v in metadata_raw.items() if k in model_fields}
-                metadata = AISenseMetadata(**clean_data, created_by=user)
-                
-                metadata_to_create.append(metadata)
-                # Lưu trữ sense_raw để xử lý content ở phase sau
-                contexts.append(SenseContext(raw=sense_raw, pos=metadata_raw.get("pos", None), metadata=metadata, id=sense_raw.get("id")))
 
-            if not contexts:
-                print('no contexts', contexts)
-                word_instance.status = "REJECTED"
-                word_instance.save()
-                return
+    try:
+        # =========================
+        # PHASE 1: METADATA
+        # =========================
+        model_fields = {f.name for f in AISenseMetadata._meta.concrete_fields}
+        metadata_to_create = []
 
-            AISenseMetadata.objects.bulk_create(metadata_to_create)
+        for sense_raw in entries:
+            metadata_raw = sense_raw.get("metadata", {})
 
-            # =========================
-            # PHASE 2: GENERATE ALL CONTENTS (FLAT LIST)
-            # =========================
-            ruby_gen = get_ruby_generator()
-            all_contents_to_create = []
+            clean_data = {k: v for k, v in metadata_raw.items() if k in model_fields}
+            metadata = AISenseMetadata(**clean_data, created_by=user)
+            
+            metadata_to_create.append(metadata)
+            # Lưu trữ sense_raw để xử lý content ở phase sau
+            contexts.append(SenseContext(raw=sense_raw, pos=metadata_raw.get("pos", None), metadata=metadata, id=sense_raw.get("id")))
 
-            def prepare_content_obj(val, lang=language_code):
-                if not val: return None
+        if not contexts:
+            print('no contexts', contexts)
+            word_instance.status = "REJECTED"
+            word_instance.save()
+            return
 
-                if isinstance(val, dict):
-                    value = val.get("value")
-                    id = val.get("id")
-                else:
-                    value = val.get("value")
-                    id = uuidv7.generate_uuid7()
-                if not value: return None
+        # =========================
+        # PHASE 2: GENERATE ALL CONTENTS (FLAT LIST)
+        # =========================
+        all_contents_to_create = []
 
-                ruby = None
-                if lang == "ja" and isinstance(val, dict):
-                    try: ruby = ruby_gen.generate(value)
-                    except: pass
 
-                return AISenseContent(
-                    id=id,
-                    value=value,
-                    reading=val.get("reading") if isinstance(val, dict) else None,
-                    roman=val.get("roman") if isinstance(val, dict) else None,
-                    ruby=ruby,
-                    language_code=lang,
+
+        # Duyệt qua các context để khởi tạo object Content (chưa có ID)
+        for ctx in contexts:
+            s = ctx.raw
+            
+            # 1. Định nghĩa & Sử dụng
+            ctx.obj_map["def"] = prepare_content_obj(s.get("definition"), type="definition")
+            ctx.obj_map["usage"] = prepare_content_obj(s.get("usage"), type="usage")
+            ctx.obj_map["collocations"] = prepare_content_obj(s.get("collocations"),type="collocations")
+            ctx.obj_map["idioms"] = prepare_content_obj(s.get("idioms"), type = "idioms")
+
+
+            ctx.example_count = len(s.get("examples", []))
+            # 2. Ví dụ (Mỗi ví dụ là một cặp Orig-Trans)
+            for index, ex_raw in enumerate(s.get("examples", []), start=1):
+                ctx.obj_map[f'translate-{index}'] = prepare_content_obj(ex_raw)
+
+            # Gom vào list tổng để bulk create
+            all_contents_to_create.extend([obj for obj in ctx.obj_map.values() if obj])
+        # Bulk create để lấy ID từ database cho toàn bộ content
+        
+        # =========================
+        # PHASE 3: BUILD HIERARCHICAL JSON & AISense
+        # =========================
+        senses_to_create = []
+
+        for ctx in contexts:
+            # Helper để lấy ID an toàn
+            get_id = lambda key: str(ctx.obj_map[key].id) if ctx.obj_map.get(key) else None
+
+            # Xây dựng cấu trúc JSON lồng nhau (Nested Structure)
+            # Đây là nơi quy định quan hệ thay vì dùng Parent_id
+            sense_structure = {
+                "definition": {
+                    language_code: get_id("def"),
+                },
+                "usage": {
+                    language_code: get_id("usage"),
+                },
+                "examples": {
+                    get_id('translate-'+str(index)):{
+                        language_code: get_id('translate-'+str(index)),
+                    }
+                    for index in range(1, ctx.example_count + 1)
+                },
+                "collocations": get_id("colocations"),
+                "idioms": get_id("idioms"),
+            }
+
+            senses_to_create.append(
+                AISense(
+                    word=word_instance,
+                    language_code=language_code,
+                    word_value=word_instance.value,
+                    metadata=ctx.metadata,
+                    contents=sense_structure, # JSON Structure mới
+                    is_frozen=True,
                     created_by=user,
-                    # TYPE VÀ PARENT ĐÃ BỎ THEO YÊU CẦU
+                    id=ctx.id
                 )
+            )
 
-            # Duyệt qua các context để khởi tạo object Content (chưa có ID)
-            for ctx in contexts:
-                s = ctx.raw
-                
-                # 1. Định nghĩa & Sử dụng
-                ctx.obj_map["def"] = prepare_content_obj(s.get("definition"))
-                ctx.obj_map["usage"] = prepare_content_obj(s.get("usage"))
-
-
-                ctx.example_count = len(s.get("examples", []))
-                # 2. Ví dụ (Mỗi ví dụ là một cặp Orig-Trans)
-                for index, ex_raw in enumerate(s.get("examples", []), start=1):
-                    ctx.obj_map[f'translate-{index}'] = prepare_content_obj(ex_raw)
-
-                # Gom vào list tổng để bulk create
-                all_contents_to_create.extend([obj for obj in ctx.obj_map.values() if obj])
-            # Bulk create để lấy ID từ database cho toàn bộ content
+        word_instance.status = "COMPLETED"
+        word_instance.is_active = True
+        with transaction.atomic():
+            AISenseMetadata.objects.bulk_create(metadata_to_create)
             AISenseContent.objects.bulk_create(all_contents_to_create)
-
-            # =========================
-            # PHASE 3: BUILD HIERARCHICAL JSON & AISense
-            # =========================
-            senses_to_create = []
-
-            for ctx in contexts:
-                # Helper để lấy ID an toàn
-                get_id = lambda key: str(ctx.obj_map[key].id) if ctx.obj_map.get(key) else None
-
-                # Xây dựng cấu trúc JSON lồng nhau (Nested Structure)
-                # Đây là nơi quy định quan hệ thay vì dùng Parent_id
-                sense_structure = {
-                    "definition": {
-                        language_code: get_id("def"),
-                    },
-                    "usage": {
-                        language_code: get_id("usage"),
-                    },
-                    "examples": [
-                        {
-                            language_code: get_id('translate-'+str(index)),
-                        }
-                        for index in range(1, ctx.example_count + 1)
-                    ]
-                }
-
-                senses_to_create.append(
-                    AISense(
-                        word=word_instance,
-                        language_code=language_code,
-                        word_value=word_instance.value,
-                        metadata=ctx.metadata,
-                        contents=sense_structure, # JSON Structure mới
-                        is_frozen=True,
-                        created_by=user,
-                        id=ctx.id
-                    )
-                )
-
             AISense.objects.bulk_create(
                 senses_to_create, update_conflicts=True,
                 unique_fields=['id'],  # Hoặc field nào định danh duy nhất
                 update_fields=['contents', 'metadata']
                 )
-
-            # =========================
-            # FINAL PHASE: REFRESH & SERIALIZE
-            # =========================
-            word_instance.status = "COMPLETED"
-            word_instance.is_active = True
             word_instance.save()
 
-            word_instance.refresh_from_db()
-            senses = word_instance.senses.select_related('metadata').all()
-            
-            # Collect all IDs from JSON to hydrate
-            all_content_ids = []
-            for s in senses:
-                # Hàm này bóc tách toàn bộ UUID có trong JSON contents
-                all_content_ids.extend(flatten_ids(s.contents))
-            
-            contents_queryset = AISenseContent.objects.filter(id__in=all_content_ids)
-            
-            serialized_senses = serialize_senses(senses, contents_queryset, language_code, user_language_code)
-            word_instance.processed_entries = serialize_entries(serialized_senses)
-            
-            return AIWordSerializer(word_instance).data
+        cache_manager.cache_word_clear_specific(language_code, word_instance.value)
 
-        except Exception as e:
-            word_instance.status = "FAILED"
-            word_instance.save()
-            raise
+        # =========================
+        # FINAL PHASE: REFRESH & SERIALIZE
+        # =========================
+
+        word_instance.refresh_from_db()
+        senses = word_instance.senses.select_related('metadata').all()
+        
+        # Collect all IDs from JSON to hydrate
+        all_content_ids = []
+        for s in senses:
+            # Hàm này bóc tách toàn bộ UUID có trong JSON contents
+            all_content_ids.extend(flatten_ids(s.contents))
+        
+        contents_queryset = AISenseContent.objects.filter(id__in=all_content_ids)
+        
+        serialized_senses = serialize_senses(senses, contents_queryset, language_code, user_language_code)
+        word_instance.processed_entries = serialize_entries(serialized_senses)
+        
+        return AIWordSerializer(word_instance).data
+
+    except Exception as e:
+        
+        cache_manager.cache_word_clear_specific(language_code, word_instance.value)
+        word_instance.status = "FAILED"
+        word_instance.save()
+        raise
 
         

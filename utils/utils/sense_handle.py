@@ -25,6 +25,8 @@ def serialize_senses(senses, contents, language_code, user_language_code):
         # --- PHẦN 1: DEFINITION & USAGE ---
         def process_node(node_name):
             node = struct.get(node_name, {})
+            if not node: return None
+
             orig_id = node.get(language_code)
             trans_id = node.get(user_language_code)
             
@@ -38,6 +40,8 @@ def serialize_senses(senses, contents, language_code, user_language_code):
 
         definition = process_node('definition')
         usage = process_node('usage')
+        collocations = process_node('collocations')
+        idioms = process_node('idioms')
 
         # --- PHẦN 2: TRANSLATIONS (Bản dịch tổng quát) ---
         # Lưu ý: Nếu translations lưu ID trỏ tới Content chứa list strings
@@ -51,21 +55,25 @@ def serialize_senses(senses, contents, language_code, user_language_code):
                 translations = c_trans.value if isinstance(c_trans.value, list) else [c_trans.value]
 
         # --- PHẦN 3: EXAMPLES (Ghép cặp cực nhanh không cần parent_id) ---
-        examples = []
-        for ex_node in struct.get('examples', []):
+        examples = {}
+        for id, ex_node in struct.get('examples', {}).items():
             orig_id = ex_node.get(language_code)
             trans_id = ex_node.get(user_language_code)
             
             ex_data = get_content_data(orig_id)
             if ex_data:
+                examples[orig_id] = ex_data
+                
                 if trans_id:
                     t_obj = c_map.get(str(trans_id))
                     if t_obj:
-                        ex_data['translate'] = t_obj.value
-                        ex_data['translate_id'] = t_obj.id
-                examples.append(ex_data)
+                        examples[orig_id]['translate'] = t_obj.value
+                        examples[orig_id]['translate_id'] = t_obj.id
 
+                
         # Gán kết quả đã xử lý vào object sense
+        sense.processed_collocations = collocations
+        sense.processed_idioms = idioms
         sense.processed_definition = definition
         sense.processed_usage = usage
         sense.processed_examples = examples

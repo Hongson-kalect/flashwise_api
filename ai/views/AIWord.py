@@ -48,7 +48,7 @@ def detect_missing_content(senses, contents, language_code, user_language_code):
         
         for c_type, j in c_json.items():
             # 1. Kiểm tra bản dịch tổng quát của cả Sense
-            if c_type == 'translations':
+            if c_type in ['translations', 'collocations', 'idioms']:
                 continue
             
             # 2. Xử lý các node Dict (definition, usage)
@@ -284,6 +284,7 @@ class AIWordViewSet(SoftDeleteViewSet):
             AISenseContent.objects.all().delete()
             AISense.objects.all().delete()
             AIWord.objects.all().delete()
+            TranslateLog.objects.all().delete()
 
             cache.cache_word_clear_all()
 

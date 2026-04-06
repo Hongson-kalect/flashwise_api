@@ -196,7 +196,7 @@ word_schema = {
                                     "properties": {
                                         "value": { 
                                             "type": "STRING",
-                                            "description": "Technical usage: collocations, specific prepositions, grammatical patterns, or social register (formal/informal). Example: 'Often used with the particle NI' or 'Commonly used in business contexts'."
+                                            "description": "Technical usage: specific prepositions, grammatical patterns, or social register (formal/informal). Example: 'Often used with the particle NI' or 'Commonly used in business contexts'."
                                         },
 
                                     },

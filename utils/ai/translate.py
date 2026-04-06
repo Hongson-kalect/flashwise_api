@@ -86,6 +86,7 @@ async def process_translation_chunk(chunk, word, language_code, language_str, tr
             final_chunk_data[original_s_uuid]['examples'] = original_examples
 
         # 3. BẮN SOCKET NGAY LẬP TỨC (Xong cái nào bắn cái đó)
+        print('final_chunk_data', final_chunk_data)
         await socket_message(
             socket_room,
             {
@@ -125,7 +126,6 @@ async def render_translate(
     senses,
     user_language_code,
 ):
-    print('word', word_object,senses)
     socket_room = 'test'
 
     language_code = word_object.get("language_code", None)
@@ -170,7 +170,7 @@ async def render_translate(
 
     # Tạo danh sách các Task
     tasks = []
-    for chunk in chunk_dict(temp_senses, size=3):
+    for chunk in chunk_dict(temp_senses, size=2):
         tasks.append(
             process_translation_chunk(
                 chunk, word, language_code, language_str, 
@@ -185,77 +185,139 @@ async def render_translate(
     # Lọc bỏ các kết quả None (do lỗi) và gộp lại nếu cần lưu DB tổng
     full_translated_data = {}
     for r in results:
-        print('r',r)
+        # print('r',r)
         if r:
             full_translated_data.update(r)
+
+    print('full_translated_data',full_translated_data)
+
+    await sync_to_async(save_translate)(full_translated_data)
+
 
     # Báo cáo hoàn tất toàn bộ tiến trình
     await socket_message(socket_room, {"type": "TRANSLATE_ALL_COMPLETED"})
     return full_translated_data
 
+def create_content_instance(value, lang_code, content_type=None, audio=None, reading=None):
+    """
+    Khởi tạo instance AISenseContent (chưa save) để đưa vào danh sách bulk_create.
+    """
+    id = uuidv7.generate_uuid7()
+    return AISenseContent(
+        id=id,
+        value=value,
+        type=content_type, # Optional: Dùng cho dashboard/thống kê sau này
+        language_code=lang_code,
+        audio=audio,
+        reading=reading,
+        is_ai_created=True
+    )
 
-def save_translate(user, translate_instance, user_language_code, sense_instances, data):
-    with transaction.atomic():
-        content_bulk = []
-        sense_bulk = []
-        save_results = {} # Trả về cho socket/frontend
+def save_translate(data):
+    # Lấy danh sách các sense. 
+    content_bulk = []
+    sense_ids = data.keys()
+    sense_instances = AISense.objects.filter(id__in=sense_ids).all()
 
-        try:
-            for sense_id, translations in data.items():
-                # translations: { "origin_id_1": "văn bản dịch 1", "translations": "văn bản dịch tổng" }
-                
-                sense = next((s for s in sense_instances if str(s.id) == str(sense_id)), None)
-                if not sense: continue
+    # Lấy danh sách các content hiện tại của các sense
+    # Map các sense và gán các bản dịch mới vào cấu trúc JSON
+    for sense in sense_instances:
+        struct = sense.contents or { "definition": {}, "usage": {}, "examples": {}, "translations": {} }
+        new_trans = data.get(str(sense.id))
+        if not new_trans:
+            continue
 
-                struct = sense.contents or {}
-                save_results[sense_id] = {}
+        new_def = new_trans.get('definition', {})
+        new_usage = new_trans.get('usage', {})
+        new_examples = new_trans.get('examples', {})
+        new_translations = new_trans.get('translations', {})
+        
+        for index, content in enumerate([new_def, new_usage, new_examples,new_translations]):
+            type = index == 0 and 'definition' or index == 1 and 'usage' or index == 2 and 'examples' or 'translations'
 
-                for origin_id, text in translations.items():
-                    new_id = uuidv7.generate_uuid7()
-                    
-                    # 1. Tạo Instance Content mới (Sạch, không parent, không type)
-                    new_content = AISenseContent(
-                        id=new_id,
-                        value=text,
-                        language_code=user_language_code,
-                        created_by=user
-                    )
-                    content_bulk.append(new_content)
-
-                    # 2. Cập nhật vào cấu trúc JSON của Sense
-                    if origin_id == 'translations':
-                        # Case đặc biệt: Bản dịch tổng quát của Sense
-                        if 'translations' not in struct:
-                            struct['translations'] = {}
-                        struct['translations'][user_language_code] = str(new_id)
-                    else:
-                        # Case thông thường: Dịch cho definition, usage, example
-                        # Tìm origin_id ở đâu trong JSON và nhét new_id vào đó
-                        patch_content_id(struct, origin_id, new_id, user_language_code)
-
-                    # Lưu log để trả về kết quả
-                    save_results[sense_id][origin_id] = {
-                        "id": str(new_id),
-                        "value": text
-                    }
-
-                sense.contents = struct
-                sense_bulk.append(sense)
-
-            # Bulk save để tối ưu performance
-            if content_bulk:
-                AISenseContent.objects.bulk_create(content_bulk)
+            if (type == 'examples'):
+                for id, example in content.items():
+                    for lang, value in example.items():
+                        new_content = create_content_instance(value, lang, content_type='example')
+                        content_bulk.append(new_content)
+                        struct['examples'].setdefault(id,{})[lang] = str(new_content.id)
             
-            if sense_bulk:
-                # Chỉ update cột contents
-                AISense.objects.bulk_update(sense_bulk, ['contents'])
+            else:
 
-            translate_instance.status = "COMPLETED"
-            translate_instance.save()
+                for lang, value in content.items():
+                    new_content = create_content_instance(value, lang, content_type=type)
+                    content_bulk.append(new_content)
+                    struct.setdefault(type, {})[lang] = str(new_content.id)
 
-            return save_results
+        sense.contents = struct
+    with transaction.atomic():
+        # 3. Bulk Update để tối ưu hiệu năng (chỉ 1 câu lệnh SQL duy nhất)
+        AISense.objects.bulk_update(sense_instances, ['contents'])
+        AISenseContent.objects.bulk_create(content_bulk)
 
-        except Exception as e:
-            translate_instance.status = "FAILED"
-            translate_instance.save()
-            raise
+    return
+
+
+    content_bulk = []
+    sense_bulk = []
+    save_results = {} # Trả về cho socket/frontend
+
+    try:
+        for sense_id, translations in data.items():
+            # translations: { "origin_id_1": "văn bản dịch 1", "translations": "văn bản dịch tổng" }
+            
+            sense = next((s for s in sense_instances if str(s.id) == str(sense_id)), None)
+            if not sense: continue
+
+            struct = sense.contents or {}
+            save_results[sense_id] = {}
+
+            for origin_id, text in translations.items():
+                new_id = uuidv7.generate_uuid7()
+                
+                # 1. Tạo Instance Content mới (Sạch, không parent, không type)
+                new_content = AISenseContent(
+                    id=new_id,
+                    value=text,
+                    language_code=user_language_code,
+                    created_by=user
+                )
+                content_bulk.append(new_content)
+
+                # 2. Cập nhật vào cấu trúc JSON của Sense
+                if origin_id == 'translations':
+                    # Case đặc biệt: Bản dịch tổng quát của Sense
+                    if 'translations' not in struct:
+                        struct['translations'] = {}
+                    struct['translations'][user_language_code] = str(new_id)
+                else:
+                    # Case thông thường: Dịch cho definition, usage, example
+                    # Tìm origin_id ở đâu trong JSON và nhét new_id vào đó
+                    patch_content_id(struct, origin_id, new_id, user_language_code)
+
+                # Lưu log để trả về kết quả
+                save_results[sense_id][origin_id] = {
+                    "id": str(new_id),
+                    "value": text
+                }
+
+            sense.contents = struct
+            sense_bulk.append(sense)
+
+        # Bulk save để tối ưu performance
+        if content_bulk:
+            AISenseContent.objects.bulk_create(content_bulk)
+        
+        if sense_bulk:
+            # Chỉ update cột contents
+            AISense.objects.bulk_update(sense_bulk, ['contents'])
+
+        translate_instance.status = "COMPLETED"
+        translate_instance.save()
+
+        return save_results
+
+    except Exception as e:
+        translate_instance.status = "FAILED"
+        translate_instance.save()
+        raise

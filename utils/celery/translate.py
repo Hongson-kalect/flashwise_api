@@ -45,4 +45,5 @@ def task_create_translate(self, word, senses, user_languages):
     try:
         asyncio.run(render_translate(word, contents, user_languages))
     except Exception as e:
-        raise self.retry(exc=e, countdown=5)
+        pass
+        # raise self.retry(exc=e, countdown=5)

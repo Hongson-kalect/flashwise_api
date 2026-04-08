@@ -15,7 +15,7 @@ def serialize_senses(senses, contents, language_code, user_language_code):
             if not c: return None
             return {
                 'id': c.id,
-                'text': c.value,
+                'value': c.value,
                 'reading': getattr(c, 'reading', None),
                 'roman': getattr(c, 'roman', None),
                 'ruby': getattr(c, 'ruby', None),
@@ -27,15 +27,19 @@ def serialize_senses(senses, contents, language_code, user_language_code):
             node = struct.get(node_name, {})
             if not node: return None
 
-            orig_id = node.get(language_code)
-            trans_id = node.get(user_language_code)
-            
-            data = get_content_data(orig_id) or {}
-            if trans_id:
-                trans_obj = c_map.get(str(trans_id))
-                if trans_obj:
-                    data['translate'] = trans_obj.value
-                    data['translate_id'] = trans_obj.id
+            if isinstance(node, dict):
+                orig_id = node.get(language_code)
+                trans_id = node.get(user_language_code)
+                
+                data = get_content_data(orig_id) or {}
+                if trans_id:
+                    trans_obj = c_map.get(str(trans_id))
+                    if trans_obj:
+                        data['translate'] = trans_obj.value
+                        data['translate_id'] = trans_obj.id
+            else :
+                data = get_content_data(node) or None
+
             return data
 
         definition = process_node('definition')
@@ -72,12 +76,12 @@ def serialize_senses(senses, contents, language_code, user_language_code):
 
                 
         # Gán kết quả đã xử lý vào object sense
-        sense.processed_collocations = collocations
-        sense.processed_idioms = idioms
         sense.processed_definition = definition
         sense.processed_usage = usage
         sense.processed_examples = examples
         sense.processed_translations = translations
+        sense.processed_collocations = collocations
+        sense.processed_idioms = idioms
         new_senses.append(sense)
 
     return new_senses
@@ -99,6 +103,8 @@ def serialize_entries(senses):
             'usage': sense.processed_usage,
             'examples': sense.processed_examples,
             'translations': sense.processed_translations,
+            'collocations': sense.processed_collocations,
+            'idioms': sense.processed_idioms,
         }
 
         entry = pos_map.get(pos)

@@ -1,5 +1,6 @@
 import redis
 from redis.commands.json.path import Path
+from utils.utils.uuidv7 import generate_uuid7
 
 class WordCacheManager:
     def __init__(self):
@@ -9,11 +10,11 @@ class WordCacheManager:
         key = f"word:{language_code}:{word_val}"
         
         initial_data = {
-            "word": {"id": "", "value": word_val, "language_code": language_code},
+            "word": {"id": str(generate_uuid7()), "value": word_val, "language_code": language_code},
             "senses": {}, 
             "images": {},
             "translates": [user_language_code],
-            "status": "generating"
+            "status": "PROCESSING"
         }
 
         try:
@@ -22,7 +23,7 @@ class WordCacheManager:
             
             if is_created:
                 # Chỉ người tạo mới được quyền set expire
-                self.r.expire(key, 86400)
+                self.r.expire(key, 180) # Thời gian tồn tại của key là 3 phút
                 return True, initial_data
             
             # 2. Nếu không tạo được (đã tồn tại), lấy dữ liệu hiện có
@@ -38,6 +39,15 @@ class WordCacheManager:
         except Exception as e:
             print(f"Redis Init Error: {e}")
             return False, initial_data
+        
+    def cache_word_set_cache(self, language_code, word_val, data):
+        # data: {sense_id:{contents full data}}
+        key = f"word:{language_code}:{word_val}"
+        self.r.json().set(key, Path.root_path(), data, nx=True)
+        
+    def cache_word_set_status(self, language_code, word_val, status):
+        key = f"word:{language_code}:{word_val}"
+        self.r.json().set(key, Path(".status"), status)
 
     def cache_word_set_word(self, language_code, word_val, word_data):
         key = f"word:{language_code}:{word_val}"

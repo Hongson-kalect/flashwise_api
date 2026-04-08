@@ -22,18 +22,28 @@ def flatten_ids(data):
 
     return list(ids)
 
-def flatten_ids_by_langs(data, target_langs: list):
+def flatten_ids_by_langs(data, target_langs: list, root =True):
     """
     Trích xuất ID chỉ từ các ngôn ngữ được chỉ định.
     target_langs: e.g., ['en', 'vi']
     """
     ids = set()
 
+    if(root):
+        collocations = data.get('collocations')
+        idioms = data.get('idioms')
+        if collocations:
+            ids.add(collocations)
+        if idioms:
+            ids.add(idioms)
+
     if isinstance(data, dict):
+    # idioms và collocations thuộc riêng về từng từ: collocation: id
+
         # Kiểm tra xem dict này có phải là một "ngăn chứa ngôn ngữ" không
         # Nếu có các key như 'en', 'vi'... ta chỉ lấy những key nằm trong target_langs
         for lang_key, value in data.items():
-            if lang_key in target_langs:
+            if not target_langs or not len(target_langs) or lang_key in target_langs:
                 if isinstance(value, str) and value:
                     ids.add(value)
                 elif isinstance(value, list): # Đề phòng trường hợp một lang có list ID
@@ -41,11 +51,11 @@ def flatten_ids_by_langs(data, target_langs: list):
             else:
                 # Nếu không phải là key ngôn ngữ, tiếp tục đệ quy sâu xuống 
                 # (để xử lý các tầng như 'definition', 'examples')
-                ids.update(flatten_ids_by_langs(value, target_langs))
+                ids.update(flatten_ids_by_langs(value, target_langs, False))
                 
     elif isinstance(data, list):
         # Duyệt qua các phần tử trong mảng (ví dụ: mảng examples)
         for item in data:
-            ids.update(flatten_ids_by_langs(item, target_langs))
+            ids.update(flatten_ids_by_langs(item, target_langs, False))
 
     return list(ids)

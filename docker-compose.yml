@@ -25,8 +25,21 @@ services:
       - db
 
   redis:
-    image: redis/redis-stack-server:latest # redis:7-alpine
+    image: redis/redis-stack-server:latest
     container_name: django_redis
+    restart: always
+    command: >
+      redis-server 
+      --maxmemory 2gb 
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+    # Phần deploy nằm ngoài command
+    deploy:
+      resources:
+        limits:
+          memory: 2100M
+    volumes:
+      - redis_data:/data
     # Không mở port, web và worker vẫn thấy nó qua tên "redis"
 
   web:

@@ -26,6 +26,7 @@ def ai_create_new_word_task(self, user_id, word_id, language_code, user_language
     try:
         asyncio.run(ai_create_new_word(user, word, language_code, user_language_code, socket_room))
     except Exception as e:
-        raise self.retry(exc=e, countdown=5)
+        pass
+        # raise self.retry(exc=e, countdown=5)
 
 

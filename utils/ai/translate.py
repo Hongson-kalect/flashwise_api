@@ -121,11 +121,13 @@ def patch_content_id(data, target_id, new_id, lang_dest):
                 return True
     return False
 
+from utils.redis.word_init import WordCacheManager
 async def render_translate(
     word_object,
     senses,
     user_language_code,
 ):
+    cache_manager = WordCacheManager()
     socket_room = 'test'
 
     language_code = word_object.get("language_code", None)
@@ -192,6 +194,8 @@ async def render_translate(
     print('full_translated_data',full_translated_data)
 
     await sync_to_async(save_translate)(full_translated_data)
+
+    cache_manager.cache_word_set_status( language_code,word, 'REDIS-CACHED')
 
 
     # Báo cáo hoàn tất toàn bộ tiến trình

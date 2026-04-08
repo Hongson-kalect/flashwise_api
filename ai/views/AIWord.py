@@ -97,6 +97,8 @@ class AIWordViewSet(SoftDeleteViewSet):
     @action(detail=False, methods=['get'], url_path='get-word')
     def get_word(self, request, pk=None, *args, **kwargs):
         start_time = datetime.now()
+        cache_manager = WordCacheManager()
+
 
         # params: value, lang, user_lang
         # client create socket connect with word(md5)+language+user_language
@@ -108,6 +110,102 @@ class AIWordViewSet(SoftDeleteViewSet):
         user_language_code = request.GET.get('user_lang')
         socket_room = get_safe_room_id(word, language_code, user_language_code) 
         socket_room = 'test'
+
+        # Lấy dữ liệu trong redis
+        cached = cache_manager.cache_word_get_data(language_code, word)
+
+        if cached:
+            # Nếu full thì trực tiếp lấy dữ liệu và return
+            if cached.get('status') == 'CACHED':
+                return Response({'detail': 'CACHED', 'status': '200', 'data':cached}, status=status.HTTP_200_OK)
+            
+            # Nếu có dữ liệu nhưng không full thì duy trì socket và trả về init
+            elif cached.get('status') == 'PROCESSING':
+                return Response({'detail': 'PROCESSING', 'status': '202', 'data':cached}, status=status.HTTP_202_ACCEPTED)
+            
+            elif cached.get('status') == 'ERROR':
+                return Response({'detail': 'ERROR', 'status': '500', 'data':cached}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+            elif cached.get('status') == 'NOT_FOUND':
+                return Response({'detail': 'NOT_FOUND', 'status': '404', 'data':cached}, status=status.HTTP_404_NOT_FOUND)
+            
+        else:
+            # Nếu chưa có dữ liệu thì lấy lấy dữ liệu từ db
+            sense_filter = Q(is_official=True) | Q(created_by=user) | Q(updated_by=user)
+
+            # 2. Prefetch Logs - Chỉ lấy cái mới nhất đang PROCESSING
+            # Thay vì Window function, ta dùng order_by thông thường
+            log_qs = TranslateLog.objects.filter(
+                language_code=user_language_code, 
+                status="PROCESSING"
+            ).order_by('-created_at')
+
+            print(1)
+
+            # 3. Prefetch Senses
+            sense_qs = AISense.objects.filter(sense_filter).select_related('metadata', 'previous').order_by('-updated_at')
+
+            # 4. Gộp vào query chính
+            word_instance = AIWord.objects.filter(value=word, language_code=language_code).prefetch_related(
+                Prefetch('translate_logs', queryset=log_qs, to_attr='active_logs'),
+                Prefetch('senses', queryset=sense_qs, to_attr='prefetched_senses')
+            ).first()
+
+            # Nếu từ này chưa được khởi tạo ở db
+            if not word_instance or word_instance.status == 'FAILED':
+                created, init_data = cache_manager.cache_word_init(language_code, word, user_language_code)
+
+                # Nếu có người khác khởi tạo trước, trả về và chờ
+                if not created:
+                    print("Word is processing")
+                    cache_manager.cache_word_add_translate(language_code, word, user_language_code)
+                    return Response({'detail': 'PROCESSING', 'status': '202', 'data':init_data}, status=status.HTTP_202_ACCEPTED)
+
+                word_instance = AIWord.objects.create(
+                **init_data.get('word'),
+                created_by=user,
+                status= "PROCESSING"
+                )
+
+                print(12)
+                # GỌI CELERY: Bọc phát mất hút ở đây
+                ai_create_new_word_task.delay(
+                    user.id, 
+                    word_instance.id, 
+                    language_code, 
+                    user_language_code, 
+                    socket_room
+                )
+                # ai_create_new_word(user.id, word_instance.id, language_code, user_language_code, socket_room)
+                print(2)
+                return Response({'detail': 'PROCESSING', 'status': '202', 'data': init_data}, status=status.HTTP_201_CREATED)
+           
+
+            # Đây là nếu từ đã tồn tại trong db
+            cache_manager.cache_word_set_cache
+
+
+            if not word_instance or word_instance.status == 'FAILED':
+                
+
+
+            # 5. Sử dụng sau đó (Cực nhanh vì là list Python)
+            if word_instance:
+                senses_instance = word_instance.prefetched_senses # Thay vì .senses.all()
+                translating = word_instance.active_logs[0] if word_instance.active_logs else None
+
+
+
+            
+
+        if not created:
+                print("Word is processing")
+                cache_manager.cache_word_add_translate(language_code, word, user_language_code)
+                return Response({'detail': 'PROCESSING', 'status': '202', 'data':init_data}, status=status.HTTP_202_ACCEPTED)
+        # Nếu có thì lưu vào redis và trả về full, detect thiếu bản dịch thì duy trì socket, delay dịch
+        # Nếu chưa có thì tạo bản ghi mới trong redis, nếu sucess thì tạo bản ghi vào word, delay tạo
+        # #
+
 
         print(1)
 
@@ -139,9 +237,11 @@ class AIWordViewSet(SoftDeleteViewSet):
 
         # Word not found: Generate new word, return not found. send data via socket when finish
         if not word_instance or word_instance.status == 'FAILED':
-            cache_manager = WordCacheManager()
 
             created, init_data = cache_manager.cache_word_init(language_code, word, user_language_code)
+
+            if init_data.get('status') == 'REDIS-CACHED':
+                return Response({'detail': 'REDIS-CACHED', 'status': '200', 'data':init_data}, status=status.HTTP_200_OK)
 
             if not created:
                 print("Word is processing")
@@ -149,14 +249,14 @@ class AIWordViewSet(SoftDeleteViewSet):
                 return Response({'detail': 'PROCESSING', 'status': '202', 'data':init_data}, status=status.HTTP_202_ACCEPTED)
 
             word_instance = AIWord.objects.create(
-            value=word,
-            language_code=language_code,
+            **init_data.get('word'),
             created_by=user,
-            status='PROCESSING'
+            status= "PROCESSING"
             )
 
             print(12)
             # GỌI CELERY: Bọc phát mất hút ở đây
+            # sửa lại, bỏ content, lưu toàn bộ ở bảng sense, dùng cơ chế origin-delta
             ai_create_new_word_task.delay(
                 user.id, 
                 word_instance.id, 

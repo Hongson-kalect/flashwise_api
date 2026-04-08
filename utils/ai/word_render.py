@@ -1,3 +1,4 @@
+import traceback
 import json
 from venv import logger
 from google import genai
@@ -35,7 +36,7 @@ def get_schema(mode):
 
 async def ai_create_new_word(user, word_instance, language_code, user_language_code, socket_room):
     print('create new word')
-    cache_manager = WordCacheManager()
+    cache = WordCacheManager()
 
     # word_instance = await sync_to_async(AIWord.objects.get)(id=word_id)
     LATIN_LANGS = ['vi', 'en', 'es', 'fr', 'de', 'it', 'pt', 'nl', 'pl', 'sv', 'no', 'da', 'fi', 'tr', 'cs', 'hu', 'id']
@@ -55,8 +56,6 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
     try:
         local_client = genai.Client(api_key=settings.GEMINI_API_KEY)
         ai_trunks =[]
-        is_first_sense_found = False
-        sense_index =0
         async with local_client.aio as client:
             response = await client.models.generate_content_stream(
                 model="gemini-2.5-flash-lite",
@@ -97,14 +96,13 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                         while True:
 
                             sense_str, new_pointer = extract_json_fragment(full_text, "senses", pointer)
-                            
                             if sense_str:
-
-                                print("Found sense", sense_str)
                                 pointer = new_pointer
                                 try:
+                                    print(1)
                                     sense = json.loads(sense_str)
                                     id = str(uuidv7.generate_uuid7())
+                                    print(2)
 
                                     sense_word_obj = {
                                         "id": id,
@@ -113,6 +111,7 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                                         "language_code": language_code,
                                         "created_by_id": user.id,
                                     }
+                                    print(3)
 
                                     processed_contents = {
                                         "id":id,
@@ -126,28 +125,25 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                                             for ex in sense.get("examples", [])
                                         ]
                                     }
-                                    
-                                    sense["id"] = id
                                     sense_objs.append(processed_contents)
-                                    # sense_objs.append(sense_obj)
-                                    sense_index += 1
-
+                                    print(6)
                                     word_cache.cache_word_add_sense(language_code, word_instance.value, id, processed_contents)
+                                    print(7)
                                     await socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": processed_contents})
+                                    print(8)
                                     
                                     # Kích hoạt lấy ảnh 1 ngay lập tức (không đợi stream xong)
                                     img_desc = processed_contents.get('metadata',{}).get('image_keywords',None)
+                                    print(9)
                                     print('img_desc', img_desc)
                                     if img_desc:
                                         print('Lấy ảnh, máy cty pixabay hoạt động hơi lỏ nên tạm tắt')
                                         # task_fetch_image_single.delay(sense_word_obj, img_desc, socket_room, temp_index=0)
                                 except Exception as e: 
-                                    print('error',e)
+                                    print('error on exec ai trunks',e)
                                     pass
                             else:
                                 break
-            
-        full_response_text = "".join(ai_trunks)
         print('full_response_text', sense_objs)
 
         word_data = word_cache.cache_word_get_data(language_code, word_instance.value)
@@ -165,6 +161,7 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
 
         try:
             # ✅ Dùng DjangoJSONEncoder để convert UUID
+            cache.cache_word_set_status(language_code, word_instance.value, 'SENSE_COMPLETED')
             json_data = JSONRenderer().render(word_data)
             clean_data = json.loads(json_data)  # Convert bytes → dict
             print('Socket full data')
@@ -174,6 +171,9 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
             print(f"Failed to send full data via socket: {socket_error}")
     
     except Exception as e:
+        # Cách 1: In đầy đủ stack trace ra console (Dễ nhìn nhất khi dev)
+        traceback.print_exc()
+        print(f"Error processing word: {e}")
         try:
             def update_failed_status():
                 word_instance.status = 'FAILED'

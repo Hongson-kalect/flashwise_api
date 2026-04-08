@@ -104,7 +104,8 @@ def task_fetch_image_single(self, sense_obj, img_desc, socket_room, temp_index=N
                     preview_img = img_obj.url
 
         except Exception as e:
-            raise self.retry(exc=e)
+            pass
+            # raise self.retry(exc=e)
 
     # 5. Gán Context cho Sense và Lưu
     sense.image_context = context

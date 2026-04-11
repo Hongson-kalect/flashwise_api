@@ -4,7 +4,7 @@ from utils.utils.uuidv7 import generate_uuid7
 
 class WordCacheManager:
     def __init__(self):
-        self.r = redis.Redis(host='redis', port=6379, decode_responses=True)
+        self.r = redis.Redis(host='redis', port=6379, db=1, decode_responses=True)
 
     def cache_word_init(self, language_code, word_val, user_language_code):
         key = f"word:{language_code}:{word_val}"
@@ -39,6 +39,23 @@ class WordCacheManager:
         except Exception as e:
             print(f"Redis Init Error: {e}")
             return False, initial_data
+        
+    def cache_word(self, language_code, word_val, data, word_data = None):
+        key = f"word:{language_code}:{word_val}"
+
+        if not word_data:
+           cached = self.cache_word_get_data(language_code, word_val)
+
+           print("cached", cached)
+           if cached:
+               word_data = cached.get('word', None)
+
+        redis_data = {
+            "word": word_data,
+            "senses": data, 
+            "status": "CACHED"
+        }
+        self.r.json().set(key, Path.root_path(), redis_data)
         
     def cache_word_set_cache(self, language_code, word_val, data):
         # data: {sense_id:{contents full data}}

@@ -33,6 +33,22 @@ CELERY_TASK_ALWAYS_EAGER = False # Đảm bảo cái này không bị True nếu
 CELERY_BROKER_URL = 'redis://redis:6379/0'
 CELERY_RESULT_BACKEND = 'redis://redis:6379/0'
 
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": "redis://redis:6379/1", # Dùng DB 1 để tách biệt với hàng đợi
+    }
+}
+
+# Cấu hình quan trọng cho Gevent
+# CELERY_BROKER_TRANSPORT_OPTIONS = {
+#     'visibility_timeout': 3600,
+#     'sep': ':',
+#     # Ép sử dụng cơ chế select/poll tương thích với Gevent
+#     'fanout_prefix': True,
+#     'fanout_patterns': True,
+# }
+
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/

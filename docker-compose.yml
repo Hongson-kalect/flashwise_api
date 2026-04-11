@@ -25,19 +25,13 @@ services:
       - db
 
   redis:
-    image: redis/redis-stack-server:latest
+    image: redis/redis-stack-server:latest # Use the lightweight, standard version
     container_name: django_redis
     restart: always
-    command: >
-      redis-server 
-      --maxmemory 2gb 
-      --maxmemory-policy allkeys-lru
-      --appendonly yes
-    # Phần deploy nằm ngoài command
-    deploy:
-      resources:
-        limits:
-          memory: 2100M
+    # command: >
+    #   redis-server 
+    #   --maxmemory-policy allkeys-lru
+    #   --appendonly yes
     volumes:
       - redis_data:/data
     # Không mở port, web và worker vẫn thấy nó qua tên "redis"
@@ -58,8 +52,15 @@ services:
 
   worker:
     build: .
-    container_name: django_worker
-    command: celery -A flashcardApi worker -l info --concurrency=4
+    # container_name: django_worker
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 1G # Nâng lên một chút cho an toàn
+        reservations:
+          memory: 256M
+    command: celery -A flashcardApi worker -l info --concurrency=2
     volumes:
       - .:/app
       - ./media:/app/media
@@ -68,3 +69,20 @@ services:
     depends_on:
       - redis
       - db
+
+  ai_worker:
+    build: .
+    deploy:
+      replicas: 2 # 2 con này "vít ga" 80 request AI song song như đã tính
+    # Đây là nơi bạn chạy file script asyncio vừa refactor xong
+    command: python utils/celery/worker.py
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+      - db
+    volumes:
+      - .:/app
+
+volumes:
+  redis_data:

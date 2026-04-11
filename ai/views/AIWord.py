@@ -30,63 +30,50 @@ from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 from django.contrib.auth.models import User
 from utils.redis.word_init import WordCacheManager
 
-def detect_missing_content(senses, contents, language_code, user_language_code):
-    # Map để lấy value và type nhanh từ danh sách content instance
-    c_map = {str(c.id): c for c in contents}
-    
-    missing_list = {}
-    need_translation = {}
-    sense_def_ids = {} # Lưu ID của definition để tra cứu sau
+def detect_missing_content(senses, language_code, user_language_code):
+    # Kết quả trả về: { "sense_id": { "definition": "...", "examples": [...] } }
+    missing_data = {}
+    # Danh sách các Sense cần dịch nghĩa tổng quát (translations field)
 
     for s in senses:
         sid = str(s.id)
-        l = []
         c_json = s.contents or {}
+        sense_missing = {}
 
-        if not c_json.get('translations',{}).get(user_language_code):
-            need_translation[sid] = True
-        
+        # --- 1. Kiểm tra Bản dịch tổng quát (field: translations) ---
+        trans_node = c_json.get('translations', {})
+        if not trans_node.get(user_language_code):
+            # Nếu thiếu bản dịch tổng quát, lấy definition làm gốc để AI dịch
+            def_node = c_json.get('definition', {})
+            sense_missing['translations'] = def_node.get(language_code, True)
+
+        # --- 2. Duyệt qua các thành phần bên trong contents ---
         for c_type, j in c_json.items():
-            # 1. Kiểm tra bản dịch tổng quát của cả Sense
-            if c_type in ['translations', 'collocations', 'idioms']:
+            if c_type in ['translations', 'collocations', 'idioms', 'metadata']:
                 continue
             
-            # 2. Xử lý các node Dict (definition, usage)
-            elif isinstance(j, dict):
-                orig_id = j.get(language_code)
-                # Lưu lại ID định nghĩa gốc để dùng cho bước sau
-                if c_type == 'definition':
-                    sense_def_ids[sid] = orig_id
-                
-                # Nếu có gốc mà thiếu đích
-                if orig_id and not j.get(user_language_code):
-                    c_obj = c_map.get(str(orig_id))
-                    if c_obj:
-                        l.append({'id': str(orig_id), 'type': c_type, 'value': c_obj.value})
+            # Xử lý Dictionary (definition, usage, pronunciation...)
+            if isinstance(j, dict):
+                orig_val = j.get(language_code)
+                if orig_val and not j.get(user_language_code):
+                    sense_missing[c_type] = orig_val
             
-            # 3. Xử lý mảng (examples)
-            elif isinstance(j, list):
-                for ex in j:
-                    ex_orig_id = ex.get(language_code)
-                    if ex_orig_id and not ex.get(user_language_code):
-                        c_obj = c_map.get(str(ex_orig_id))
-                        if c_obj:
-                            l.append({'id': str(ex_orig_id), 'type': 'example', 'value': c_obj.value})
-        
-        if l:
-            missing_list[sid] = l
+            # Xử lý List (examples)
+            elif isinstance(j, list) and c_type == 'examples':
+                ex_missing = []
+                for index, ex in enumerate(j):
+                    ex_orig = ex.get(language_code)
+                    if ex_orig and not ex.get(user_language_code):
+                        ex_missing.append({'index': index, 'value': ex_orig})
+                
+                if ex_missing:
+                    sense_missing['examples'] = ex_missing
 
-    # 4. Bước cuối: Nếu Sense cần dịch, bốc giá trị của Definition gốc bỏ vào
-    for sid in list(need_translation.keys()):
-        def_id = sense_def_ids.get(sid)
-        if def_id:
-            c_obj = c_map.get(str(def_id))
-            need_translation[sid] = c_obj.value if c_obj else True
-        else:
-            # Nếu ko có definition (trường hợp hy hữu), xóa khỏi list cần dịch hoặc để True
-            del need_translation[sid]
+        # Nếu Sense này có bất kỳ thứ gì thiếu, lưu vào map tổng
+        if sense_missing:
+            missing_data[sid] = sense_missing
 
-    return [missing_list, need_translation]
+    return missing_data
 
 class AIWordViewSet(SoftDeleteViewSet):
     queryset = AIWord.objects.all()
@@ -131,7 +118,8 @@ class AIWordViewSet(SoftDeleteViewSet):
             
         else:
             # Nếu chưa có dữ liệu thì lấy lấy dữ liệu từ db
-            sense_filter = Q(is_official=True) | Q(created_by=user) | Q(updated_by=user)
+            sense_filter = Q(is_official=True)
+            # sense_filter = Q(is_official=True) | Q(created_by=user) | Q(updated_by=user)
 
             # 2. Prefetch Logs - Chỉ lấy cái mới nhất đang PROCESSING
             # Thay vì Window function, ta dùng order_by thông thường
@@ -143,7 +131,7 @@ class AIWordViewSet(SoftDeleteViewSet):
             print(1)
 
             # 3. Prefetch Senses
-            sense_qs = AISense.objects.filter(sense_filter).select_related('metadata', 'previous').order_by('-updated_at')
+            sense_qs = AISense.objects.filter(is_official=True).select_related('metadata', 'previous').order_by('-updated_at')
 
             # 4. Gộp vào query chính
             word_instance = AIWord.objects.filter(value=word, language_code=language_code).prefetch_related(
@@ -168,30 +156,61 @@ class AIWordViewSet(SoftDeleteViewSet):
                 )
 
                 print(12)
+                import json
+                import redis
+                
+                # Kết nối tới DB 0 (Làn đường xử lý)
+                r_queue = redis.Redis(host='redis', port=6379, db=0)
+
+                # Đẩy vào queue "redis_word"
+                r_queue.rpush("redis_word", json.dumps(raw_word))
+                
+                print(f"[QUEUE] Pushed word '{word}' to redis_word queue")
+                # ---------------------------------------------
                 # GỌI CELERY: Bọc phát mất hút ở đây
-                ai_create_new_word_task.delay(
-                    user.id, 
-                    word_instance.id, 
-                    language_code, 
-                    user_language_code, 
-                    socket_room
-                )
+                # ai_create_new_word_task.delay(
+                #     user.id, 
+                #     word_instance.id, 
+                #     language_code, 
+                #     user_language_code, 
+                #     socket_room
+                # )
                 # ai_create_new_word(user.id, word_instance.id, language_code, user_language_code, socket_room)
                 print(2)
                 return Response({'detail': 'PROCESSING', 'status': '202', 'data': init_data}, status=status.HTTP_201_CREATED)
            
 
             # Đây là nếu từ đã tồn tại trong db
-            cache_manager.cache_word_set_cache
+            else:
+                pass
+                senses_instance = word_instance.prefetched_senses # Thay vì .senses.all()
 
+                missing_contents,= detect_missing_content(senses_instance, language_code, user_language_code)
 
-            if not word_instance or word_instance.status == 'FAILED':
+                # Content missing. Return current, generate new and send via socket
+                if missing_contents:
+                    # Unique (word, user_language_code with 1 status PROCESSING allowed)
+                    try:
+                        translate_instance = TranslateLog.objects.create(word=word_instance, language_code=user_language_code, status="PROCESSING")
+                        background_task(render_translate(user, translate_instance, word, senses_instance, missing_contents , need_translation, language_code, user_language_code, socket_room))
+                    except:
+                        pass
+
+                    # Keep connect with socket to get result
+                    return Response({"data":data,'detail': 'Word incomplete.', 'status': '206', 'data': data, 'missing_contents': missing_contents}, status=status.HTTP_206_PARTIAL_CONTENT)
+
+                # Word ok, return data, close socket
+                return Response({"data":data}, status=status.HTTP_200_OK)
+
+                # Get original senses
+                # Tiến hành merge, kiểm tra đủ bản dịch hay chưa, delay translate
+                # Lưu vào redis
+                # Trả dữ liệu về 
                 
 
 
             # 5. Sử dụng sau đó (Cực nhanh vì là list Python)
             if word_instance:
-                senses_instance = word_instance.prefetched_senses # Thay vì .senses.all()
                 translating = word_instance.active_logs[0] if word_instance.active_logs else None
 
 

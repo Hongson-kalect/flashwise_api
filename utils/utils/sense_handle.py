@@ -98,13 +98,14 @@ def serialize_entries(senses):
 
         sense_data = {
             'id': str(sense.id),
-            'metadata': AISenseMetadataSerializer(sense.metadata).data if sense.metadata else None,
-            'definition': sense.processed_definition,
-            'usage': sense.processed_usage,
-            'examples': sense.processed_examples,
-            'translations': sense.processed_translations,
-            'collocations': sense.processed_collocations,
-            'idioms': sense.processed_idioms,
+            "contents": sense.contents
+            # 'metadata': AISenseMetadataSerializer(sense.metadata).data if sense.metadata else None,
+            # 'definition': sense.processed_definition,
+            # 'usage': sense.processed_usage,
+            # 'examples': sense.processed_examples,
+            # 'translations': sense.processed_translations,
+            # 'collocations': sense.processed_collocations,
+            # 'idioms': sense.processed_idioms,
         }
 
         entry = pos_map.get(pos)

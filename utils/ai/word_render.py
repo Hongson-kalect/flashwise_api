@@ -115,13 +115,13 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
 
                                     processed_contents = {
                                         "id":id,
-                                        "collocations": {"id": str(uuidv7.generate_uuid7()),"value": sense.get("collocations",[])},
-                                        "idioms": {"id": str(uuidv7.generate_uuid7()),"value": sense.get("idioms",[])},
-                                        "metadata": {"id": str(uuidv7.generate_uuid7()),**sense.get("metadata",{})},
-                                        "definition": {"id": str(uuidv7.generate_uuid7()), **sense.get("definition")},
-                                        "usage": {"id": str(uuidv7.generate_uuid7()), **sense.get("usage")},
+                                        "collocations": sense.get("collocations",[]),
+                                        "idioms": sense.get("idioms",[]),
+                                        "metadata": {**sense.get("metadata",{})},
+                                        "definition": { **sense.get("definition")},
+                                        "usage": { **sense.get("usage")},
                                         "examples": [
-                                            {"id": str(uuidv7.generate_uuid7()), **ex} 
+                                            { **ex} 
                                             for ex in sense.get("examples", [])
                                         ]
                                     }
@@ -255,23 +255,23 @@ def saveword(user, word_instance, language_code, user_language_code, entries, so
 
 
         # Duyệt qua các context để khởi tạo object Content (chưa có ID)
-        for ctx in contexts:
-            s = ctx.raw
+        # for ctx in contexts:
+        #     s = ctx.raw
             
-            # 1. Định nghĩa & Sử dụng
-            ctx.obj_map["def"] = prepare_content_obj(s.get("definition"), type="definition")
-            ctx.obj_map["usage"] = prepare_content_obj(s.get("usage"), type="usage")
-            ctx.obj_map["collocations"] = prepare_content_obj(s.get("collocations"),type="collocations")
-            ctx.obj_map["idioms"] = prepare_content_obj(s.get("idioms"), type = "idioms")
+        #     # 1. Định nghĩa & Sử dụng
+        #     ctx.obj_map["def"] = prepare_content_obj(s.get("definition"), type="definition")
+        #     ctx.obj_map["usage"] = prepare_content_obj(s.get("usage"), type="usage")
+        #     ctx.obj_map["collocations"] = prepare_content_obj(s.get("collocations"),type="collocations")
+        #     ctx.obj_map["idioms"] = prepare_content_obj(s.get("idioms"), type = "idioms")
 
 
-            ctx.example_count = len(s.get("examples", []))
-            # 2. Ví dụ (Mỗi ví dụ là một cặp Orig-Trans)
-            for index, ex_raw in enumerate(s.get("examples", []), start=1):
-                ctx.obj_map[f'translate-{index}'] = prepare_content_obj(ex_raw)
+        #     ctx.example_count = len(s.get("examples", []))
+        #     # 2. Ví dụ (Mỗi ví dụ là một cặp Orig-Trans)
+        #     for index, ex_raw in enumerate(s.get("examples", []), start=1):
+        #         ctx.obj_map[f'translate-{index}'] = prepare_content_obj(ex_raw)
 
-            # Gom vào list tổng để bulk create
-            all_contents_to_create.extend([obj for obj in ctx.obj_map.values() if obj])
+        #     # Gom vào list tổng để bulk create
+        #     all_contents_to_create.extend([obj for obj in ctx.obj_map.values() if obj])
         # Bulk create để lấy ID từ database cho toàn bộ content
         
         # =========================
@@ -286,20 +286,21 @@ def saveword(user, word_instance, language_code, user_language_code, entries, so
             # Xây dựng cấu trúc JSON lồng nhau (Nested Structure)
             # Đây là nơi quy định quan hệ thay vì dùng Parent_id
             sense_structure = {
-                "definition": {
-                    language_code: get_id("def"),
-                },
-                "usage": {
-                    language_code: get_id("usage"),
-                },
-                "examples": {
-                    get_id('translate-'+str(index)):{
-                        language_code: get_id('translate-'+str(index)),
-                    }
-                    for index in range(1, ctx.example_count + 1)
-                },
-                "collocations": get_id("colocations"),
-                "idioms": get_id("idioms"),
+                # "definition": {
+                #     language_code: get_id("def"),
+                # },
+                # "usage": {
+                #     language_code: get_id("usage"),
+                # },
+                # "examples": {
+                #     get_id('translate-'+str(index)):{
+                #         language_code: get_id('translate-'+str(index)),
+                #     }
+                #     for index in range(1, ctx.example_count + 1)
+                # },
+                # "collocations": get_id("colocations"),
+                # "idioms": get_id("idioms"),
+                **ctx.raw
             }
 
             senses_to_create.append(
@@ -311,23 +312,53 @@ def saveword(user, word_instance, language_code, user_language_code, entries, so
                     contents=sense_structure, # JSON Structure mới
                     is_frozen=True,
                     created_by=user,
-                    id=ctx.id
+                     id=ctx.id
                 )
             )
 
         word_instance.status = "COMPLETED"
         word_instance.is_active = True
         with transaction.atomic():
-            AISenseMetadata.objects.bulk_create(metadata_to_create)
-            AISenseContent.objects.bulk_create(all_contents_to_create)
-            AISense.objects.bulk_create(
+            metadatas = AISenseMetadata.objects.bulk_create(metadata_to_create)
+            # AISenseContent.objects.bulk_create(all_contents_to_create)
+            senses = AISense.objects.bulk_create(
                 senses_to_create, update_conflicts=True,
                 unique_fields=['id'],  # Hoặc field nào định danh duy nhất
                 update_fields=['contents', 'metadata']
                 )
             word_instance.save()
 
-        cache_manager.cache_word_clear_specific(language_code, word_instance.value)
+        # meta_map = {
+        #     str(metadata.id): {
+        #         'id': str(metadata.id),
+        #         'pos': metadata.pos,
+        #         'level':metadata.level,
+        #         'synonyms':metadata.synonyms,
+        #         'antonyms':metadata.antonyms,
+        #         'relateds':metadata.relateds,
+        #         'forms':metadata.forms,
+        #         'tags':metadata.tags,
+
+        #         'created_at': metadata.created_at,
+        #         'updated_at': metadata.updated_at
+        #     } for metadata in metadatas
+        # }
+
+        # redis_save = []
+        # for sense in senses:
+
+        #     print("metadata", sense.metadata_id)
+
+        #     redis_save.append({
+        #         'id': str(sense.id),
+        #         'metadata': meta_map.get(str(sense.metadata_id), None),
+        #         'contents': sense.contents
+        #     })
+
+        # print(redis_save)
+
+        # cache_manager.cache_word(language_code, word_instance.value, redis_save)
+        # cache_manager.cache_word_clear_specific(language_code, word_instance.value)
 
         # =========================
         # FINAL PHASE: REFRESH & SERIALIZE
@@ -337,17 +368,24 @@ def saveword(user, word_instance, language_code, user_language_code, entries, so
         senses = word_instance.senses.select_related('metadata').all()
         
         # Collect all IDs from JSON to hydrate
-        all_content_ids = []
-        for s in senses:
-            # Hàm này bóc tách toàn bộ UUID có trong JSON contents
-            all_content_ids.extend(flatten_ids(s.contents))
+        # all_content_ids = []
+        # for s in senses:
+        #     # Hàm này bóc tách toàn bộ UUID có trong JSON contents
+        #     all_content_ids.extend(flatten_ids(s.contents))
         
-        contents_queryset = AISenseContent.objects.filter(id__in=all_content_ids)
+        # contents_queryset = AISenseContent.objects.filter(id__in=all_content_ids)
         
-        serialized_senses = serialize_senses(senses, contents_queryset, language_code, user_language_code)
-        word_instance.processed_entries = serialize_entries(serialized_senses)
+        # serialized_senses = serialize_senses(senses, contents_queryset, language_code, user_language_code)
+        word_instance.processed_entries = serialize_entries(senses)
+
+        word_data = AIWordSerializer(word_instance).data
+
+        json_data = JSONRenderer().render(word_data)
+
+        print("json_data", json_data)
+        cache_manager.cache_word(language_code, word_instance.value, word_data)
         
-        return AIWordSerializer(word_instance).data
+        return word_data
 
     except Exception as e:
         
@@ -355,5 +393,3 @@ def saveword(user, word_instance, language_code, user_language_code, entries, so
         word_instance.status = "FAILED"
         word_instance.save()
         raise
-
-        

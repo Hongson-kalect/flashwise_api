@@ -9,18 +9,6 @@ def render_translate_schema(word, word_lang, sense_object: dict, translate_lang:
                 "type": type
             } if type == "STRING" else {"type": "ARRAY", "items": {"type": 'STRING'}} for lang in translate_lang
         }
-        # Trả về cấu trúc đúng của JSON Schema cho một Object
-        # return {
-        #     "type":"array",
-        #     "items":{
-        #         "type":"object",
-        #         "properties":{
-        #         "lang": {"type": "STRING", "description": "ISO code (vi, en, ja...)"},
-        #         "value": {"type": "STRING"} if type == "STRING" else {"type": "ARRAY", "items": {"type": 'STRING'}}
-        #         },
-        #     },
-        #     "minItems":len(translate_lang),
-        # }
         return {
             "type": "OBJECT",
             "properties": lang_props,
@@ -163,7 +151,8 @@ word_schema = {
                                             "description":"additional tags for the sense, for searching, grouping, etc."
                                         },
                                         "image_keywords": {
-                                            "type": "STRING",
+                                            "type": "ARRAY",
+                                            "items": { "type": "STRING" },
                                             "description": "1-5 keywords for stock image search"
                                         },
                                         "level": {

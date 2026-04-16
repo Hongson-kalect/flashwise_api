@@ -40,19 +40,11 @@ class WordCacheManager:
             print(f"Redis Init Error: {e}")
             return False, initial_data
         
-    def cache_word(self, language_code, word_val, data, word_data = None):
+    def cache_word(self, language_code, word_val, data):
         key = f"word:{language_code}:{word_val}"
-
-        if not word_data:
-           cached = self.cache_word_get_data(language_code, word_val)
-
-           print("cached", cached)
-           if cached:
-               word_data = cached.get('word', None)
-
+        
         redis_data = {
-            "word": word_data,
-            "senses": data, 
+            "word": data, 
             "status": "CACHED"
         }
         self.r.json().set(key, Path.root_path(), redis_data)

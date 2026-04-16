@@ -32,7 +32,7 @@ from utils.redis.word_init import WordCacheManager
 
 def detect_missing_content(senses, language_code, user_language_code):
     # Kết quả trả về: { "sense_id": { "definition": "...", "examples": [...] } }
-    missing_data = {}
+    missing_data = []
     # Danh sách các Sense cần dịch nghĩa tổng quát (translations field)
 
     for s in senses:
@@ -71,7 +71,7 @@ def detect_missing_content(senses, language_code, user_language_code):
 
         # Nếu Sense này có bất kỳ thứ gì thiếu, lưu vào map tổng
         if sense_missing:
-            missing_data[sid] = sense_missing
+            missing_data.append({"id": str(s.id),**sense_missing})
 
     return missing_data
 
@@ -104,7 +104,7 @@ class AIWordViewSet(SoftDeleteViewSet):
         if cached:
             # Nếu full thì trực tiếp lấy dữ liệu và return
             if cached.get('status') == 'CACHED':
-                return Response({'detail': 'CACHED', 'status': '200', 'data':cached}, status=status.HTTP_200_OK)
+                return Response({'detail': 'CACHED', 'status': '200', 'data':cached.get('word')}, status=status.HTTP_200_OK)
             
             # Nếu có dữ liệu nhưng không full thì duy trì socket và trả về init
             elif cached.get('status') == 'PROCESSING':
@@ -131,11 +131,10 @@ class AIWordViewSet(SoftDeleteViewSet):
             print(1)
 
             # 3. Prefetch Senses
-            sense_qs = AISense.objects.filter(is_official=True).select_related('metadata', 'previous').order_by('-updated_at')
+            sense_qs = AISense.objects.filter(is_official=True).select_related('metadata', 'previous').order_by('is_official')
 
             # 4. Gộp vào query chính
             word_instance = AIWord.objects.filter(value=word, language_code=language_code).prefetch_related(
-                Prefetch('translate_logs', queryset=log_qs, to_attr='active_logs'),
                 Prefetch('senses', queryset=sense_qs, to_attr='prefetched_senses')
             ).first()
 
@@ -163,7 +162,14 @@ class AIWordViewSet(SoftDeleteViewSet):
                 r_queue = redis.Redis(host='redis', port=6379, db=0)
 
                 # Đẩy vào queue "redis_word"
-                r_queue.rpush("redis_word", json.dumps(raw_word))
+                r_queue.rpush("redis_word", json.dumps({
+                    "user_id": user.id,
+                    "word_id": word_instance.id,
+                    "value": word,
+                    "language_code": language_code,
+                    "user_language_code": user_language_code
+                }))
+                # r_queue.rpush("redis_word", json.dumps(raw_word))
                 
                 print(f"[QUEUE] Pushed word '{word}' to redis_word queue")
                 # ---------------------------------------------
@@ -182,15 +188,24 @@ class AIWordViewSet(SoftDeleteViewSet):
 
             # Đây là nếu từ đã tồn tại trong db
             else:
-                pass
+                cache_manager.cache_word(language_code, word, word_instance)
+                # pass
                 senses_instance = word_instance.prefetched_senses # Thay vì .senses.all()
 
-                missing_contents,= detect_missing_content(senses_instance, language_code, user_language_code)
+                missing_contents = detect_missing_content(senses_instance, language_code, user_language_code)
 
                 # Content missing. Return current, generate new and send via socket
                 if missing_contents:
                     # Unique (word, user_language_code with 1 status PROCESSING allowed)
                     try:
+
+                        print('Vào translate')
+                        asyncio.create_task(ai_create_translate_sema({
+                            "word_value": word_value,
+                            "language_code": language_code,
+                            "user_language_code": redis_user_language_code,
+                            "sense_info": sense_objs
+                        }))
                         translate_instance = TranslateLog.objects.create(word=word_instance, language_code=user_language_code, status="PROCESSING")
                         background_task(render_translate(user, translate_instance, word, senses_instance, missing_contents , need_translation, language_code, user_language_code, socket_room))
                     except:

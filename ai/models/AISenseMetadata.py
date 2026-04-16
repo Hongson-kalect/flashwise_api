@@ -35,5 +35,3 @@ class AISenseMetadata(BaseModel):
         ]
         ordering = ["-created_at"]
 
-    def __str__(self):
-        return f"query: {self.target_type} by {getattr(self.user, 'email', str(self.user))}"

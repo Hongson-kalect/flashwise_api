@@ -75,14 +75,18 @@ services:
     deploy:
       replicas: 2 # 2 con này "vít ga" 80 request AI song song như đã tính
     # Đây là nơi bạn chạy file script asyncio vừa refactor xong
-    command: python utils/celery/worker.py
+    command: python -m utils.celery.worker
+    working_dir: /app
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - PYTHONPATH=/app
+      - DJANGO_SETTINGS_MODULE=flashcardApi.settings
     depends_on:
       - redis
       - db
     volumes:
       - .:/app
+      
 
 volumes:
   redis_data:

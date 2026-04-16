@@ -1,12 +1,27 @@
+
+import os
+import django
 import asyncio
+# 1. Thiết lập biến môi trường trỏ tới file settings của Django
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'flashcardApi.settings')
+
+# 2. Khởi tạo Django
+django.setup()
+
 import json
 import logging
+
 from asgiref.sync import sync_to_async
+from utils.ai.word_render import ai_create_new_word_sema
+from utils.ai.translate import ai_create_translate_sema
+from utils.celery.fetch_image import get_image_by_keyword
+
 
 # --- CẤU HÌNH ---
 REDIS_URL = 'redis://redis:6379/0'
 # Quota: 2 Worker x 10 Sema = 20 Concurrent (Điều chỉnh theo API Key)
 WORD_SEMA_LIMIT = 10 
+IMAGE_SEMA_LIMIT = 10 
 TRANS_SEMA_LIMIT = 20
 BATCH_SIZE = 50
 FLUSH_INTERVAL = 3  # Giây
@@ -26,6 +41,9 @@ async def call_gemini_stream(job, task_type):
         await asyncio.sleep(0.2)  # Giả lập độ trễ I/O
         yield f"{task_type}_chunk_{i}"
 
+# async def get_image(job, keyword):
+
+
 def save_to_postgres_sync(data_list, task_type):
     """Hàm ghi DB đồng bộ - Nơi thực hiện Bulk Update/Create"""
     # Ví dụ: Word.objects.bulk_update(...)
@@ -38,18 +56,34 @@ async def handle_task(job, sema, task_type):
     async with sema:
         try:
             result_chunks = []
-            async for chunk in call_gemini_stream(job, task_type):
-                result_chunks.append(chunk)
+            # async for chunk in call_gemini_stream(job, task_type):
+            #     result_chunks.append(chunk)
+
+            if (task_type=='word'):
+                print('word job', job)
+                await ai_create_new_word_sema(job)
+
+            if (task_type=='image'):
+                print('image job', job)
+                await get_image_by_keyword(job)
+
+            if (task_type=='translate'):
+                print('translate job', job)
+                await ai_create_translate_sema(job)
+
+            print('sema '+task_type+' done')
             
             # Đẩy kết quả vào hàng chờ lưu DB (Buffer)
-            result_key = f"redis_{task_type}_result"
-            # payload = json.dumps({"job_id": job["id"], "result": result_chunks})
-            payload = json.dumps({"job_id": job, "result": result_chunks})
+            # result_key = f"redis_{task_type}_result"
+            # # payload = json.dumps({"job_id": job["id"], "result": result_chunks})
+            # payload = json.dumps({"job_id": job, "result": result_chunks})
             
-            # Dùng Redis Client từ instance global
-            await redis_client.rpush(result_key, payload)
+            # # Dùng Redis Client từ instance global
+            # await redis_client.rpush(result_key, payload)
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             logger.error(f"[AI-ERROR] {task_type} job {job}: {e}")
             # logger.error(f"[AI-ERROR] {task_type} job {job.get('id')}: {e}")
 
@@ -110,6 +144,7 @@ async def main():
     
     # Khởi tạo Semaphore riêng cho từng loại task
     word_sema = asyncio.Semaphore(WORD_SEMA_LIMIT)
+    image_sema = asyncio.Semaphore(IMAGE_SEMA_LIMIT)
     trans_sema = asyncio.Semaphore(TRANS_SEMA_LIMIT)
 
     # Đăng ký các "bánh răng" vào hệ thống
@@ -117,6 +152,8 @@ async def main():
         # Nhóm Consumer (AI Workers)
         consume_queue("redis_word", word_sema, 
                       lambda j: handle_task(j, word_sema, "word"), "word"),
+        consume_queue("redis_image", image_sema, 
+                      lambda j: handle_task(j, image_sema, "image"), "image"),
         consume_queue("redis_trans", trans_sema, 
                       lambda j: handle_task(j, trans_sema, "translate"), "translate"),
         

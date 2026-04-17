@@ -74,7 +74,7 @@ async def ai_create_new_word_sema(word_info):
         ai_trunks =[]
         async with local_client.aio as client:
             try:
-                response = await client.models.generate_content(
+                response = await client.models.generate_content_stream(
                     model="gemini-2.5-flash-lite", # Đã cập nhật bản lite mới nhất 2026
                     contents=current_prompt,
                     config=types.GenerateContentConfig(
@@ -86,7 +86,7 @@ async def ai_create_new_word_sema(word_info):
             except Exception as e:
                 print('Word Error gemini-2.5-flash-lite', e)
                 try:
-                    response = await client.models.generate_content(
+                    response = await client.models.generate_content_stream(
                         model="gemini-2.5-flash", # Đã cập nhật bản lite mới nhất 2026
                         contents=current_prompt,
                         config=types.GenerateContentConfig(
@@ -98,7 +98,7 @@ async def ai_create_new_word_sema(word_info):
                 except Exception as e:
                     print('Word Error gemini-2.5-flash', e)
                     try:
-                        response = await client.models.generate_content(
+                        response = await client.models.generate_content_stream(
                             model="gemini-2.5-pro", # Đã cập nhật bản lite mới nhất 2026
                             contents=current_prompt,
                             config=types.GenerateContentConfig(
@@ -169,10 +169,10 @@ async def ai_create_new_word_sema(word_info):
                                         "contents":{
                                             "collocations": sense.get("collocations",[]),
                                             "idioms": sense.get("idioms",[]),
-                                            "definition": { **sense.get("definition")},
-                                            "usage": { **sense.get("usage")},
+                                            "definition": {language_code:{ **sense.get("definition")}},
+                                            "usage": {language_code:{ **sense.get("usage")}},
                                             "examples": [
-                                                { **ex} 
+                                                {language_code:{ **ex}} 
                                                 for ex in sense.get("examples", [])
                                             ]
                                         },
@@ -250,18 +250,20 @@ async def ai_create_new_word_sema(word_info):
 
             # load lại dữ liệu word rồi lưu vào cache
             # 3. Prefetch Senses
-            sense_qs = AISense.objects.filter(is_official=True).select_related('metadata', 'previous').order_by('-updated_at')
+            word_instance =await sync_to_async(get_word_by_id)(word_id)
+            senses_instance = word_instance.prefetched_senses # Thay vì .senses.all()
 
-            # 4. Gộp vào query chính
-            word_instance = AIWord.objects.filter(id=word_id).prefetch_related(
-                Prefetch('senses', queryset=sense_qs, to_attr='prefetched_senses')
-            ).first()
+            entries = serialize_entries(senses_instance)
+            word_instance.processed_entries = entries
 
-            cache.cache_word(language_code=language_code, word_val=word_value, data=word_instance)
+            data = AIWordSerializer(word_instance).data
+
+            cache.cache_word(language_code=language_code, word_val=word_value, data=data)
 
             # socket
 
-            
+            asyncio.create_task(socket_message(socket_room, {"type": "FULL_SENSE",
+                                    "payload": data}, True))
 
             # task_create_translate.delay(redis_word,redis_senses, redis_translates)
         except Exception as e:
@@ -269,20 +271,20 @@ async def ai_create_new_word_sema(word_info):
             print(f"Error creating translate: {e}")
 
     
-        try:
-            # ✅ Dùng DjangoJSONEncoder để convert UUID
-            cache.cache_word_set_status(language_code, word_value, 'SENSE_COMPLETED')
-            json_data = JSONRenderer().render(word_data)
-            clean_data = json.loads(json_data)  # Convert bytes → dict
-            print('Socket full data')
-            asyncio.create_task(socket_message(socket_room, {"type": "FULL_SENSE",
-                                    "payload": clean_data}, True))
-            # await socket_message(socket_room, {"type": "FULL_SENSE",
-            #                         "payload": clean_data}, True)
-        except Exception as socket_error:
-            print(f"Failed to send full data via socket: {socket_error}")
+        # try:
+        #     # ✅ Dùng DjangoJSONEncoder để convert UUID
+        #     cache.cache_word_set_status(language_code, word_value, 'SENSE_COMPLETED')
+        #     json_data = JSONRenderer().render(word_data)
+        #     clean_data = json.loads(json_data)  # Convert bytes → dict
+        #     print('Socket full data')
+        #     asyncio.create_task(socket_message(socket_room, {"type": "FULL_SENSE",
+        #                             "payload": clean_data}, True))
+        #     # await socket_message(socket_room, {"type": "FULL_SENSE",
+        #     #                         "payload": clean_data}, True)
+        # except Exception as socket_error:
+        #     print(f"Failed to send full data via socket: {socket_error}")
     
-        return sense_objs
+        # return sense_objs
     
     except Exception as e:
         # Cách 1: In đầy đủ stack trace ra console (Dễ nhìn nhất khi dev)
@@ -302,21 +304,29 @@ async def ai_create_new_word_sema(word_info):
             # If socket message fails, just log it
 
         raise e
-   
+
+def get_word_by_id(word_id):
+    sense_qs = AISense.objects.filter(is_official=True).select_related('metadata', 'previous').order_by('-updated_at')
+
+    # 4. Gộp vào query chính
+    word_instance = AIWord.objects.filter(id=word_id).prefetch_related(
+        Prefetch('senses', queryset=sense_qs, to_attr='prefetched_senses')
+    ).first()
+
+    return word_instance
 def save_sense(sense_obj, word_id):
     # Chuyển list dict thành list Model Instance
     metadata_instances = []
     sense_instances =[]
     for s in sense_obj:
         id = uuidv7.generate_uuid7()
-        sense_id = uuidv7.generate_uuid7()
 
         print('metadata', s['metadata'],id)
         metadata_instance = AISenseMetadata(id=id, **s['metadata'])
         metadata_instances.append(metadata_instance) 
 
         s.pop('metadata')
-        sense_instances.append(AISense(metadata_id=id, id = sense_id, **s))
+        sense_instances.append(AISense(metadata_id=id, **s))
 
     # Bây giờ mới gọi bulk_create
     AISenseMetadata.objects.bulk_create(metadata_instances)

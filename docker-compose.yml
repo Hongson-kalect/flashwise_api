@@ -30,6 +30,12 @@ services:
     restart: always
     # command: >
     #   redis-server 
+    #   --maxmemory 1024mb 
+    #   --maxmemory-policy allkeys-lru
+    environment:
+      - REDIS_ARGS=--maxmemory 1024mb --maxmemory-policy allkeys-lru
+    # command: >
+    #   redis-server 
     #   --maxmemory-policy allkeys-lru
     #   --appendonly yes
     volumes:

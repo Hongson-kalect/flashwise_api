@@ -29,6 +29,7 @@ from utils.utils.socket import get_safe_room_id, run_async_task, socket_close
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 from django.contrib.auth.models import User
 from utils.redis.word_init import WordCacheManager
+from utils.ai.translate import ai_create_translate_sema
 
 def detect_missing_content(senses, language_code, user_language_code):
     # Kết quả trả về: { "sense_id": { "definition": "...", "examples": [...] } }
@@ -46,6 +47,8 @@ def detect_missing_content(senses, language_code, user_language_code):
             # Nếu thiếu bản dịch tổng quát, lấy definition làm gốc để AI dịch
             def_node = c_json.get('definition', {})
             sense_missing['translations'] = def_node.get(language_code, True)
+        else :
+            sense_missing['translations'] = False
 
         # --- 2. Duyệt qua các thành phần bên trong contents ---
         for c_type, j in c_json.items():
@@ -69,8 +72,8 @@ def detect_missing_content(senses, language_code, user_language_code):
                 if ex_missing:
                     sense_missing['examples'] = ex_missing
 
-        # Nếu Sense này có bất kỳ thứ gì thiếu, lưu vào map tổng
-        if sense_missing:
+        # Nếu chỉ có Translate = False thì là ko cần dịch
+        if sense_missing['translations'] ==False and len(list(sense_missing.keys()))>1:
             missing_data.append({"id": str(s.id),**sense_missing})
 
     return missing_data
@@ -188,23 +191,28 @@ class AIWordViewSet(SoftDeleteViewSet):
 
             # Đây là nếu từ đã tồn tại trong db
             else:
-                cache_manager.cache_word(language_code, word, word_instance)
                 # pass
                 senses_instance = word_instance.prefetched_senses # Thay vì .senses.all()
 
                 missing_contents = detect_missing_content(senses_instance, language_code, user_language_code)
 
+                entries = serialize_entries(senses_instance)
+                word_instance.processed_entries = entries
+
+                data = AIWordSerializer(word_instance).data
+
                 # Content missing. Return current, generate new and send via socket
                 if missing_contents:
+                    print("translate",missing_contents)
                     # Unique (word, user_language_code with 1 status PROCESSING allowed)
                     try:
 
                         print('Vào translate')
                         asyncio.create_task(ai_create_translate_sema({
-                            "word_value": word_value,
+                            "word_value": word,
                             "language_code": language_code,
-                            "user_language_code": redis_user_language_code,
-                            "sense_info": sense_objs
+                            "user_language_code": user_language_code,
+                            "sense_info": missing_contents
                         }))
                         translate_instance = TranslateLog.objects.create(word=word_instance, language_code=user_language_code, status="PROCESSING")
                         background_task(render_translate(user, translate_instance, word, senses_instance, missing_contents , need_translation, language_code, user_language_code, socket_room))
@@ -213,6 +221,11 @@ class AIWordViewSet(SoftDeleteViewSet):
 
                     # Keep connect with socket to get result
                     return Response({"data":data,'detail': 'Word incomplete.', 'status': '206', 'data': data, 'missing_contents': missing_contents}, status=status.HTTP_206_PARTIAL_CONTENT)
+
+                
+
+                cache_manager.cache_word(language_code, word, data)
+
 
                 # Word ok, return data, close socket
                 return Response({"data":data}, status=status.HTTP_200_OK)

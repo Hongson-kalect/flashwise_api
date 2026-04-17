@@ -153,7 +153,7 @@ def patch_content_id(data, target_id, new_id, lang_dest):
     return False
 import redis, json
 from utils.redis.word_init import WordCacheManager
-async def ai_create_translate_sema(props):
+async def ai_create_translate_sema(props, translate_base_language=True):
     
     r_queue = redis.Redis(host='redis', port=6379, db=0)
     cache = WordCacheManager()
@@ -195,29 +195,31 @@ async def ai_create_translate_sema(props):
         for e_idx, (e_uuid, e_val) in enumerate(s_data.get('examples', {}).items(), 1):
             e_key = f"e{s_idx}_{e_idx}" # Ví dụ: e1_1, e1_2
             mapping_table[e_key] = e_uuid
-            temp_examples[e_key] = e_val.get('value') # Chỉ gửi text để dịch
+            temp_examples[e_key] = e_val.get(language_code).get('value') # Chỉ gửi text để dịch
             
         temp_senses[s_key] = {
-            "definition": s_data.get('definition', {}).get('value'),
-            "usage": s_data.get('usage', {}).get('value'),
+            "definition": s_data.get('definition', {}).get(language_code).get('value'),
+            "usage": s_data.get('usage', {}).get(language_code).get('value'),
             "examples": temp_examples
         }
 
-    base_lang = ['en','zh','es','fr','ar','ja','ko','de','pt','vi'] # Sau còn cần kiểm tra xem đã dịch những ngôn ngữ nào nữa...
+    translate_lang = user_language_code if isinstance(user_language_code, list) else [user_language_code]
 
-    # B1: Gộp 2 list và chuyển thành set để lọc trùng
-    merged_set = set(user_language_code + base_lang)
+    if(translate_base_language):
+        base_lang = ['en','zh','es','fr','ar','ja','ko','de','pt','vi'] # Sau còn cần kiểm tra xem đã dịch những ngôn ngữ nào nữa...
 
-    # B2: Loại bỏ string (dùng discard để không bị lỗi nếu string không tồn tại)
-    merged_set.discard(language_code)
+        # B1: Gộp 2 list và chuyển thành set để lọc trùng
+        merged_set = set(user_language_code + base_lang)
 
-    # B3: Chuyển ngược lại thành list (nếu cần)
-    translate_lang = list(merged_set)
+        # B2: Loại bỏ string (dùng discard để không bị lỗi nếu string không tồn tại)
+        merged_set.discard(language_code)
 
-    language_str = user_language_code
+        # B3: Chuyển ngược lại thành list (nếu cần)
+        translate_lang = list(merged_set)
 
+
+    language_str = ", ".join(translate_lang)
     if(isinstance(user_language_code, list)):
-        language_str = ", ".join(translate_lang)
         mode = 'multiple'
 
     # Tạo danh sách các Task
@@ -243,21 +245,30 @@ async def ai_create_translate_sema(props):
             sense = mapping_sense.get(sense_id)
             
             current_content = sense.get('contents')
+
             merge_content = {
-                'collocations': current_content.get('collocations'),
-                'idioms': current_content.get('idioms'),
+                **current_content
             }
 
-            for key, content in current_content.items():
+            for key, content in sense_translate_content.items():
+                # merge_content[key] = {**merge_content[key], **content}
+
+
+                if key == 'translations':
+                    current_trans = merge_content.get('translations', {})
+                    merge_content['translations'] = {**current_trans, **content}
+                #     merge_content[key] = {
+                #         language_code: content,
+                #     }
                 if key == 'examples':
-                    examples = []
-                    trans = sense_translate_content.get('examples')
-                    trans_arr = [tran for tran in trans.values()]
-                    for index, example in enumerate(content):
-                        examples.append({
-                            language_code: example,
-                            # **trans_arr[index]
-                        })
+                    examples = current_content.get('examples')
+                    # trans = content.get('examples')
+                    trans_arr = [tran for tran in content.values()]
+                    for index, example in enumerate(examples):
+                        # example.append({
+                        #     language_code: example,
+                        #     # **trans_arr[index]
+                        # })
                         for lang, value in trans_arr[index].items():
                             examples[index][lang] = {
                                 "value":value
@@ -266,11 +277,8 @@ async def ai_create_translate_sema(props):
                     merge_content['examples'] = examples
 
                 elif key in ['definition', 'usage']:
-                    merge_content[key] = {
-                        language_code: content,
-                    }
 
-                    for lang, value in sense_translate_content.get(key, {}).items():
+                    for lang, value in content.items():
                         merge_content[key][lang] = {
                             "value":value
                         }

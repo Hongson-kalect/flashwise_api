@@ -15,6 +15,20 @@ def render_translate_schema(word, word_lang, sense_object: dict, translate_lang:
             "required": translate_lang,
             # "description": f"Translate {key} to {', '.join(translate_lang)}"
         }
+    
+    def render_translate_obj(word, definition, type="STRING", ):
+        # Tạo properties cho từng ngôn ngữ
+        lang_props = {
+            lang: {
+                "type": type
+            } if type == "STRING" else {"type": "ARRAY", "items": {"type": 'STRING'}} for lang in translate_lang
+        }
+        return {
+            "type": "OBJECT",
+            "properties": lang_props,
+            "required": translate_lang,
+            "description": f"Translate {word} from {word_lang} to {', '.join(translate_lang)} by definition: {definition}"
+        }
 
 
     for sense_id, sense in sense_object.items():
@@ -23,8 +37,22 @@ def render_translate_schema(word, word_lang, sense_object: dict, translate_lang:
         # Tạo object chứa các content_id
         content_properties = {}
         content_required = []
+        need_translate = True
         
         for key, item in sense.items():
+
+            if key =='translations':
+                # item ở đây là định nghĩa của sense hiện tại
+                # Khi người dùng cung cấp bản dịch cho định nghĩa nhưng không cung cấp bản dịch
+                if item:
+                    content_properties["translations"] = render_translate_obj("this word", "ARRAY")
+                    content_required.append("translations")
+                    need_translate = False
+
+                # Nếu bằng false thì là nó đã có bản dịch
+                else:
+                    need_translate = False
+                    continue
 
             if key == 'examples':
                 example_obj = {}
@@ -40,10 +68,10 @@ def render_translate_schema(word, word_lang, sense_object: dict, translate_lang:
                     "required": example_required
                 }
                 content_required.append(key)
+                continue
 
-            else:
-                content_properties[key] = render_obj(key)
-                content_required.append(key)
+            content_properties[key] = render_obj(key)
+            content_required.append(key)
 
             # c_id = item['id']
             # content_required.append(c_id)
@@ -53,8 +81,9 @@ def render_translate_schema(word, word_lang, sense_object: dict, translate_lang:
             # }
 
         # Tạo object chúa các translation
-        content_properties["translations"] = render_obj("this word", "ARRAY")
-        content_required.append("translations")
+        if need_translate:
+            content_properties["translations"] = render_obj("this word", "ARRAY")
+            content_required.append("translations")
 
         properties[sense_id] = {
             "type": "OBJECT",

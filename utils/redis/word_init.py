@@ -1,8 +1,9 @@
 import redis
 from redis.commands.json.path import Path
 from utils.utils.uuidv7 import generate_uuid7
+from flashcardApi import settings
 
-TTL = 180  # 3 phút
+TTL = 300  # 5 phút
 
 class WordCacheManager:
     def __init__(self):
@@ -26,7 +27,7 @@ class WordCacheManager:
             },
             "senses": {},
             "images": {},
-            "translates": [user_language_code],
+            "langs": [user_language_code],
             "status": "PROCESSING"
         }
 
@@ -58,7 +59,7 @@ class WordCacheManager:
 
         redis_data = {
             "word": data,
-            "status": "CACHED"
+            "status": "CACHED",
         }
 
         pipe = self.r.pipeline()
@@ -104,7 +105,7 @@ class WordCacheManager:
 
         try:
             pipe = self.r.pipeline()
-            pipe.json().arrappend(key, Path(".translates"), user_language_code)
+            pipe.json().arrappend(key, Path(".langs"), user_language_code)
             self._pipe_expire(pipe, key)
             pipe.execute()
             return True

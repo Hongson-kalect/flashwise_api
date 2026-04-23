@@ -21,6 +21,8 @@ load_dotenv() # Nó sẽ tự tìm file .env ở thư mục gốc
 BASE_DIR = Path(__file__).resolve().parent.parent
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 
+BASE_LANGUAGE =  ['en','zh','es','fr','ar','ja','ko','de','pt','vi'] 
+
 MEDIA_URL = '/upload/'  # hoặc '/media/' nếu bạn thích
 MEDIA_ROOT = os.path.join(BASE_DIR, 'upload')  # Đây là thư mục chứa ảnh
 # MEDIA_ROOT = os.path.join(ROOT_DIR, 'upload')  # Đây là thư mục chứa ảnh

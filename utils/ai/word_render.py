@@ -21,7 +21,7 @@ from utils.utils import uuidv7
 from utils.utils.extract_object_from_string import extract_json_fragment
 from utils.utils.flatten_id import flatten_ids
 from utils.utils.kanji import get_ruby_generator
-from utils.utils.sense_handle import serialize_entries, serialize_senses
+from utils.utils.sense_handle import serialize_entries, get_user_lang_content
 from utils.utils.socket import socket_message
 from utils.redis.word_init import WordCacheManager
 from utils.celery.translate import task_create_translate
@@ -211,7 +211,7 @@ async def ai_create_new_word_sema(word_info):
 
 
         word_data = word_cache.cache_word_get_data(language_code, word_value)
-        redis_user_language_code = word_data['translates']
+        redis_user_language_code = word_data['langs']
         redis_senses = word_data['senses']
         redis_word = word_data['word']
 
@@ -239,7 +239,8 @@ async def ai_create_new_word_sema(word_info):
                     "word_value": word_value,
                     "language_code": language_code,
                     "user_language_code": redis_user_language_code,
-                    "sense_info": sense_objs
+                    "missing_translate": sense_objs,
+                    "current_senses": sense_objs
                 })))
 
             await asyncio.gather(*task)
@@ -259,6 +260,8 @@ async def ai_create_new_word_sema(word_info):
             data = AIWordSerializer(word_instance).data
 
             cache.cache_word(language_code=language_code, word_val=word_value, data=data)
+
+            user_lang_content = get_user_lang_content(language_code, user_language_code, data)
 
             # socket
 

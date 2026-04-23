@@ -2,6 +2,8 @@ def render_translate_schema(word, word_lang, sense_object: dict, translate_lang:
     properties = {}
     required = []
 
+    print('sense_object', sense_object)
+
     def render_obj(key, type="STRING"):
         # Tạo properties cho từng ngôn ngữ
         lang_props = {
@@ -16,7 +18,7 @@ def render_translate_schema(word, word_lang, sense_object: dict, translate_lang:
             # "description": f"Translate {key} to {', '.join(translate_lang)}"
         }
     
-    def render_translate_obj(word, definition, type="STRING", ):
+    def render_translate_obj(word, definition, type="STRING" ):
         # Tạo properties cho từng ngôn ngữ
         lang_props = {
             lang: {
@@ -41,18 +43,21 @@ def render_translate_schema(word, word_lang, sense_object: dict, translate_lang:
         
         for key, item in sense.items():
 
+            print('key', key, 'item', item)
+
             if key =='translations':
                 # item ở đây là định nghĩa của sense hiện tại
                 # Khi người dùng cung cấp bản dịch cho định nghĩa nhưng không cung cấp bản dịch
                 if item:
-                    content_properties["translations"] = render_translate_obj("this word", "ARRAY")
+                    content_properties["translations"] = render_translate_obj(word, item, "ARRAY")
                     content_required.append("translations")
                     need_translate = False
 
                 # Nếu bằng false thì là nó đã có bản dịch
                 else:
                     need_translate = False
-                    continue
+
+                continue
 
             if key == 'examples':
                 example_obj = {}
@@ -82,7 +87,7 @@ def render_translate_schema(word, word_lang, sense_object: dict, translate_lang:
 
         # Tạo object chúa các translation
         if need_translate:
-            content_properties["translations"] = render_obj("this word", "ARRAY")
+            content_properties["translations"] = render_obj(word, "ARRAY")
             content_required.append("translations")
 
         properties[sense_id] = {

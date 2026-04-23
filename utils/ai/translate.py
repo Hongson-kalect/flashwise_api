@@ -4,6 +4,7 @@ from google import genai
 from google.genai import types
 from flashcardApi import settings
 from django.db import transaction
+import traceback
 
 from ai.models.AISense import AISense
 from ai.models.AISenseContent import AISenseContent
@@ -114,7 +115,9 @@ async def process_translation_chunk(chunk, word, language_code, language_str, tr
                     original_examples[original_e_uuid] = e_trans
             
             final_chunk_data[original_s_uuid] = s_trans
-            final_chunk_data[original_s_uuid]['examples'] = original_examples
+
+            if(original_examples):
+                final_chunk_data[original_s_uuid]['examples'] = original_examples
 
         # 3. BẮN SOCKET NGAY LẬP TỨC (Xong cái nào bắn cái đó)
         print('final_chunk_data', final_chunk_data)
@@ -154,155 +157,188 @@ def patch_content_id(data, target_id, new_id, lang_dest):
 import redis, json
 from utils.redis.word_init import WordCacheManager
 async def ai_create_translate_sema(props, translate_base_language=True):
-    
-    r_queue = redis.Redis(host='redis', port=6379, db=0)
-    cache = WordCacheManager()
-    socket_room = 'test'
 
-    word = props.get('word_value')
-    language_code = props.get('language_code')
-    user_language_code = props.get('user_language_code')
-    senses_obj = props.get('sense_info')
-
-    senses = {}
-    need_translation = {}
-    mapping_sense = {}
-
-    for sense in senses_obj:
-        data = {}
-        for key, content in sense['contents'].items():
-            if key == 'examples':
-                data['examples'] = {}
-                for index, item in enumerate(content, 1):
-                    data["examples"][f"ex{index}"] = item
-
-            elif key in ['definition', 'usage']:
-                data[key] = content
-
-        senses[sense.get('id')] = data
-
-        mapping_sense[sense.get('id')] = sense
-
-    mapping_table = {}
-    temp_senses = {}
-    
-    for s_idx, (s_uuid, s_data) in enumerate(senses.items(), 1):
-        s_key = f"s{s_idx}"
-        mapping_table[s_key] = s_uuid
+    try:
+        print('ai_create_translate_sema', props)
         
-        # Xử lý Examples bên trong Sense
-        temp_examples = {}
-        for e_idx, (e_uuid, e_val) in enumerate(s_data.get('examples', {}).items(), 1):
-            e_key = f"e{s_idx}_{e_idx}" # Ví dụ: e1_1, e1_2
-            mapping_table[e_key] = e_uuid
-            temp_examples[e_key] = e_val.get(language_code).get('value') # Chỉ gửi text để dịch
-            
-        temp_senses[s_key] = {
-            "definition": s_data.get('definition', {}).get(language_code).get('value'),
-            "usage": s_data.get('usage', {}).get(language_code).get('value'),
-            "examples": temp_examples
-        }
+        r_queue = redis.Redis(host='redis', port=6379, db=0)
+        cache = WordCacheManager()
+        socket_room = 'test'
 
-    translate_lang = user_language_code if isinstance(user_language_code, list) else [user_language_code]
+        word = props.get('word_value')
+        language_code = props.get('language_code')
+        user_language_code = props.get('user_language_code')
+        senses_obj = props.get('missing_translate')
+        current_senses = props.get('current_senses')
 
-    if(translate_base_language):
-        base_lang = ['en','zh','es','fr','ar','ja','ko','de','pt','vi'] # Sau còn cần kiểm tra xem đã dịch những ngôn ngữ nào nữa...
+        senses = {}
+        need_translation = {}
+        mapping_sense = {sense["id"]: sense for sense in current_senses}
 
-        # B1: Gộp 2 list và chuyển thành set để lọc trùng
-        merged_set = set(user_language_code + base_lang)
-
-        # B2: Loại bỏ string (dùng discard để không bị lỗi nếu string không tồn tại)
-        merged_set.discard(language_code)
-
-        # B3: Chuyển ngược lại thành list (nếu cần)
-        translate_lang = list(merged_set)
-
-
-    language_str = ", ".join(translate_lang)
-    if(isinstance(user_language_code, list)):
-        mode = 'multiple'
-
-    # Tạo danh sách các Task
-    tasks = []
-    for chunk in chunk_dict(temp_senses, size=2):
-        tasks.append(
-            process_translation_chunk(
-                chunk, word, language_code, language_str, 
-                translate_lang, mapping_table, socket_room
-            )
-        )
-
-    # Vít ga song song
-    # Kết quả trả về sẽ là một list các final_chunk_data
-    results = await asyncio.gather(*tasks)
-
-    # Lọc bỏ các kết quả None (do lỗi) và gộp lại nếu cần lưu DB tổng
-    full_translated_data = {}
-
-    for result in results:
-        print('result aaaaaaaaaa', result)
-        for sense_id, sense_translate_content in result.items():
-            sense = mapping_sense.get(sense_id)
-            
-            current_content = sense.get('contents')
-
-            merge_content = {
-                **current_content
-            }
-
-            for key, content in sense_translate_content.items():
-                # merge_content[key] = {**merge_content[key], **content}
-
-
-                if key == 'translations':
-                    current_trans = merge_content.get('translations', {})
-                    merge_content['translations'] = {**current_trans, **content}
-                #     merge_content[key] = {
-                #         language_code: content,
-                #     }
+        for sense in senses_obj:
+            data = {}
+            content_target = sense.get('contents', sense)
+            for key, content in content_target.items():
                 if key == 'examples':
-                    examples = current_content.get('examples')
-                    # trans = content.get('examples')
-                    trans_arr = [tran for tran in content.values()]
-                    for index, example in enumerate(examples):
-                        # example.append({
-                        #     language_code: example,
-                        #     # **trans_arr[index]
-                        # })
-                        for lang, value in trans_arr[index].items():
-                            examples[index][lang] = {
+                    data['examples'] = {}
+                    for index, item in enumerate(content, 1):
+                        item_index = item.get('index', index)
+                        data["examples"][f"ex{item_index}"] = item
+
+                elif key in ['definition', 'usage','translations']:
+                    data[key] = content
+
+            senses[sense.get('id')] = data
+
+            # mapping_sense[sense.get('id')] = sense
+
+        mapping_table = {}
+        temp_senses = {}
+
+        print('senses', senses)
+        
+        for s_idx, (s_uuid, s_data) in enumerate(senses.items(), 1):
+
+            print('s-data', s_data)
+            s_key = f"s{s_idx}"
+            mapping_table[s_key] = s_uuid
+            
+            # Xử lý Examples bên trong Sense
+            temp_sense={}
+            temp_examples = {}
+            for e_idx, (e_uuid, e_val) in enumerate(s_data.get('examples', {}).items(), 1):
+                e_key = f"e{s_idx}_{e_idx}" # Ví dụ: e1_1, e1_2
+                mapping_table[e_key] = e_uuid
+                temp_examples[e_key] = e_val.get(language_code).get('value') # Chỉ gửi text để dịch
+
+             # Định nghĩa cách lấy dữ liệu nhanh
+            get_val = lambda f: s_data.get(f, {}).get(language_code, {}).get('value')
+
+            # Cập nhật cực gọn với Walrus
+            if val := get_val('definition'):                     temp_sense['definition'] = val
+            if val := get_val('usage'):                          temp_sense['usage'] = val
+            if (val := s_data.get('translations', None)) != None:  temp_sense['translations'] = val
+            if temp_examples:           temp_sense['examples'] = temp_examples
+                
+            temp_senses[s_key] = temp_sense
+
+        translate_lang = user_language_code if isinstance(user_language_code, list) else [user_language_code]
+
+        if(translate_base_language):
+            base_lang = settings.BASE_LANGUAGE # Sau còn cần kiểm tra xem đã dịch những ngôn ngữ nào nữa...
+
+            # B1: Gộp 2 list và chuyển thành set để lọc trùng
+            merged_set = set(translate_lang + base_lang)
+
+            # B2: Loại bỏ string (dùng discard để không bị lỗi nếu string không tồn tại)
+            merged_set.discard(language_code)
+
+            # B3: Chuyển ngược lại thành list (nếu cần)
+            translate_lang = list(merged_set)
+
+
+        language_str = ", ".join(translate_lang)
+        if(isinstance(user_language_code, list)):
+            mode = 'multiple'
+
+        # Tạo danh sách các Task
+        tasks = []
+        for chunk in chunk_dict(temp_senses, size=2):
+            tasks.append(
+                process_translation_chunk(
+                    chunk, word, language_code, language_str, 
+                    translate_lang, mapping_table, socket_room
+                )
+            )
+
+        # Vít ga song song
+        # Kết quả trả về sẽ là một list các final_chunk_data
+        results = await asyncio.gather(*tasks)
+
+        # Lọc bỏ các kết quả None (do lỗi) và gộp lại nếu cần lưu DB tổng
+        full_translated_data = []
+
+        for result in results:
+            print('result aaaaaaaaaa', result)
+            for sense_id, sense_translate_content in result.items():
+                sense = mapping_sense.get(sense_id)
+                
+                current_content = sense.get('contents')
+
+                merge_content = {
+                    **current_content
+                }
+
+                for key, content in sense_translate_content.items():
+                    # merge_content[key] = {**merge_content[key], **content}
+
+
+                    if key == 'translations':
+
+                        current_trans = merge_content.get('translations', {})
+                        print('current_trans', current_trans)
+                        print('content', content)
+                        merge_content['translations'] = {**current_trans, **content}
+
+                        continue
+                    #     merge_content[key] = {
+                    #         language_code: content,
+                    #     }
+                    if key == 'examples':
+                        examples = current_content.get('examples')
+                        # trans = content.get('examples')
+                        trans_arr = [tran for tran in content.values()] # ex1:{vi: 'a'}, ex2:{vi: 'b'}
+                        for index, example in enumerate(examples):
+                            # example.append({
+                            #     language_code: example,
+                            #     # **trans_arr[index]
+                            # })
+                            trans_obj = content.get(f'ex{str(index+1)}', {})
+                            print('trans_obj', trans_obj)
+                            if not trans_obj:
+                                continue
+
+                            for lang, value in trans_obj.items():
+                                examples[index][lang] = {
+                                    "value":value
+                            }
+
+                        merge_content['examples'] = examples
+
+                        continue
+
+                    if key in ['definition', 'usage']:
+
+                        for lang, value in content.items():
+                            merge_content[key][lang] = {
                                 "value":value
-                        }
+                            }
+                sense['contents'] = merge_content
+                full_translated_data.append(sense)
 
-                    merge_content['examples'] = examples
+        # for r in results:
+        #     # print('r',r)
+        #     if r:
+        #         full_translated_data.update(r)
 
-                elif key in ['definition', 'usage']:
+        # print('full_translated_data',full_translated_data)
 
-                    for lang, value in content.items():
-                        merge_content[key][lang] = {
-                            "value":value
-                        }
-            sense['contents'] = merge_content
+        # r_queue.rpush("redis_translate_result", json.dumps({
+        #     "data": full_translated_data
+        # }))
 
-    # for r in results:
-    #     # print('r',r)
-    #     if r:
-    #         full_translated_data.update(r)
+        # await sync_to_async(save_translate)(full_translated_data)
 
-    # print('full_translated_data',full_translated_data)
-
-    # r_queue.rpush("redis_translate_result", json.dumps({
-    #     "data": full_translated_data
-    # }))
-
-    # await sync_to_async(save_translate)(full_translated_data)
-
-    # cache_manager.cache_word_set_status( language_code,word, 'REDIS-CACHED')
+        # cache_manager.cache_word_set_status( language_code,word, 'REDIS-CACHED')
 
 
-    # Báo cáo hoàn tất toàn bộ tiến trình
-    asyncio.create_task(socket_message(socket_room, {"type": "TRANSLATE_ALL_COMPLETED"}))
-    return full_translated_data
+        # Báo cáo hoàn tất toàn bộ tiến trình
+        asyncio.create_task(socket_message(socket_room, {"type": "TRANSLATE_ALL_COMPLETED"}))
+        return full_translated_data
+    
+    except Exception as e:
+        traceback.print_exc()
+        print(f"Translate Error: {e}")
 
 async def render_translate(
     word_object,

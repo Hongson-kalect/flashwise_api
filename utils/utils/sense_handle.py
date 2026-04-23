@@ -98,8 +98,9 @@ def serialize_entries(senses):
 
         sense_data = {
             'id': str(sense.id),
-            "contents": sense.contents
-            # 'metadata': AISenseMetadataSerializer(sense.metadata).data if sense.metadata else None,
+            "contents": sense.contents,
+            'metadata': AISenseMetadataSerializer(sense.metadata).data if sense.metadata else None,
+            "preview": sense.preview,
             # 'definition': sense.processed_definition,
             # 'usage': sense.processed_usage,
             # 'examples': sense.processed_examples,
@@ -120,3 +121,139 @@ def serialize_entries(senses):
         else:
             entry['senses'].append(sense_data)
     return entries
+
+def get_word_lang_content(language_code, contents):
+    entries = contents['entries']
+    missing_content = []
+
+    # user_lang_entries = []
+    for entry in entries:
+        senses = entry['senses']
+        for sense in senses:
+            sense['definition'] = sense['definition'].get(language_code)
+            sense['usage'] = sense['usage'].get(language_code)
+            sense['examples'] = [example.get(language_code) for example in sense['examples']]
+
+            missing_content.push({
+                'id': sense['id'],
+                'definition': sense['definition'],
+                'usage': sense['usage'],
+                'examples': sense['examples'],
+                'translations': sense['definition'].get('value'),
+            })
+
+    return entries, missing_content
+
+import copy
+def get_user_lang_content(language_code, user_language_code, contents):
+    copy_contents = copy.deepcopy(contents)
+    entries = copy_contents['entries']
+    user_entries = []
+    missing_content = []
+    current_senses =[]
+
+    # user_lang_entries = []
+    for entry in entries:
+        senses = entry['senses']
+        for sense in senses:
+            current_senses.append(copy.deepcopy(sense))
+            sense['contents'], missing = get_user_lang_sense(language_code, user_language_code, sense['contents'], sense['id'])
+            if missing:
+                missing_content.append(missing)
+    return entries, missing_content, current_senses
+
+def get_user_lang_sense(language_code, user_language_code, sense, sense_id = None):
+
+    if isinstance(sense, list):
+            new_list = []
+            missing_ex = []
+            for index,item in enumerate(sense, 1):
+                if isinstance(item, dict):
+                    lang_content, is_have_translate = get_user_lang_sense(language_code, user_language_code, item)
+
+                    if lang_content:
+                        new_list.append(lang_content)
+
+                        if not is_have_translate:
+                            missing_ex.append({"index":index,**lang_content})
+
+            return new_list, missing_ex
+    
+    lang_content = sense.get(language_code)
+    if lang_content:
+
+        res = {language_code: lang_content}
+        user_lang_content = sense.get(user_language_code)
+
+        if not user_lang_content: return res, False
+
+        res[user_language_code] = user_lang_content
+
+        return res, True
+    
+    if not sense_id: return None, False
+    
+    definition, is_have_def_translate = get_user_lang_sense(language_code, user_language_code, sense['definition'])
+    usage, is_have_usage_translate = get_user_lang_sense(language_code, user_language_code, sense['usage'])
+    examples, ex_missing_translates = get_user_lang_sense(language_code, user_language_code, sense['examples'])
+    translations = sense['translations'].get(user_language_code)
+
+    print(definition, usage, examples)
+
+    if not definition or not usage or not examples: return False
+
+
+    missing ={}
+    content_missing = {}
+
+    if not is_have_def_translate:
+        content_missing['definition'] = definition
+
+    if not is_have_usage_translate:
+        content_missing['usage'] = usage
+
+    if ex_missing_translates:
+        content_missing['examples'] = ex_missing_translates
+
+    if not translations:
+        content_missing['translations'] = definition.get(language_code,{}).get('value')
+
+    print(content_missing)
+
+    if content_missing:
+        missing={
+            'id':sense_id,
+            'contents':content_missing
+        }
+
+        # Nếu ko gán false thì nó sẽ dịch full base lang
+        if not missing['contents'].get('translations'):
+            missing['contents']['translations'] = False
+
+
+    return {
+        'definition': definition,
+        'usage': usage,
+        'examples': examples,
+        'translations':translations,
+
+        'collocations':sense['collocations'],
+        'idioms':sense['idioms'],
+    }, missing
+    for key, content in contents.items():
+        valid_content = {}
+
+        
+    
+        lang_content = content.get(language_code)
+        user_lang_content = content.get(user_language_code)
+
+        if not lang_content or not user_lang_content: return False
+
+        valid_content[language_code] = lang_content
+        valid_content[user_language_code] = user_lang_content
+
+        new_contents[key] = valid_content
+    
+
+    return new_contents

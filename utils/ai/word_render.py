@@ -165,6 +165,7 @@ async def ai_create_new_word_sema(word_info):
                                         "id":id,
                                         "word_id": word_id,
                                         "word_value":word_value,
+                                        "language_code":language_code,
                                         "metadata": {**sense.get("metadata",{})},
                                         "contents":{
                                             "collocations": sense.get("collocations",[]),

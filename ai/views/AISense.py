@@ -33,6 +33,7 @@ from utils.utils.limit_prefetch import limit_prefetch
 from utils.utils.sense_content_tree import patch_and_clone_contents
 from utils.utils.sense_handle import serialize_entries, serialize_senses
 from utils.utils.socket import get_safe_room_id, run_async_task, socket_close
+from ai.serializers.AISenseMetadata import AISenseMetadataSerializer
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 from django.contrib.auth.models import User
 
@@ -85,22 +86,23 @@ class AISenseViewSet(SoftDeleteViewSet):
         # params: word_id, user_lang, contents{definition{value, translate}, usage{}, examples[{}], translations[]}, metadata
 
         # user = request.user
-        user = User.objects.first()
+        user = User.objects.get_or_create(username='admin', password='admin', email='admin@gmail.com', is_superuser=True)[0]
         word_id = request.data.get('word_id')
         user_language_code = request.data.get('user_lang')
         contents = request.data.get('contents')
         metadata = request.data.get('metadata')
 
-        if not word_id or not user_language_code or not contents or not metadata or not contents.get('definition',{}).get('value',None):
+        if not word_id or not user_language_code or not contents or not metadata:
             return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "Missing required parameters"})
         
-
-
         # check lượt, quyền hạn của user
         # flow: get word
         word_instance = AIWord.objects.filter(id=word_id).first()
         if not word_instance:
             return Response(status=status.HTTP_404_NOT_FOUND, data={"message": "Word not found"})
+        
+        if not contents.get('definition',{}).get(word_instance.language_code,{}).get('value'):
+            return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "Missing definition"})
 
         # socket_room = get_safe_room_id(word_instance.value, user_language_code, user_language_code)+str(user.id)
         socket_room = 'test'
@@ -108,25 +110,56 @@ class AISenseViewSet(SoftDeleteViewSet):
         with transaction.atomic():
             # save contents
 
-            [content_bulk, sense_content] = save_contents(contents, word_instance.language_code, user_language_code, user)
+            # [content_bulk, sense_content] = save_contents(contents, word_instance.language_code, user_language_code, user)
 
-
-            contents = AISenseContent.objects.bulk_create(content_bulk)
+            # contents = AISenseContent.objects.bulk_create(content_bulk)
 
             # save metadata
             metadata = AISenseMetadata(**metadata)
             metadata.save()
 
             # save sense
-            sense = AISense(word=word_instance, word_value = word_instance.value, metadata=metadata, is_frozen=None, contents=sense_content, created_by=user, language_code=word_instance.language_code, is_official=False, is_ai_created=False)
-            sense.save()
+            sense_instance = AISense(word=word_instance, word_value = word_instance.value, metadata=metadata, is_frozen=None, contents=contents, created_by=user, language_code=word_instance.language_code, is_official=False, is_ai_created=False)
+            sense_instance.save()
 
+            sense = {
+            'id': str(sense_instance.id),
+            "contents": sense_instance.contents,
+            'metadata': AISenseMetadataSerializer(sense_instance.metadata).data if sense_instance.metadata else None,
+            "preview": sense_instance.preview
+        }
+            from utils.utils.sense_handle import get_user_lang_sense
 
-            [sense_json] = serialize_senses([sense], contents, word_instance.language_code, user_language_code)
+            # [sense_json] = serialize_senses([sense], contents, word_instance.language_code, user_language_code)
+            print(word_instance.language_code, user_language_code, sense['contents'], sense['id'])
+            sense['contents'], missing_contents = get_user_lang_sense(word_instance.language_code, user_language_code, sense['contents'], sense['id'])
+
+            data = AISenseSerializer(sense_instance).data
+            if missing_contents:
+                    # Unique (word, user_language_code with 1 status PROCESSING allowed)
+                try:
+                    from utils.celery.translate import task_create_translate
+                    task_create_translate.delay({
+                        "word_value": word_instance.value,
+                        "language_code": word_instance.language_code,
+                        "user_language_code": user_language_code,
+                        "missing_translate":[missing_contents],
+                        'current_senses':[sense]
+                    }, False)
+                    # translate_instance = TranslateLog.objects.create(word=word_instance, language_code=user_language_code, status="PROCESSING")
+                    # background_task(render_translate(user, translate_instance, word, senses_instance, missing_contents , need_translation, language_code, user_language_code, socket_room))
+                except:
+                    pass
+
+                # Keep connect with socket to get result
+                return Response({'detail': 'Word incomplete.', 'status': '206', 'data': data}, status=status.HTTP_206_PARTIAL_CONTENT)
+
+            return Response({'detail': 'Sense created.', 'status': '201', 'data': data}, status=status.HTTP_201_CREATED)
+
             
-            data = AISenseSerializer(sense_json).data
+            # data = AISenseSerializer(sense_json).data
 
-            [missing_contents, have_translated] = detect_missing_content([sense], contents, word_instance.language_code, user_language_code)
+            # [missing_contents, have_translated] = detect_missing_content([sense], contents, word_instance.language_code, user_language_code)
 
 
             # save info to return to client to get id to make modify funtion asap

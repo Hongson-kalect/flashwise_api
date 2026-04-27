@@ -12,23 +12,23 @@ class AISenseSerializer(serializers.ModelSerializer):
     # Chúng ta để read_only=True vì dữ liệu đã được nạp sẵn ở View
     metadata = AISenseMetadataSerializer(read_only=True) # Metadata OneToOne
     # contents = AISenseContentSerializer(many=True, read_only=True)
-    definition = serializers.SerializerMethodField()
-    usage = serializers.SerializerMethodField()
-    examples = serializers.SerializerMethodField()
-    translations = serializers.SerializerMethodField()
+    # definition = serializers.SerializerMethodField()
+    # usage = serializers.SerializerMethodField()
+    # examples = serializers.SerializerMethodField()
+    # translations = serializers.SerializerMethodField()
 
     class Meta:
         model = AISense
-        fields = ['id', 'metadata', "definition","usage","examples","translations", 'created_at','is_frozen']
+        fields = ['id', 'metadata', 'contents', 'created_at','is_frozen']
 
-    def get_definition(self, obj):
-        return getattr(obj, 'processed_definition', {})
+    # def get_definition(self, obj):
+    #     return getattr(obj, 'processed_definition', {})
 
-    def get_usage(self, obj):
-        return getattr(obj, 'processed_usage', {})
+    # def get_usage(self, obj):
+    #     return getattr(obj, 'processed_usage', {})
 
-    def get_examples(self, obj):
-        return getattr(obj, 'processed_examples', [])
+    # def get_examples(self, obj):
+    #     return getattr(obj, 'processed_examples', [])
 
-    def get_translations(self, obj):
-        return getattr(obj, 'processed_translations', [])
+    # def get_translations(self, obj):
+    #     return getattr(obj, 'processed_translations', [])

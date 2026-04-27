@@ -163,62 +163,51 @@ def get_user_lang_content(language_code, user_language_code, contents):
     return entries, missing_content, current_senses
 
 def get_user_lang_sense(language_code, user_language_code, sense, sense_id = None):
-
-    if isinstance(sense, list):
-            new_list = []
-            missing_ex = []
-            for index,item in enumerate(sense, 1):
-                if isinstance(item, dict):
-                    lang_content, is_have_translate = get_user_lang_sense(language_code, user_language_code, item)
-
-                    if lang_content:
-                        new_list.append(lang_content)
-
-                        if not is_have_translate:
-                            missing_ex.append({"index":index,**lang_content})
-
-            return new_list, missing_ex
-    
-    lang_content = sense.get(language_code)
-    if lang_content:
-
-        res = {language_code: lang_content}
-        user_lang_content = sense.get(user_language_code)
-
-        if not user_lang_content: return res, False
-
-        res[user_language_code] = user_lang_content
-
-        return res, True
-    
     if not sense_id: return None, False
-    
-    definition, is_have_def_translate = get_user_lang_sense(language_code, user_language_code, sense['definition'])
-    usage, is_have_usage_translate = get_user_lang_sense(language_code, user_language_code, sense['usage'])
-    examples, ex_missing_translates = get_user_lang_sense(language_code, user_language_code, sense['examples'])
-    translations = sense['translations'].get(user_language_code)
 
-    print(definition, usage, examples)
+    #Cái này để quy định trường nào có dữ liệu, definition bắt từ tầng trên rồi
+    # if not definition or not usage or not examples: return False
 
-    if not definition or not usage or not examples: return False
-
-
+    res = {}
     missing ={}
     content_missing = {}
 
-    if not is_have_def_translate:
-        content_missing['definition'] = definition
+    for index, type in enumerate(['definition', 'usage', 'examples', 'translations'],1):
+        if not sense.get(type):
+            continue
+        if index ==1 or index ==2:
+            content, is_missing_trans =  get_object_lang(sense[type],language_code, user_language_code)
+            if content: 
+                res[type] = content
+            if not is_missing_trans:
+                content_missing[type] = content
 
-    if not is_have_usage_translate:
-        content_missing['usage'] = usage
+        if index == 3:
+            examples =[]
+            example_trans_missing=[]
+            for index, ex in enumerate(sense[type], 1):
+                example, is_have_ex_translate = get_object_lang(ex,language_code, user_language_code)
 
-    if ex_missing_translates:
-        content_missing['examples'] = ex_missing_translates
+                if example:
+                    examples.append(example)
 
-    if not translations:
-        content_missing['translations'] = definition.get(language_code,{}).get('value')
+                if not is_have_ex_translate:
+                    example_trans_missing.append({"index":index,**example})
+            
+            if examples:
+                res['examples'] = examples
+            
+            if example_trans_missing:
+                content_missing['examples'] = example_trans_missing
 
-    print(content_missing)
+        if index ==4:
+            content, translations = get_object_lang(ex,language_code, user_language_code)
+
+            if content:
+                res['translations'] = content
+
+            if not translations:
+                content_missing['translations'] = sense['definition'].get(language_code,{}).get('value')
 
     if content_missing:
         missing={
@@ -231,29 +220,27 @@ def get_user_lang_sense(language_code, user_language_code, sense, sense_id = Non
             missing['contents']['translations'] = False
 
 
-    return {
-        'definition': definition,
-        'usage': usage,
-        'examples': examples,
-        'translations':translations,
+    return res, missing
 
-        'collocations':sense['collocations'],
-        'idioms':sense['idioms'],
-    }, missing
-    for key, content in contents.items():
-        valid_content = {}
+def get_object_lang(obj, language_code, user_language_code):
+    # Trả về obj với 2 code value, is_have_translate
+    lang_content = obj.get(language_code)
+    user_lang_content = obj.get(user_language_code)
 
-        
+    if lang_content:
+        if user_lang_content:
+            return {
+                language_code: lang_content,
+                user_language_code: user_lang_content
+            }, True
+        else:
+            return {
+                language_code: lang_content
+            }, False
+
+    if user_lang_content:
+        return {
+            user_language_code: user_lang_content
+        }, True
     
-        lang_content = content.get(language_code)
-        user_lang_content = content.get(user_language_code)
-
-        if not lang_content or not user_lang_content: return False
-
-        valid_content[language_code] = lang_content
-        valid_content[user_language_code] = user_lang_content
-
-        new_contents[key] = valid_content
-    
-
-    return new_contents
+    return {}, False

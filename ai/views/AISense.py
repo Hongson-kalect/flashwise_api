@@ -36,6 +36,8 @@ from utils.utils.socket import get_safe_room_id, run_async_task, socket_close
 from ai.serializers.AISenseMetadata import AISenseMetadataSerializer
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 from django.contrib.auth.models import User
+from utils.utils.sense_handle import get_user_lang_sense
+
 
 def save_value(type, content, bulk, content_json, language, user_language, user):
     obj = {}
@@ -76,10 +78,23 @@ def save_contents(contents, language, user_language, user):
     return [bulk, content_json]
 
 class AISenseViewSet(SoftDeleteViewSet):
-    queryset = AIWord.objects.all()
-    serializer_class = AIWordSerializer
+    queryset = AISense.objects.select_related('metadata', 'original').all()
+    serializer_class = AISenseSerializer
     # permission_classes = [IsAuthenticatedOrReadOnly]
     permission_classes = [AllowAny] # testing
+
+    def retrieve(self, request, *args, **kwargs):
+        sense = self.get_object()  # lấy object theo id
+        user_language_code = request.query_params.get('user_lang', 'en')
+
+        sense.contents = get_user_lang_sense(sense.language_code, user_language_code, sense.contents or sense.original.contents, sense.id)
+
+        serializer = self.get_serializer(sense)
+        return Response(serializer.data)
+
+        # data = AISenseSerializer(sense).data
+
+        # return Response({'detail': 'Sense updated.', 'status': '200', 'data': data}, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['post'], url_path='create-sense')
     def create_sense(self, request, pk=None, *args, **kwargs):
@@ -128,7 +143,6 @@ class AISenseViewSet(SoftDeleteViewSet):
             'metadata': AISenseMetadataSerializer(sense_instance.metadata).data if sense_instance.metadata else None,
             "preview": sense_instance.preview
         }
-            from utils.utils.sense_handle import get_user_lang_sense
 
             # [sense_json] = serialize_senses([sense], contents, word_instance.language_code, user_language_code)
             print(word_instance.language_code, user_language_code, sense['contents'], sense['id'])
@@ -183,13 +197,87 @@ class AISenseViewSet(SoftDeleteViewSet):
     @action(detail=False, methods=['put'], url_path='update-sense')
     def update_sense(self, request, *args, **kwargs):
         sense_id = request.data.get('sense_id')
-        contents_list = request.data.get('contents', [])  # [{id, value}]
-        user_language_code = request.data.get('user_language_code')
+        contents = request.data.get('contents', {})  # [{id, value}]
+        delta = request.data.get('delta', {})  # object
+        metadata = request.data.get('metadata', None)
+        user_language_code = request.data.get('user_lang')
         user = request.user if request.user.is_authenticated else User.objects.first()
 
         changes=[]
 
         # 1. Lấy sense
+
+        sense = AISense.objects.filter(id=sense_id).select_related('original','metadata').first()
+
+        if not sense:
+            return Response(status=status.HTTP_404_NOT_FOUND, data={"message": "Sense not found"})
+
+        metadata_instance = sense.metadata
+        image = request.data.get('image', sense.image_preview)
+
+        if metadata:
+
+            # Chuyển thành dict và xử lý
+            new_data = sense.metadata.__dict__.copy()
+            new_data.pop('_state')  # Bắt buộc phải xóa
+            new_data.pop('id')      # Xóa để tạo record mới hoàn toàn
+            new_data.pop('created_at')      # Xóa để tạo record mới hoàn toàn
+            new_data.pop('created_by_id')      # Xóa để tạo record mới hoàn toàn
+            new_data.pop('updated_at')      # Xóa để tạo record mới hoàn toàn
+            new_data.pop('updated_by_id')      # Xóa để tạo record mới hoàn toàn
+
+            # Cập nhật các trường muốn thay đổi
+            new_data.update({
+                **metadata
+            })
+
+            # Tạo instance mới
+            metadata_instance = AISenseMetadata.objects.create(**new_data)
+
+        if sense.is_official:
+            sense = AISense.objects.create(
+                word=sense.word, 
+                word_value=sense.word_value, 
+                delta=delta, 
+                image_preview=image, 
+                original=sense,
+                metadata = metadata_instance,
+                created_by=user, 
+                language_code=sense.language_code, 
+                is_official=False, 
+                is_frozen =False,
+                is_ai_created=False)
+
+        elif sense.is_frozen:
+            # update của update, Đây là trường hợp ko biết content có gì, phải merge 2 delta
+            # delta = deep_merge(delta, sense.delta)
+            # Thực tế thì user có thể gửi full delta thay vì semi-delta. Khi user update thì sẽ trực tiếp update value của delta hiện tại
+            sense =AISense.objects.create(
+                word=sense.word, 
+                word_value=sense.word_value, 
+                delta=delta, 
+                image_preview=image, 
+                original=sense.original or sense,
+                metadata = metadata_instance,
+                created_by=user, 
+                language_code=sense.language_code, 
+                is_official=False, 
+                is_frozen =False,
+                is_ai_created=False)
+
+        else:
+            delta = deep_merge(delta, sense.delta)
+            sense.delta = delta
+            sense.image_preview = image
+            sense.metadata = metadata_instance
+            sense.save()
+
+        sense.contents = get_user_lang_sense(sense.language_code, user_language_code, sense.contents or sense.original.contents, sense.id)
+
+        data = AISenseSerializer(sense).data
+
+        return Response(data, status=status.HTTP_200_OK)
+
         sense = AISense.objects.filter(id=sense_id).first()
         if not sense:
             return Response({"message": "Sense not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -403,3 +491,29 @@ class AISenseViewSet(SoftDeleteViewSet):
         #     queryset = queryset.filter(user=user)
 
         return queryset
+
+import copy
+def deep_merge(delta, base):
+    """
+    Merge delta vào base. 
+    - Nếu cả hai đều là dict, sẽ merge đệ quy.
+    - Ưu tiên giá trị từ delta (kể cả None).
+    """
+    if not delta: return base
+    if not base: return delta
+    # Nếu không phải cả hai đều là dict, lấy luôn delta (theo logic ưu tiên object1 của bạn)
+    if not isinstance(delta, dict) or not isinstance(base, dict):
+        return delta
+
+    # Tạo bản copy từ base để không làm ảnh hưởng đến object cũ
+    result = copy.deepcopy(base)
+
+    for key, value in delta.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            # Nếu cả 2 đều là dict, đệ quy xuống tầng sâu hơn
+            result[key] = deep_merge(value, result[key])
+        else:
+            # Nếu key mới hoàn toàn hoặc không phải dict, ghi đè/thêm mới từ delta
+            result[key] = value
+
+    return result

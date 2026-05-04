@@ -19,7 +19,7 @@ class AISenseSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = AISense
-        fields = ['id', 'metadata', 'contents', 'created_at','is_frozen']
+        fields = ['id', 'metadata', 'contents', 'delta','created_at','is_frozen']
 
     # def get_definition(self, obj):
     #     return getattr(obj, 'processed_definition', {})

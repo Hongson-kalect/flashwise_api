@@ -162,7 +162,7 @@ def get_user_lang_content(language_code, user_language_code, contents):
                 missing_content.append(missing)
     return entries, missing_content, current_senses
 
-def get_user_lang_sense(language_code, user_language_code, sense, sense_id = None):
+def get_user_lang_sense(language_code, user_language_code, contents, sense_id = None):
     if not sense_id: return None, False
 
     #Cái này để quy định trường nào có dữ liệu, definition bắt từ tầng trên rồi
@@ -173,10 +173,10 @@ def get_user_lang_sense(language_code, user_language_code, sense, sense_id = Non
     content_missing = {}
 
     for index, type in enumerate(['definition', 'usage', 'examples', 'translations'],1):
-        if not sense.get(type):
+        if not contents.get(type):
             continue
         if index ==1 or index ==2:
-            content, is_missing_trans =  get_object_lang(sense[type],language_code, user_language_code)
+            content, is_missing_trans =  get_object_lang(contents[type],language_code, user_language_code)
             if content: 
                 res[type] = content
             if not is_missing_trans:
@@ -185,7 +185,7 @@ def get_user_lang_sense(language_code, user_language_code, sense, sense_id = Non
         if index == 3:
             examples =[]
             example_trans_missing=[]
-            for index, ex in enumerate(sense[type], 1):
+            for index, ex in enumerate(contents[type], 1):
                 example, is_have_ex_translate = get_object_lang(ex,language_code, user_language_code)
 
                 if example:
@@ -207,7 +207,7 @@ def get_user_lang_sense(language_code, user_language_code, sense, sense_id = Non
                 res['translations'] = content
 
             if not translations:
-                content_missing['translations'] = sense['definition'].get(language_code,{}).get('value')
+                content_missing['translations'] = contents['definition'].get(language_code,{}).get('value')
 
     if content_missing:
         missing={

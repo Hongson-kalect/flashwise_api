@@ -18,7 +18,8 @@ class AISense(BaseModel):
 
     language_code = models.CharField(max_length=10, blank=True, null=True)
 
-    contents = models.JSONField(default=dict)
+    contents = models.JSONField(default=dict, null=True, blank=True)
+    delta = models.JSONField(default=dict, null=True, blank=True)
     news = models.JSONField(default=list) # những content trong news sẽ có thể update tùy ý
 
     is_offensive = models.BooleanField(default=False, null=True)

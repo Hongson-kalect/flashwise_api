@@ -163,6 +163,7 @@ async def ai_create_new_word_sema(word_info):
 
                                     processed_contents = {
                                         "id":id,
+                                        "original_id": id,
                                         "word_id": word_id,
                                         "word_value":word_value,
                                         "language_code":language_code,

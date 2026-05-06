@@ -30,6 +30,11 @@ class AISense(BaseModel):
     versions = models.IntegerField(default=1)
     is_official = models.BooleanField(default=True)
     is_ai_created = models.BooleanField(default=True)
+    like_count = models.IntegerField(default=0)
+    main_count = models.IntegerField(default=0)
+
+    global_forget_count = models.IntegerField(default=0)   # Tổng số lần TẤT CẢ user bấm "Quên" từ này khi học
+    global_remember_count = models.IntegerField(default=0) # Tổng số lần TẤT CẢ user bấm "Thuộc/Nhớ" từ này
 
     class Meta:
         db_table = "ai_sense"

@@ -9,8 +9,9 @@ from core.models.Collection import Collection
 class CollectionItem(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid7, editable=False)
     collection = models.ForeignKey(Collection, on_delete=models.CASCADE)
+    original_id = models.UUIDField(null=True) # Khóa UUIDv7 của gốc, không cho sửa thủ công
     sense = models.ForeignKey(AISense, on_delete=models.CASCADE)
-    order = models.PositiveIntegerField(null=True, blank=True)
+    order = models.FloatField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

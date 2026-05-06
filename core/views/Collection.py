@@ -1,11 +1,11 @@
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Count
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticatedOrReadOnly
 from core.models.Collection import Collection
 from core.models.CollectionItem import CollectionItem
 from core.models.UserCollection import UserCollection
-from core.serializers.Collection import CollectionSerializer
+from core.serializers.Collection import CollectionSerializer,CollectionDetailSerializer,CollectionListSerializer
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 from django.db import transaction
 
@@ -19,7 +19,7 @@ class CollectionViewSet(SoftDeleteViewSet):
         # params: name, description, image, tags, language_code, senses
 
         data = request.data
-        senses_data = data.pop('senses', []) # Giả sử nhận một list sense IDs
+        senses_data = data.pop('senses', []) # Giả sử nhận một list sense IDs {id, o_id}
         data.created_by = request.user
 
         # Sử dụng atomic để đảm bảo tính toàn vẹn dữ liệu
@@ -31,11 +31,12 @@ class CollectionViewSet(SoftDeleteViewSet):
 
             # 2. Chuẩn bị dữ liệu cho bảng phụ (CollectionItem)
             items_to_create = []
-            for idx, sense_id in enumerate(senses_data):
+            for idx, sense_obj in enumerate(senses_data):
                 items_to_create.append(
                     CollectionItem(
                         collection=collection,
-                        sense_id=sense_id, # Truyền ID trực tiếp để tránh query thêm
+                        sense_id=sense_obj.get('id'), # Truyền ID trực tiếp để tránh query thêm
+                        original_id=sense_obj.get('o_id'), # Truyền ID trực tiếp để tránh query thêm
                         order=idx # Gán order theo thứ tự trong list gửi lên
                     )
                 )
@@ -53,18 +54,35 @@ class CollectionViewSet(SoftDeleteViewSet):
             headers = self.get_success_headers(serializer.data)
             return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
         
+    def get_serializer_class(self):
+        # Chọn Serializer tương ứng với hành động để tối ưu dữ liệu trả về
+        if self.action == 'retrieve':
+            return CollectionDetailSerializer
+        return CollectionListSerializer # Mặc định cho list và các hàm khác
+
     def get_queryset(self):
-        # Chỉ lấy những Collection mà User này sở hữu hoặc Official
-        # Dùng prefetch_related để kéo luôn các Item và Sense trong 1-2 query
-        return Collection.objects.filter(
-            # usercollection__user=self.request.user,
-            is_active=True
-        ).prefetch_related(
-            Prefetch(
-                'collectionitem_set', 
-                queryset=CollectionItem.objects.select_related('sense').order_by('order')
+        base_queryset = Collection.objects.filter(is_active=True)
+
+        # KỊCH BẢN 1: USER GỌI LIST API
+        if self.action == 'list':
+            # Chỉ SELECT đúng bảng Collection + COUNT bảng trung gian bằng SQL. 
+            # Tuyệt đối không JOIN, không lôi thông tin chi tiết của Sense lên RAM.
+            return base_queryset.annotate(senses_count=Count('collectionitem'))
+
+        # KỊCH BẢN 2: USER GỌI RETRIEVE API (XEM CHI TIẾT 1 COLLECTION)
+        if self.action == 'retrieve':
+            # Lúc này mới thực hiện prefetch để gom toàn bộ Sense kèm theo trong 2 câu lệnh SQL
+            return base_queryset.prefetch_related(
+                Prefetch(
+                    'collectionitem_set',
+                    queryset=CollectionItem.objects.select_related('sense').order_by('order')
+                )
             )
-        ).distinct()
+
+        return base_queryset
+    # Hàm list lúc này cực kỳ sạch sẽ, không cần xử lý thêm logic đếm phức tạp
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -84,6 +102,8 @@ class CollectionViewSet(SoftDeleteViewSet):
         ]
         
         return Response(data)
+    
+
 
     # def get_queryset(self):
     #     # Nếu muốn lọc theo người dùng hoặc trạng thái

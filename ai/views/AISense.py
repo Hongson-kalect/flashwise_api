@@ -2,7 +2,7 @@ import copy
 import json
 import time
 import uuid
-from django.db import transaction
+from django.db import transaction, models
 from urllib.parse import unquote
 import asyncio
 from importlib import metadata
@@ -37,6 +37,9 @@ from ai.serializers.AISenseMetadata import AISenseMetadataSerializer
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 from django.contrib.auth.models import User
 from utils.utils.sense_handle import get_user_lang_sense
+
+from django.db.models import F, ExpressionWrapper, FloatField, Func
+from django.db.models.functions import Cast, Now
 
 
 def save_value(type, content, bulk, content_json, language, user_language, user):
@@ -79,6 +82,8 @@ def save_contents(contents, language, user_language, user):
 
 class AISenseViewSet(SoftDeleteViewSet):
     queryset = AISense.objects.select_related('metadata', 'original').all()
+
+    
     serializer_class = AISenseSerializer
     # permission_classes = [IsAuthenticatedOrReadOnly]
     permission_classes = [AllowAny] # testing
@@ -239,8 +244,7 @@ class AISenseViewSet(SoftDeleteViewSet):
                 word=sense.word, 
                 word_value=sense.word_value, 
                 delta=delta, 
-                image_preview=image, 
-                original=sense,
+                image_preview=image,
                 metadata = metadata_instance,
                 created_by=user, 
                 language_code=sense.language_code, 
@@ -257,7 +261,6 @@ class AISenseViewSet(SoftDeleteViewSet):
                 word_value=sense.word_value, 
                 delta=delta, 
                 image_preview=image, 
-                original=sense.original or sense,
                 metadata = metadata_instance,
                 created_by=user, 
                 language_code=sense.language_code, 

@@ -5,4 +5,5 @@ from .ModifierLog import ModifierLog
 from .MonthLearnLog import MonthLearnLog
 from .QueryLog import QueryLog
 from .WeekLearnLog import WeekLearnLog
+from .WordTranslation import WordTranslation
 from .YearLearnLog import YearLearnLog

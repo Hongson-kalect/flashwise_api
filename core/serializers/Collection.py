@@ -4,6 +4,28 @@ from core.models.Word import Word
 from core.models.Collection import Collection
 from utils.models.Tag import Tag
 
+# Dùng riêng cho hàm list (Cực nhẹ)
+class CollectionListSerializer(BaseModelSerializer):
+    senses_count = serializers.IntegerField(read_only=True) # Nhận từ annotate
+
+    class Meta:
+        model = Collection
+        fields = ['id', 'sub_id', 'name', 'description', 'image_url', 'senses_count', 'is_official']
+
+# Dùng riêng cho hàm retrieve (Chi tiết kèm từ vựng)
+class CollectionDetailSerializer(BaseModelSerializer):
+    # Bạn có thể dùng Serializer của CollectionItem ở đây để lôi chi tiết word, meaning...
+    items = serializers.SerializerMethodField() 
+
+    class Meta:
+        model = Collection
+        fields = ['id', 'sub_id', 'name', 'description', 'image_url', 'is_official', 'items']
+
+    def get_items(self, obj):
+        # Truy cập vào tập dữ liệu đã được prefetch tối ưu ở hàm retrieve
+        from .serializers import CollectionItemSerializer # import tại đây tránh vòng lặp
+        return CollectionItemSerializer(obj.collectionitem_set.all(), many=True).data
+
 class CollectionSerializer(BaseModelSerializer):
     tag = serializers.PrimaryKeyRelatedField(
         many=True, queryset=Tag.objects.all(), required=False

@@ -4,14 +4,16 @@ from ai.models.AISense import AISense
 from config.models import BaseModel
 from django.contrib.postgres.indexes import GinIndex
 
-from core.models.Collection import Collection
+# from core.models.Collection import Collection
 
 class CollectionItem(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid7, editable=False)
-    collection = models.ForeignKey(Collection, on_delete=models.CASCADE)
-    original_id = models.UUIDField(null=True) # Khóa UUIDv7 của gốc, không cho sửa thủ công
-    sense = models.ForeignKey(AISense, on_delete=models.CASCADE)
+    value= models.CharField(max_length=100, null=True, blank=True)
+    collection = models.ForeignKey("core.Collection", on_delete=models.CASCADE)
+    original = models.ForeignKey(AISense, on_delete=models.CASCADE, related_name='original_items', null=True) # Khóa UUIDv7 của gốc, không cho sửa thủ công
+    sense = models.ForeignKey(AISense, on_delete=models.CASCADE, related_name='sense_items')
     order = models.FloatField(null=True, blank=True)
+    status = models.CharField(max_length=10, null=True, blank=True) # loading, error, invalid, ok
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

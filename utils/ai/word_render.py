@@ -10,6 +10,7 @@ from ai.serializers.AIWord import AIWordSerializer
 from flashcardApi import settings
 from django.db import transaction
 from django.db.models import Prefetch
+from django.utils import timezone
 
 from ai.models.AISense import AISense
 from ai.models.AIWord import AIWord
@@ -132,6 +133,7 @@ async def ai_create_new_word_sema(word_info):
                             word_meta = json.loads(word_meta_str)
                             if not word_meta.get("should_be_saved", True):
                                 print("Word rejected - Stopping stream")
+                                AIWord.objects.filter(id=word_id).update(status='REJECTED', updated_at=timezone.now())
                                 # Gửi socket thông báo từ không hợp lệ
                                 # Ngắt stream/vòng lặp tại đây
                                 break
@@ -163,7 +165,6 @@ async def ai_create_new_word_sema(word_info):
 
                                     processed_contents = {
                                         "id":id,
-                                        "original_id": id,
                                         "word_id": word_id,
                                         "word_value":word_value,
                                         "language_code":language_code,
@@ -224,19 +225,8 @@ async def ai_create_new_word_sema(word_info):
             "language_code": language_code,
             "sense_info": sense_objs
         }))
-
-        # word_data = await sync_to_async(saveword)(user, word_instance, language_code, user_language_code, data, socket_room)
-        # word_instance = AIWord.objects.get(id=word_id)
-        # word_data = await sync_to_async(saveword)(user_id, word_instance, language_code, user_language_code, sense_objs, socket_room)
-
+        
         try:
-            # r_queue.rpush("redis_trans", json.dumps({
-            #                 "word_value": word_value,
-            #                 "language_code": language_code,
-            #                 "user_language_code": redis_user_language_code,
-            #                 "sense_info": sense_objs
-            #             }))
-            
             task.append(asyncio.create_task(ai_create_translate_sema({
                     "word_value": word_value,
                     "language_code": language_code,

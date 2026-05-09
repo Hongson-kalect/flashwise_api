@@ -1,6 +1,7 @@
 from django.db import models
 from config.models import BaseModel
 from django.contrib.postgres.indexes import GinIndex
+from core.models.CollectionItem import CollectionItem
 
 class Collection(BaseModel):
     sub_id = models.CharField(max_length=100, blank=True, null=True, db_index=True) # uuid v7
@@ -15,7 +16,9 @@ class Collection(BaseModel):
     language_code = models.CharField(max_length=10, blank=True, null=True)
     is_active = models.BooleanField(default=True)
     is_official = models.BooleanField(default=False)
-    senses = models.ManyToManyField('ai.AISense', through='core.CollectionItem', blank=True)
+    senses = models.ManyToManyField('ai.AISense', through=CollectionItem, 
+                                    through_fields=('collection', 'sense'),
+                                    blank=True)
 
     # update_requests = models.ManyToManyField('update_request', blank=True)
     # update_logs = models.ManyToManyField('update_log', blank=True)

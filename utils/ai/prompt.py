@@ -1,53 +1,47 @@
 from utils.ai.constain import language_map
 
-def render_word_prompt(mode, word, language_code, user_language_code):
+def render_word_prompt(word, language_code):
     language_name = language_map.get(language_code, 'en')
-    user_language_name = language_map.get(user_language_code, 'en')
 
-    # if mode == "simple":
-    #     return get_word_prompt(word, language, user_language)
-    # elif mode == "latin":
-    #     return get_latin_prompt(word, language, user_language)
-    # elif mode == "complex":
+    # add rule for non latin
+    # add ruby for japanese 
+
     return f"""
-    # INPUTS:
-    - "word": {word}
-    - "WORD_LANGUAGE": {language_name}
-    - "USER_LANGUAGE": {user_language_name}
+    # ROLE: Expert Lexicographer.
+    # TASK: Core analysis of '{word}' ({language_name}) forlearners.
 
-    # ROLE: You are an expert multilingual lexicographer. 
-    # TASK: Analyze the {language_name} EXACT word '{word}' for a learner's dictionary.
-
-    # LANGUAGE RULES:
-    1. "definition.text", "usage.text", "examples.text" MUST be written in {language_name}. 
-    2. "definitionTranslated", "usageTranslate", "translate", "translations" fields: Must be in {user_language_name}.
-    3. "ipas": 
-    - For Latin languages: Use Standard IPA (e.g., US/UK).
-    - For non-Latin (Japanese, Chinese, Korean): Provide ROMAN (Romaji/Pinyin) and phonetic script.
-    4. "pos":
-    - MUST be in English
-
-    # CONTENT QUALITY:
-    - All information MUST be correct.
-    - NEVER use other word have similar sound, words to show instead.
-    - NEVER anser with content that you not sure.
-    - The definition and examples must use vocabulary at the same level as the word's level
-    
-    - FOLLOW RESTRICLY LANGUAGE RULES.
-    - Sense order by frequency.
-    - Accuracy: Do not hallucinate antonyms/synonyms. Use null for "audio" if unknown.
-    - Image Prompt: "image_keywords" is list of tags for image prompt.
-    - should_be_saved: This is a dictionary entry. Therefore, this field is TRUE only for single-meaning phrases, not combinations of different words. These are words or phrases that actually carry meaning, not variations, allusions, or rhetorical devices created by other words. 
-    - I am paying for this service, please provide full detail for every field
-
-    # FORMATTING:
-    - Strictly adhere to the provided JSON schema. 
-    - No markdown formatting in the output, just raw JSON.
-
-    # GROUPING RULE:
-    - All senses with the same part of speech MUST be grouped into a single entry.
-    - Do NOT create multiple entries with the same POS.
+    # RULES:
+    1. Language: Content (def, usage, examples) in {language_name}; IPA/POS in English.
+    2. Grouping: One entry per POS. Senses ordered by frequency.
+    3. Level: Defs/Examples must match the word's level.
+    4. Validation: 'should_be_saved' is FALSE for typos or random word strings.
 
     # OUTPUT:
-    Synonyms/antonyms/relateds/tags: each item MUST be unique in the list, no more than 5 items per field.
+    Strictly follow the Core JSON Schema.
     """
+
+    #  - For non-Latin (Japanese, Chinese, Korean): Provide ROMAN (Romaji/Pinyin) and phonetic script.
+
+def render_enhanced_prompt(word, language_code, senses):
+    language_name = language_map.get(language_code, 'en')
+
+    # Ví dụ truyền dữ liệu từ Query 1 vào
+    context_data = [f"POS: {s_id}, Def: {s_def}" for s_id, s_def in senses.items()]
+
+    return f"""
+    # ROLE: Linguistic Consultant & Visual Designer.
+    # CONTEXT: 
+    Word: '{word}' ({language_name})
+    Senses: {context_data}
+
+    # TASK: Enhance the word above with synonyms, idioms, and visual metadata.
+
+    # RULES:
+    1. Image Keywords: MUST be in English. Focus on concrete, searchable stock-photo tags.
+    2. Relevance: Idioms and synonyms must strictly relate to the specific senses provided.
+    3. Limits: Max 5 unique items per list.
+
+    # OUTPUT:
+    Strictly follow the Enhanced JSON Schema.
+    """
+

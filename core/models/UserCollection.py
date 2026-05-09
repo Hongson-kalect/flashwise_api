@@ -8,6 +8,9 @@ class UserCollection(BaseModel):
     collection = models.ForeignKey(
         'core.Collection', on_delete=models.CASCADE, related_name="user_collections", null=True
     )
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+
     added_sense = models.JSONField(default=list, blank=True, null=True)
     removed_sense = models.JSONField(default=list, blank=True, null=True)
     user = models.ForeignKey('auth.User', on_delete=models.CASCADE, related_name="downloaded_collections")

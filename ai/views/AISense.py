@@ -249,6 +249,7 @@ class AISenseViewSet(SoftDeleteViewSet):
                 created_by=user, 
                 language_code=sense.language_code, 
                 is_official=False, 
+                original=sense.original or sense,
                 is_frozen =False,
                 is_ai_created=False)
 

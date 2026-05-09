@@ -132,81 +132,6 @@ word_schema = {
                         "items": {
                             "type": "OBJECT",
                             "properties": {
-                                "metadata":{
-                                    "type":"OBJECT",
-                                    "properties":{
-                                        "is_offensive":{"type":"BOOLEAN"},
-                                        "pos":{"type":"STRING"},
-                                        "register": {
-                                            "type": "ARRAY",
-                                            "items": {
-                                            "type": "STRING",
-                                            "enum": ["neutral", "formal", "informal", "slang", "vulgar", "technical", "literary", "archaic", "dialect", "humorous"]
-                                            },
-                                            "description": "Danh sách các sắc thái của từ. Nếu là từ phổ thông, chỉ cần trả về ['neutral']."
-                                        },
-                                        "ipas": {
-                                            "type": "ARRAY",
-                                            "items": {
-                                                "type": "OBJECT",
-                                                "properties": {
-                                                    "value": { "type": "STRING" },
-                                                    "label": {
-                                                        "type": "STRING",
-                                                        "description": "US, UK, ROMAN, etc."
-                                                    },
-                                                },
-                                                "required": ["value", "label"]
-                                            }
-                                        },
-                                        "synonyms": {
-                                            "type": "ARRAY",
-                                            "items": { "type": "STRING" }
-                                        },
-
-                                        "antonyms": {
-                                            "type": "ARRAY",
-                                            "items": { "type": "STRING" }
-                                        },
-
-                                        "relateds": {
-                                            "type": "ARRAY",
-                                            "items": { "type": "STRING" }
-                                        },
-
-                                        "forms": {
-                                            "type": "ARRAY",
-                                            "items": { "type": "STRING" },
-                                            "description": "Word forms (plural, past tense, etc.)"
-                                        },
-                                        "tags":{
-                                            "type":"ARRAY",
-                                            "items": {"type":"STRING"},
-                                            "description":"additional tags for the sense, for searching, grouping, etc."
-                                        },
-                                        "image_keywords": {
-                                            "type": "ARRAY",
-                                            "items": { "type": "STRING" },
-                                            "description": "1-5 keywords for stock image search"
-                                        },
-                                        "level": {
-                                            "type": "STRING",
-                                            "description": "A1–C2, N1–N5, TOPIC1, etc."
-                                        }
-                                    },
-                                    "required": ["register", "is_offensive","ipas", "tags","image_keywords", "level","pos"]
-                                },
-                                "collocations": {
-                                    "type": "ARRAY",
-                                    "items": { "type": "STRING" },
-                                    "description": "Common word combinations. e.g. ['heavy rain', 'pour with rain']"
-                                },
-                                "idioms": {
-                                    "type": "ARRAY",
-                                    "items": { "type": "STRING" },
-                                    "description": "Idiomatic expressions related to this sense."
-                                },
-
                                 "definition": {
                                     "type": "OBJECT",
                                     "properties": {
@@ -225,7 +150,6 @@ word_schema = {
                                     },
                                     "required": ["value"],
                                 },
-
                                 "examples": {
                                     "type": "ARRAY",
                                     "items": {
@@ -237,17 +161,49 @@ word_schema = {
                                     },
                                     "maxItems": 2,
                                 },
+                                "is_offensive":{"type":"BOOLEAN"},
+                                "pos":{"type":"STRING"},
+                                "level": {
+                                    "type": "STRING",
+                                    "description": "A1–C2, N1–N5, TOPIC1, etc."
+                                },
+                                "register": {
+                                    "type": "ARRAY",
+                                    "items": {
+                                    "type": "STRING",
+                                    "enum": ["neutral", "formal", "informal", "slang", "vulgar", "technical", "literary", "archaic", "dialect", "humorous"]
+                                    },
+                                    "description": "Danh sách các sắc thái của từ. Nếu là từ phổ thông, chỉ cần trả về ['neutral']."
+                                },
+                                "ipas": {
+                                    "type": "ARRAY",
+                                    "items": {
+                                        "type": "OBJECT",
+                                        "properties": {
+                                            "value": { "type": "STRING" },
+                                            "label": {
+                                                "type": "STRING",
+                                                "description": "US, UK, ROMAN, etc."
+                                            },
+                                        },
+                                        "required": ["value", "label"]
+                                    }
+                                },
                             },
 
                             "required": [
                                 "definition",
                                 "usage",
                                 "examples",
+                                "is_offensive",
+                                "pos",
+                                "level",
+                                "register",
+                                "ipas"
                             ]
                         }
                     }
                 },
-
                 "required": ["pos", "senses"]
             }
         },
@@ -255,6 +211,31 @@ word_schema = {
     },
     "required": ["word", "entries", "metadata"]
 }
+
+def render_enhanced_schema(sense_ids):
+    """
+    sense_ids: List các ID hoặc Index từ Query 1 (ví dụ: ["sense_1", "sense_2"])
+    """
+    properties = {}
+    for s_id in sense_ids:
+        properties[s_id] = {
+            "type": "OBJECT",
+            "properties": {
+                "collocations": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "idioms": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "synonyms": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "antonyms": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "tags": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "image_keywords": {"type": "ARRAY", "items": {"type": "STRING"}}
+            },
+            "required": ["tags", "image_keywords", "synonyms"] # Ép AI không được bỏ sót
+        }
+    
+    return {
+        "type": "OBJECT",
+        "properties": properties,
+        "required": sense_ids # Đảm bảo AI phải trả đủ data cho mọi sense
+    }
 
 nonlatin_schema = {
     "type": "OBJECT",
@@ -337,7 +318,7 @@ nonlatin_schema = {
                                         },
                                         "image_keywords": {
                                             "type": "STRING",
-                                            "description": "1-5 keywords for stock image search"
+                                            "description": "1-5 visual-heavy keywords for stock image search"
                                         },
                                         "level": {
                                             "type": "STRING",

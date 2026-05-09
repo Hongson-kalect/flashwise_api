@@ -15,16 +15,16 @@ class CollectionListSerializer(BaseModelSerializer):
 # Dùng riêng cho hàm retrieve (Chi tiết kèm từ vựng)
 class CollectionDetailSerializer(BaseModelSerializer):
     # Bạn có thể dùng Serializer của CollectionItem ở đây để lôi chi tiết word, meaning...
-    items = serializers.SerializerMethodField() 
+    # items = serializers.SerializerMethodField() 
 
     class Meta:
         model = Collection
-        fields = ['id', 'sub_id', 'name', 'description', 'image_url', 'is_official', 'items']
+        fields = ['id', 'sub_id', 'name', 'description', 'image_url', 'is_official']
 
-    def get_items(self, obj):
-        # Truy cập vào tập dữ liệu đã được prefetch tối ưu ở hàm retrieve
-        from .serializers import CollectionItemSerializer # import tại đây tránh vòng lặp
-        return CollectionItemSerializer(obj.collectionitem_set.all(), many=True).data
+    # def get_items(self, obj):
+    #     # Truy cập vào tập dữ liệu đã được prefetch tối ưu ở hàm retrieve
+    #     from .CollectionItem import CollectionItemSerializer # import tại đây tránh vòng lặp
+    #     return CollectionItemSerializer(obj.collectionitem_set.all(), many=True).data
 
 class CollectionSerializer(BaseModelSerializer):
     tag = serializers.PrimaryKeyRelatedField(

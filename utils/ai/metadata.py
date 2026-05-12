@@ -12,32 +12,10 @@ from utils.utils import uuidv7
 from utils.utils.socket import socket_message
 from utils.utils.retry import retry_async
 from asgiref.sync import sync_to_async
-from .prompt import get_enhanced_prompt
-from .schema import get_enhanced_schema
+from .prompt import render_enhanced_prompt
+from .schema import render_enhanced_schema
 
 from utils.ai.schema import render_translate_schema
-
-def get_minified_schema(sense_ids, langs):
-    lang_props = {l: {"type": "string"} for l in langs}
-    lang_array_props = {l: {"type": "array", "items": {"type": "string"}} for l in langs}
-    
-    sense_props = {}
-    for s_id in sense_ids:
-        sense_props[s_id] = {
-            "type": "object",
-            "properties": {
-                "d": {"type": "object", "properties": lang_props, "required": langs}, # definition
-                "u": {"type": "object", "properties": lang_props, "required": langs}, # usage
-                "tr": {"type": "object", "properties": lang_array_props, "required": langs} # translations
-            },
-            "required": ["d", "u", "tr"]
-        }
-    
-    return {
-        "type": "object",
-        "properties": sense_props,
-        "required": list(sense_props.keys())
-    }
 
 # 2. Hàm chia nhóm Senses
 def chunk_dict(data, size=3):
@@ -50,11 +28,11 @@ async def process_metadata(chunk, word, language_code, mapping_table, socket_roo
     try:
         # 1. Khởi tạo Schema và Client cho riêng Task này
         sense_ids = list(chunk.keys())
-        schema = get_enhanced_schema(sense_ids)
+        schema = render_enhanced_schema(sense_ids)
 
         print('schema', schema)
         
-        prompt = get_enhanced_prompt(word, language_code, chunk)
+        prompt = render_enhanced_prompt(word, language_code, chunk)
 
         local_client = genai.Client(api_key=settings.GEMINI_API_KEY)
         async with local_client.aio as client:
@@ -124,24 +102,6 @@ async def process_metadata(chunk, word, language_code, mapping_table, socket_roo
         await socket_message(socket_room, {"type": "TRANSLATE_SENSE_ERROR", "payload": str(e)})
         return None # Hoặc trả về lỗi để gather xử lý
 
-def patch_content_id(data, target_id, new_id, lang_dest):
-    """
-    Tìm target_id (bản gốc) trong JSON và điền new_id vào lang_dest tương ứng.
-    """
-    if isinstance(data, dict):
-        # Nếu dict này chứa target_id ở bất kỳ key nào
-        if any(str(v) == str(target_id) for v in data.values()):
-            data[lang_dest] = str(new_id)
-            return True
-        # Nếu không, đào sâu vào các key khác
-        for v in data.values():
-            if patch_content_id(v, target_id, new_id, lang_dest):
-                return True
-    elif isinstance(data, list):
-        for item in data:
-            if patch_content_id(item, target_id, new_id, lang_dest):
-                return True
-    return False
 import redis, json
 from utils.redis.word_init import WordCacheManager
 async def ai_create_metadata(props):
@@ -155,11 +115,9 @@ async def ai_create_metadata(props):
 
         word = props.get('word_value')
         language_code = props.get('language_code')
-        user_language_code = props.get('user_language_code')
-        senses_obj = props.get('missing_metadata') # {id: definition}
         current_senses = props.get('current_senses')
 
-        senses = {[sense['id']]:sense['definition']['value'] for sense in senses_obj}
+        senses = {sense['id']:{'definition': sense['contents']['definition'][language_code]['value'], "pos":sense['pos']} for sense in current_senses}
         mapping_sense = {sense["id"]: sense for sense in current_senses}
 
         mapping_table = {}
@@ -167,140 +125,53 @@ async def ai_create_metadata(props):
 
         print('senses', senses)
         
-        for s_idx, (s_uuid, s_def) in enumerate(senses.items(), 1):
+        for s_idx, (s_uuid, s_content) in enumerate(senses.items(), 1):
 
             s_key = f"s{s_idx}"
             mapping_table[s_key] = s_uuid
+            temp_senses[s_key] = s_content
 
         # Tạo danh sách các Task
-        tasks = []
+        # tasks = []
         # for chunk in chunk_dict(temp_senses, size=2):
-        tasks.append(
-            process_metadata(
-                senses, word, language_code, mapping_table, socket_room
+        # tasks.append(
+        result = await process_metadata(
+                temp_senses, word, language_code, mapping_table, socket_room
             )
-        )
+        # )
 
         # Vít ga song song
         # Kết quả trả về sẽ là một list các final_chunk_data
-        results = await asyncio.gather(*tasks)
+        # results = await asyncio.gather(*tasks)
 
         # Lọc bỏ các kết quả None (do lỗi) và gộp lại nếu cần lưu DB tổng
         full_metadata_data = []
 
-        for result in results:
-            print('result aaaaaaaaaa', result)
-            for sense_id, sense_metadata in result.items():
-                sense = mapping_sense.get(sense_id)
+        keywords = {}
 
-                sense.metadata = sense_metadata or {}
-                
-                
-                full_metadata_data.append(sense)
+        # for result in results:
+        print('result aaaaaaaaaa', result)
+        # Lấy image_keyword để lấy ảnh, hoặc lấy list keyword, sau đó search trong db sau đó chạy song song api để lấy ảnh, tạo context và lib và gán preview 
 
-        # for r in results:
-        #     # print('r',r)
-        #     if r:
-        #         full_translated_data.update(r)
+        for sense_id, sense_metadata in result.items():
+            sense = mapping_sense.get(sense_id)
 
-        # print('full_translated_data',full_translated_data)
+            sense['metadata'] = sense_metadata or {}
+            
+            full_metadata_data.append(sense)
 
-        # r_queue.rpush("redis_translate_result", json.dumps({
-        #     "data": full_translated_data
-        # }))
+        # tìm keywords đã tồn tại, gán image và preview vào sense đang tạo
 
-        # await sync_to_async(save_translate)(full_translated_data)
-
-        # cache_manager.cache_word_set_status( language_code,word, 'REDIS-CACHED')
-
+        # batch api call nếu có thể phân biệt được keyword từng sense, gán khi có data trả về
+        # nếu ko phân biệt được thì gọi lần lượt thôi, gán cho sense và gửi socket nếu cần.
 
         # Báo cáo hoàn tất toàn bộ tiến trình
-        asyncio.create_task(socket_message(socket_room, {"type": "TRANSLATE_ALL_COMPLETED"}))
+        asyncio.create_task(socket_message(socket_room, {"type": "GET_METADATA_COMPLETED"}))
         return full_metadata_data
     
     except Exception as e:
         traceback.print_exc()
         print(f"Translate Error: {e}")
-
-async def render_translate(
-    word_object,
-    senses,
-    user_language_code,
-):
-    cache_manager = WordCacheManager()
-    socket_room = 'test'
-
-    language_code = word_object.get("language_code", None)
-    word = word_object.get("value", None)
-
-    mapping_table = {}
-    temp_senses = {}
-    
-    for s_idx, (s_uuid, s_data) in enumerate(senses.items(), 1):
-        s_key = f"s{s_idx}"
-        mapping_table[s_key] = s_uuid
-        
-        # Xử lý Examples bên trong Sense
-        temp_examples = {}
-        for e_idx, (e_uuid, e_val) in enumerate(s_data.get('examples', {}).items(), 1):
-            e_key = f"e{s_idx}_{e_idx}" # Ví dụ: e1_1, e1_2
-            mapping_table[e_key] = e_uuid
-            temp_examples[e_key] = e_val.get('value') # Chỉ gửi text để dịch
-            
-        temp_senses[s_key] = {
-            "definition": s_data.get('definition', {}).get('value'),
-            "usage": s_data.get('usage', {}).get('value'),
-            "examples": temp_examples
-        }
-
-    base_lang = ['en','zh','es','fr','ar','ja','ko','de','pt','vi'] # Sau còn cần kiểm tra xem đã dịch những ngôn ngữ nào nữa...
-
-    # B1: Gộp 2 list và chuyển thành set để lọc trùng
-    merged_set = set(user_language_code + base_lang)
-
-    # B2: Loại bỏ string (dùng discard để không bị lỗi nếu string không tồn tại)
-    merged_set.discard(language_code)
-
-    # B3: Chuyển ngược lại thành list (nếu cần)
-    translate_lang = list(merged_set)
-
-    language_str = user_language_code
-
-    if(isinstance(user_language_code, list)):
-        language_str = ", ".join(translate_lang)
-        mode = 'multiple'
-
-    # Tạo danh sách các Task
-    tasks = []
-    for chunk in chunk_dict(temp_senses, size=2):
-        tasks.append(
-            process_translation_chunk(
-                chunk, word, language_code, language_str, 
-                translate_lang, mapping_table, socket_room
-            )
-        )
-
-    # Vít ga song song
-    # Kết quả trả về sẽ là một list các final_chunk_data
-    results = await asyncio.gather(*tasks)
-
-    # Lọc bỏ các kết quả None (do lỗi) và gộp lại nếu cần lưu DB tổng
-    full_translated_data = {}
-    for r in results:
-        # print('r',r)
-        if r:
-            full_translated_data.update(r)
-
-    print('full_translated_data',full_translated_data)
-
-    await sync_to_async(save_translate)(full_translated_data)
-
-    cache_manager.cache_word_set_status( language_code,word, 'REDIS-CACHED')
-
-
-    # Báo cáo hoàn tất toàn bộ tiến trình
-    await socket_message(socket_room, {"type": "TRANSLATE_ALL_COMPLETED"})
-    return full_translated_data
 
 def create_content_instance(value, lang_code, content_type=None, audio=None, reading=None):
     """
@@ -317,7 +188,7 @@ def create_content_instance(value, lang_code, content_type=None, audio=None, rea
         is_ai_created=True
     )
 
-def save_translate(data):
+def save_metadata(data):
     # Lấy danh sách các sense. 
     content_bulk = []
     sense_ids = data.keys()
@@ -360,3 +231,58 @@ def save_translate(data):
         AISenseContent.objects.bulk_create(content_bulk)
 
     return
+
+import asyncio
+import httpx
+from django.http import JsonResponse
+
+async def call_external_api(client, query_id, url, payload):
+    """
+    Hàm helper để gọi API và đính kèm query_id để phân biệt
+    """
+    try:
+        # Giả sử bạn dùng POST để gửi prompt
+        response = await client.post(url, json=payload, timeout=20.0)
+        response.raise_for_status()
+        return {"query_id": query_id, "data": response.json(), "status": "success"}
+    except Exception as e:
+        return {"query_id": query_id, "error": str(e), "status": "error"}
+
+async def flashwise_multi_query_view(request):
+    # 1. Khởi tạo dữ liệu
+    api_url = "https://pixaybay...." # URL ảo
+    queries = [
+        {"id": "sense_id", "payload": {"keyword": "Query 1 prompt here..."}},
+
+        {"id": "enhanced_data", "payload": {"prompt": "Query 2 prompt here..."}},
+    ]
+    
+    results = {}
+    
+    # 2. Sử dụng httpx.AsyncClient để gọi song song
+    async with httpx.AsyncClient() as client:
+        try:
+            # Tạo danh sách các task
+            tasks = [
+                call_external_api(client, q["id"], api_url, q["payload"]) # hoặc có thể truyền cả sense vào để trực tiếp cập nhật sense khi hoàn tất api
+                for q in queries
+            ]
+            
+            # Chạy song song tất cả các task
+            responses = await asyncio.gather(*tasks)
+            
+            # Phân biệt kết quả dựa trên query_id
+            for res in responses:
+                results[res["query_id"]] = res
+                
+        except Exception as global_err:
+            print(f"Global Error: {global_err}")
+            
+        finally:
+            # 3. Khối FINALLY - Luôn chạy khi toàn bộ API hoàn tất (hoặc lỗi)
+            # Ví dụ: Log dữ liệu, đóng kết nối, hoặc cập nhật trạng thái Task
+            print("--- All API calls finished. Cleaning up or Logging... ---")
+            # Bạn có thể thực hiện logic hậu xử lý ở đây
+            results["metadata"] = {"processed_at": "2026-05-12", "all_tasks_done": True}
+
+    return JsonResponse(results)

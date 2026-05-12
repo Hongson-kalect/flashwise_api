@@ -4,6 +4,7 @@ from ai.models.AISenseMetadata import AISenseMetadata
 from ai.models.AIWord import AIWord
 from config.models import BaseModel
 from django.db import models
+from django.contrib.postgres.fields import ArrayField
 
 class AISense(BaseModel):
     word = models.ForeignKey(AIWord, related_name='senses', on_delete=models.CASCADE)
@@ -15,21 +16,31 @@ class AISense(BaseModel):
     preview =models.JSONField(default=dict)
     image_preview = models.URLField(max_length=500, null=True, blank=True)
     image_context = models.ForeignKey('core.ImageContext', on_delete=models.SET_NULL, null=True, blank=True)
-
     language_code = models.CharField(max_length=10, blank=True, null=True)
-
     contents = models.JSONField(default=dict, null=True, blank=True)
     delta = models.JSONField(default=dict, null=True, blank=True)
-    news = models.JSONField(default=list) # những content trong news sẽ có thể update tùy ý
+
+    pos = models.CharField(max_length=20, blank=True, null=True)
+    level = models.CharField(max_length=20, blank=True, null=True)
+    register = ArrayField(default=list, base_field=models.CharField(max_length=50))
+    ipas = models.JSONField(default=list) # {label, audio, value, reading, roman, ruby}
+
+    voted = models.IntegerField(default=0)
+    devoted = models.IntegerField(default=0)
+    likes = models.IntegerField(default=0)
+    views = models.IntegerField(default=0)
+
 
     is_offensive = models.BooleanField(default=False, null=True)
     is_frozen = models.BooleanField(default=True, null=True)
+
+    versions = models.IntegerField(default=1)
     # True = can't update, always create new. False = can update news content. None = can update all
     # When update content not in news with is_frozen = False, create new content, replace in contents and update news 
 
-    versions = models.IntegerField(default=1)
     is_official = models.BooleanField(default=True)
     is_ai_created = models.BooleanField(default=True)
+    score = models.IntegerField(default=0)
     like_count = models.IntegerField(default=0)
     main_count = models.IntegerField(default=0)
 
@@ -44,11 +55,14 @@ class AISense(BaseModel):
             models.Index(fields=["language_code"]),
             models.Index(fields=["metadata"]),
             models.Index(fields=["original"]),
-            models.Index(fields=["previous"]),
             models.Index(fields=["is_frozen"]),
-            models.Index(fields=["created_at"]),
             models.Index(fields=["is_active"]),
             models.Index(fields=["is_deleted"]),
+            models.Index(fields=["score"]),
+            models.Index(fields=["likes"]),
+            models.Index(fields=["views"]),
+            models.Index(fields=["created_at"]),
+            models.Index(fields=["is_offensive"]),
         ]
 
     def __str__(self):

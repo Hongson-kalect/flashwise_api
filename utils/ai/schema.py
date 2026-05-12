@@ -144,7 +144,7 @@ word_schema = {
                                     "properties": {
                                         "value": { 
                                             "type": "STRING",
-                                            "description": "Technical usage: specific prepositions, grammatical patterns, or social register (formal/informal). Example: 'Often used with the particle NI' or 'Commonly used in business contexts'."
+                                            "description": "How to use the word: grammar patterns, prepositions (e.g. particle NI), register (formal/slang), or specific context. NO object function description."
                                         },
 
                                     },
@@ -155,7 +155,7 @@ word_schema = {
                                     "items": {
                                         "type": "OBJECT",
                                         "properties": {
-                                            "value": { "type": "STRING" },
+                                            "value": { "type": "STRING" }
                                         },
                                         "required": ["value"]
                                     },
@@ -223,12 +223,14 @@ def render_enhanced_schema(sense_ids):
             "properties": {
                 "collocations": {"type": "ARRAY", "items": {"type": "STRING"}},
                 "idioms": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "relateds": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "forms": {"type": "ARRAY", "items": {"type": "STRING"}},
                 "synonyms": {"type": "ARRAY", "items": {"type": "STRING"}},
                 "antonyms": {"type": "ARRAY", "items": {"type": "STRING"}},
                 "tags": {"type": "ARRAY", "items": {"type": "STRING"}},
                 "image_keywords": {"type": "ARRAY", "items": {"type": "STRING"}}
             },
-            "required": ["tags", "image_keywords", "synonyms"] # Ép AI không được bỏ sót
+            "required": ["tags", "image_keywords"] # Ép AI không được bỏ sót
         }
     
     return {

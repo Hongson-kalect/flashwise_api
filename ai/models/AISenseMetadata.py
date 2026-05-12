@@ -4,23 +4,10 @@ from django.contrib.postgres.fields import ArrayField
 
 
 class AISenseMetadata(BaseModel):
-    level = models.CharField(max_length=20, null=True, blank=True)
-    synonyms = models.JSONField(default=list, blank=True)
-    antonyms = models.JSONField(default=list, blank=True)
-    relateds = models.JSONField(default=list, blank=True)
-    forms = models.JSONField(default=list, blank=True)
+    advanced = models.JSONField(default=dict, null=True, blank=True) # collocation, idiom, synonyms, antonyms, relateds, forms, etc.
+
     tags = models.JSONField(default=list, blank=True)
 
-    voted = models.IntegerField(default=0)
-    devoted = models.IntegerField(default=0)
-    likes = models.IntegerField(default=0)
-    views = models.IntegerField(default=0)
-
-    pos = models.CharField(max_length=50, null=True, blank=True) # Part of Speech
-    ipas = models.JSONField(default=list) # {label, audio, value, reading, roman, ruby}
-    
-    is_offensive = models.BooleanField(default=False)
-    register = ArrayField(default=list, base_field=models.CharField(max_length=50))
     image_keywords = models.JSONField(null=True, blank=True, default=list)
     image_link = models.URLField(max_length=500, null=True, blank=True)
     image_metadata = models.JSONField(default=dict, null=True, blank=True)  # {width, height, size, format, color_mode, etc.}
@@ -28,10 +15,7 @@ class AISenseMetadata(BaseModel):
     class Meta:
         db_table = "sense_metadata"
         indexes = [
-            models.Index(fields=["likes"]),
-            models.Index(fields=["views"]),
             models.Index(fields=["created_at"]),
-            models.Index(fields=["is_offensive"]),
         ]
         ordering = ["-created_at"]
 

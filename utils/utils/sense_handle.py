@@ -92,7 +92,7 @@ def serialize_entries(senses):
     pos_map = {}
     for sense in senses:
         
-        pos = sense.metadata.pos if sense.metadata else "unknown"
+        pos = sense.pos or "unknown"
 
         # Đang chỉnh để thêm sense vào entries với pos + sense
 
@@ -101,6 +101,11 @@ def serialize_entries(senses):
             "contents": sense.contents,
             'metadata': AISenseMetadataSerializer(sense.metadata).data if sense.metadata else None,
             "preview": sense.preview,
+            "is_offensive":sense.is_offensive,
+            "pos":sense.pos,
+            "level":sense.level,
+            "register":sense.register,
+            "ipas":sense.ipas,
             # 'definition': sense.processed_definition,
             # 'usage': sense.processed_usage,
             # 'examples': sense.processed_examples,
@@ -201,7 +206,7 @@ def get_user_lang_sense(language_code, user_language_code, contents, sense_id = 
                 content_missing['examples'] = example_trans_missing
 
         if index ==4:
-            content, translations = get_object_lang(ex,language_code, user_language_code)
+            content, translations = get_object_lang(contents[type],language_code, user_language_code)
 
             if content:
                 res['translations'] = content

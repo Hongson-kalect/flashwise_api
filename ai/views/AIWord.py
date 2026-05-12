@@ -346,7 +346,7 @@ class AIWordViewSet(SoftDeleteViewSet):
             return Response({'detail': 'PROCESSING', 'status': '202'}, status=status.HTTP_202_ACCEPTED)
         
         if word_instance.status == 'REJECTED':
-            # Keep connect with socket to get result
+            # kill socket connect
             return Response({'detail': 'Rejected', 'status': '400'}, status=status.HTTP_400_BAD_REQUEST)
 
         target_langs = [language_code, user_language_code]

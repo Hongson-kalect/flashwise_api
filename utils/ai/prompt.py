@@ -18,6 +18,7 @@ def render_word_prompt(word, language_code):
 
     # OUTPUT:
     Strictly follow the Core JSON Schema.
+    Example must include '{word}'.
     """
 
     #  - For non-Latin (Japanese, Chinese, Korean): Provide ROMAN (Romaji/Pinyin) and phonetic script.
@@ -26,7 +27,7 @@ def render_enhanced_prompt(word, language_code, senses):
     language_name = language_map.get(language_code, 'en')
 
     # Ví dụ truyền dữ liệu từ Query 1 vào
-    context_data = [f"POS: {s_id}, Def: {s_def}" for s_id, s_def in senses.items()]
+    context_data = [f"POS: {s_contents['pos']}, Definition: {s_contents['definition']}" for s_id, s_contents in senses.items()]
 
     return f"""
     # ROLE: Linguistic Consultant & Visual Designer.

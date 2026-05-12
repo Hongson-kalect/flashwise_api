@@ -32,8 +32,9 @@ from utils.ai.schema import word_schema, nonlatin_schema, complex_schema
 from utils.ai.prompt import render_word_prompt 
 from utils.celery.fetch_image import get_image_by_keyword 
 from utils.ai.translate import ai_create_translate_sema 
+from utils.ai.metadata import ai_create_metadata 
 
-def get_schema(mode):
+def get_schema(mode='latin'):
     if mode == "latin":
         return word_schema
     elif mode == "nonlatin":
@@ -68,7 +69,7 @@ async def ai_create_new_word_sema(word_info):
 
     # 2. Lấy Schema và Prompt tương ứng
     current_schema = get_schema(mode)
-    current_prompt = render_word_prompt(mode, word_value, language_code, user_language_code)
+    current_prompt = render_word_prompt(word_value, language_code)
 
     try:
         local_client = genai.Client(api_key=settings.GEMINI_API_KEY)
@@ -149,36 +150,27 @@ async def ai_create_new_word_sema(word_info):
                             if sense_str:
                                 pointer = new_pointer
                                 try:
-                                    print(1)
                                     sense = json.loads(sense_str)
                                     id = str(uuidv7.generate_uuid7())
-                                    print(2)
-
-                                    sense_word_obj = {
-                                        "id": id,
-                                        "word_id": word_id,
-                                        "word_value":word_value,
-                                        "language_code": language_code,
-                                        "created_by_id": user_id,
-                                    }
-                                    print(3)
 
                                     processed_contents = {
                                         "id":id,
                                         "word_id": word_id,
                                         "word_value":word_value,
                                         "language_code":language_code,
-                                        "metadata": {**sense.get("metadata",{})},
+                                        "is_offensive":sense.get("is_offensive"),
+                                        "pos":sense.get("pos"),
+                                        "level":sense.get("level"),
+                                        "register":sense.get("register"),
+                                        "ipas":sense.get("ipas"),
                                         "contents":{
-                                            "collocations": sense.get("collocations",[]),
-                                            "idioms": sense.get("idioms",[]),
                                             "definition": {language_code:{ **sense.get("definition")}},
                                             "usage": {language_code:{ **sense.get("usage")}},
                                             "examples": [
                                                 {language_code:{ **ex}} 
                                                 for ex in sense.get("examples", [])
-                                            ]
-                                        },
+                                            ],
+                                        }
                                     }
                                     sense_objs.append(processed_contents)
                                     print(6)
@@ -219,12 +211,22 @@ async def ai_create_new_word_sema(word_info):
         redis_word = word_data['word']
 
         # lưu senses, update word thành completed
-        r_queue.rpush("redis_word_result", json.dumps({
-            "word_id": word_id,
-            "word_value": word_value,
-            "language_code": language_code,
-            "sense_info": sense_objs
-        }))
+        # r_queue.rpush("redis_word_result", json.dumps({
+        #     "word_id": word_id,
+        #     "word_value": word_value,
+        #     "language_code": language_code,
+        #     "sense_info": sense_objs
+        # }))
+
+        try:
+            task.append(asyncio.create_task(ai_create_metadata({
+                    "word_value": word_value,
+                    "language_code": language_code,
+                    "current_senses": sense_objs
+                })))
+
+        except Exception as e:
+            print('error on get metadata',e)
         
         try:
             task.append(asyncio.create_task(ai_create_translate_sema({
@@ -316,11 +318,23 @@ def save_sense(sense_obj, word_id):
     for s in sense_obj:
         id = uuidv7.generate_uuid7()
 
-        print('metadata', s['metadata'],id)
-        metadata_instance = AISenseMetadata(id=id, **s['metadata'])
-        metadata_instances.append(metadata_instance) 
+        metadata_obj = {
+            'id': id,
+            'tags': s['metadata'].pop('tags', []),
+            'image_keywords' : s['metadata'].pop('image_keywords', []),
+        }
 
-        s.pop('metadata')
+        advanced = {}
+
+        for key, value in s.pop('metadata').items():
+            if not value: continue
+            advanced[key] = value
+
+        metadata_obj['advanced'] = advanced
+
+        metadata_instances.append(AISenseMetadata(**metadata_obj)) 
+
+        
         sense_instances.append(AISense(metadata_id=id, **s))
 
     # Bây giờ mới gọi bulk_create

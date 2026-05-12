@@ -51,16 +51,21 @@ def save_to_postgres_sync(data_list, task_type):
 
 # --- TẦNG XỬ LÝ LOGIC (HANDLERS) ---
 
+from django.utils import timezone
 async def handle_task(job, sema, task_type):
     """Xử lý từng task riêng lẻ với Semaphore bảo vệ"""
     async with sema:
+        time_start = timezone.now()
+
+        custom_log =None
+
         try:
             result_chunks = []
             # async for chunk in call_gemini_stream(job, task_type):
             #     result_chunks.append(chunk)
 
             if (task_type=='word'):
-                print('word job', job)
+                custom_log = 'word-'+job.get('value', None)
                 await ai_create_new_word_sema(job)
 
             if (task_type=='image'):
@@ -71,7 +76,7 @@ async def handle_task(job, sema, task_type):
                 print('translate job', job)
                 await ai_create_translate_sema(job)
 
-            print('sema '+task_type+' done')
+            print(task_type+' sema '+task_type+' done ', round((timezone.now() - time_start).total_seconds(), 2))
             
             # Đẩy kết quả vào hàng chờ lưu DB (Buffer)
             # result_key = f"redis_{task_type}_result"

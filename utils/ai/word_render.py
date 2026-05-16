@@ -230,7 +230,6 @@ async def ai_create_new_word_sema(word_info):
         
         try:
             task.append(asyncio.create_task(ai_create_translate_sema({
-                    "word_value": word_value,
                     "language_code": language_code,
                     "user_language_code": redis_user_language_code,
                     "missing_translate": sense_objs,

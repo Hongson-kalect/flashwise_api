@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from config.serializers.BaseModel import BaseModelSerializer
 from core.models.Word import Word
+from ai.serializers.AISense import AISenseSerializer
 from core.models.Collection import Collection
 from utils.models.Tag import Tag
 
@@ -13,13 +14,27 @@ class CollectionListSerializer(BaseModelSerializer):
         fields = ['id', 'sub_id', 'name', 'description', 'image_url', 'senses_count', 'is_official']
 
 # Dùng riêng cho hàm retrieve (Chi tiết kèm từ vựng)
-class CollectionDetailSerializer(BaseModelSerializer):
+class CollectionPreviewSerializer(BaseModelSerializer):
     # Bạn có thể dùng Serializer của CollectionItem ở đây để lôi chi tiết word, meaning...
     # items = serializers.SerializerMethodField() 
 
     class Meta:
         model = Collection
-        fields = ['id', 'sub_id', 'name', 'description', 'image_url', 'is_official']
+        fields = ['id', 'name', 'description', 'image_url', 'is_official']
+
+    # def get_items(self, obj):
+    #     # Truy cập vào tập dữ liệu đã được prefetch tối ưu ở hàm retrieve
+    #     from .CollectionItem import CollectionItemSerializer # import tại đây tránh vòng lặp
+    #     return CollectionItemSerializer(obj.collectionitem_set.all(), many=True).data
+
+class CollectionDetailSerializer(BaseModelSerializer):
+    # Bạn có thể dùng Serializer của CollectionItem ở đây để lôi chi tiết word, meaning...
+    # items = serializers.SerializerMethodField() 
+    senses = AISenseSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Collection
+        fields = ['id', 'name', 'description', 'image_url', 'is_official', 'senses', 'invalid_words','pending_words']
 
     # def get_items(self, obj):
     #     # Truy cập vào tập dữ liệu đã được prefetch tối ưu ở hàm retrieve

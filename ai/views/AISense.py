@@ -92,7 +92,22 @@ class AISenseViewSet(SoftDeleteViewSet):
         sense = self.get_object()  # lấy object theo id
         user_language_code = request.query_params.get('user_lang', 'en')
 
-        sense.contents = get_user_lang_sense(sense.language_code, user_language_code, sense.contents or sense.original.contents, sense.id)
+        sense.contents, missing = get_user_lang_sense(sense.language_code, user_language_code, sense.contents or sense.original.contents, sense.id)
+
+        if missing:
+            try:
+                from utils.celery.translate import task_create_translate
+                task_create_translate.delay({
+                    "word_value": sense.word_value,
+                    "language_code": sense.language_code,
+                    "user_language_code": user_language_code,
+                    "missing_translate": [missing],
+                    'current_senses':[sense]
+                }, False)
+                # translate_instance = TranslateLog.objects.create(word=word_instance, language_code=user_language_code, status="PROCESSING")
+                # background_task(render_translate(user, translate_instance, word, senses_instance, missing_contents , need_translation, language_code, user_language_code, socket_room))
+            except:
+                pass
 
         serializer = self.get_serializer(sense)
         return Response(serializer.data)

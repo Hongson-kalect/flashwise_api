@@ -107,7 +107,6 @@ from utils.redis.word_init import WordCacheManager
 async def ai_create_metadata(props):
 
     try:
-        print('ai_create_metadata', props)
         
         r_queue = redis.Redis(host='redis', port=6379, db=0)
         cache = WordCacheManager()

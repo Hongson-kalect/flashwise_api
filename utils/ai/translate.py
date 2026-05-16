@@ -44,9 +44,13 @@ def chunk_dict(data, size=3):
         yield {k: v for k, v in [next(it) for _ in range(min(size, len(data) - i))]}
 
 @retry_async()
-async def process_translation_chunk(chunk, word, language_code, language_str, translate_lang, mapping_table, socket_room):
+async def process_translation_chunk(chunk, language_code, language_str, translate_lang, mapping_table, socket_room):
     try:
         # 1. Khởi tạo Schema và Client cho riêng Task này
+        word = None
+        for id in chunk.keys():
+            word = chunk[id].get("word_value")
+            break
         sense_ids = list(chunk.keys())
         schema = render_translate_schema(word, language_code, chunk, translate_lang)
 
@@ -132,6 +136,7 @@ async def process_translation_chunk(chunk, word, language_code, language_str, tr
         return final_chunk_data
 
     except Exception as e:
+        traceback.print_exc()
         print(f"Error in chunk {list(chunk.keys())}: {e}")
         await socket_message(socket_room, {"type": "TRANSLATE_SENSE_ERROR", "payload": str(e)})
         return None # Hoặc trả về lỗi để gather xử lý
@@ -165,7 +170,8 @@ async def ai_create_translate_sema(props, translate_base_language=True):
         cache = WordCacheManager()
         socket_room = 'test'
 
-        word = props.get('word_value')
+        # word = props.get('word_value')
+        trunk = props.get('trunk',2)
         language_code = props.get('language_code')
         user_language_code = props.get('user_language_code')
         senses_obj = props.get('missing_translate')
@@ -243,10 +249,10 @@ async def ai_create_translate_sema(props, translate_base_language=True):
 
         # Tạo danh sách các Task
         tasks = []
-        for chunk in chunk_dict(temp_senses, size=2):
+        for chunk in chunk_dict(temp_senses, size=trunk):
             tasks.append(
                 process_translation_chunk(
-                    chunk, word, language_code, language_str, 
+                    chunk, language_code, language_str, 
                     translate_lang, mapping_table, socket_room
                 )
             )

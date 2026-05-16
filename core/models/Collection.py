@@ -2,6 +2,7 @@ from django.db import models
 from config.models import BaseModel
 from django.contrib.postgres.indexes import GinIndex
 from core.models.CollectionItem import CollectionItem
+from django.contrib.postgres.fields import ArrayField
 
 class Collection(BaseModel):
     sub_id = models.CharField(max_length=100, blank=True, null=True, db_index=True) # uuid v7
@@ -19,6 +20,8 @@ class Collection(BaseModel):
     senses = models.ManyToManyField('ai.AISense', through=CollectionItem, 
                                     through_fields=('collection', 'sense'),
                                     blank=True)
+    invalid_words = ArrayField(base_field=models.CharField(max_length=255), blank=True, default=list)
+    pending_words = ArrayField(base_field=models.CharField(max_length=255), blank=True, default=list)
 
     # update_requests = models.ManyToManyField('update_request', blank=True)
     # update_logs = models.ManyToManyField('update_log', blank=True)

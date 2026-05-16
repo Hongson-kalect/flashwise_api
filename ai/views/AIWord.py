@@ -18,7 +18,7 @@ from ai.models.AIWord import AIWord
 from django.db.models import Prefetch, Window, F, Q
 from django.db.models.functions import RowNumber
 from ai.serializers.AIWord import AIWordSerializer
-from core.models.Language import Language
+from core.models import Language, Collection, CollectionItem
 from utils.celery.word import ai_create_new_word_task
 from utils.utils import uuidv7
 from utils.utils.ai import ai_create_new_word, render_translate
@@ -235,7 +235,7 @@ class AIWordViewSet(SoftDeleteViewSet):
                     try:
                         from utils.celery.translate import task_create_translate
                         task_create_translate.delay({
-                            "word_value": word,
+                            # "word_value": word,
                             "language_code": language_code,
                             "user_language_code": user_language_code,
                             "missing_translate": missing_contents,
@@ -452,10 +452,12 @@ class AIWordViewSet(SoftDeleteViewSet):
             ImageLibraryContext.objects.all().delete()
             ImageLibrary.objects.all().delete()
             ImageContext.objects.all().delete()
+            CollectionItem.objects.all().delete()
             AISenseContent.objects.all().delete()
             AISense.objects.all().delete()
             AIWord.objects.all().delete()
             TranslateLog.objects.all().delete()
+            Collection.objects.all().delete()
 
             cache.cache_word_clear_all()
 

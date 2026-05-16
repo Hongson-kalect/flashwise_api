@@ -1,5 +1,6 @@
 from operator import index
 from django.db import models
+from django.contrib.postgres.fields import ArrayField
 
 from config.models import BaseModel
 
@@ -8,11 +9,11 @@ class UserCollection(BaseModel):
     collection = models.ForeignKey(
         'core.Collection', on_delete=models.CASCADE, related_name="user_collections", null=True
     )
-    name = models.CharField(max_length=255)
-    description = models.TextField(blank=True)
+    name = models.CharField(max_length=255, null=True, blank=True)
+    description = models.TextField(blank=True,null=True)
 
-    added_sense = models.JSONField(default=list, blank=True, null=True)
-    removed_sense = models.JSONField(default=list, blank=True, null=True)
+    added_item_ids = ArrayField(models.UUIDField(), default=list, blank=True)
+    deleted_item_ids = ArrayField(models.UUIDField(), default=list, blank=True)
     user = models.ForeignKey('auth.User', on_delete=models.CASCADE, related_name="downloaded_collections")
     sync = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)

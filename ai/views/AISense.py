@@ -1,7 +1,6 @@
 import copy
 import json
-import time
-import uuid
+import redis
 from django.db import transaction, models
 from urllib.parse import unquote
 import asyncio
@@ -82,6 +81,7 @@ def save_contents(contents, language, user_language, user):
 
 class AISenseViewSet(SoftDeleteViewSet):
     queryset = AISense.objects.select_related('metadata', 'original').all()
+    
 
     
     serializer_class = AISenseSerializer
@@ -96,16 +96,16 @@ class AISenseViewSet(SoftDeleteViewSet):
 
         if missing:
             try:
-                from utils.celery.translate import task_create_translate
-                task_create_translate.delay({
-                    "word_value": sense.word_value,
+                r_queue = redis.Redis(host='redis', port=6379, db=0)
+
+                # Đẩy vào queue "redis_word"
+                r_queue.rpush("redis_trans", json.dumps({
+                    "word_id": str(sense.word_id),
                     "language_code": sense.language_code,
                     "user_language_code": user_language_code,
                     "missing_translate": [missing],
                     'current_senses':[sense]
-                }, False)
-                # translate_instance = TranslateLog.objects.create(word=word_instance, language_code=user_language_code, status="PROCESSING")
-                # background_task(render_translate(user, translate_instance, word, senses_instance, missing_contents , need_translation, language_code, user_language_code, socket_room))
+                }))
             except:
                 pass
 
@@ -172,16 +172,14 @@ class AISenseViewSet(SoftDeleteViewSet):
             if missing_contents:
                     # Unique (word, user_language_code with 1 status PROCESSING allowed)
                 try:
-                    from utils.celery.translate import task_create_translate
-                    task_create_translate.delay({
-                        "word_value": word_instance.value,
+                    r_queue = redis.Redis(host='redis', port=6379, db=0)
+                    r_queue.rpush("redis_trans", json.dumps({
+                        "word_id": str(word_id),
                         "language_code": word_instance.language_code,
                         "user_language_code": user_language_code,
                         "missing_translate":[missing_contents],
                         'current_senses':[sense]
-                    }, False)
-                    # translate_instance = TranslateLog.objects.create(word=word_instance, language_code=user_language_code, status="PROCESSING")
-                    # background_task(render_translate(user, translate_instance, word, senses_instance, missing_contents , need_translation, language_code, user_language_code, socket_room))
+                    }))
                 except:
                     pass
 
@@ -296,220 +294,6 @@ class AISenseViewSet(SoftDeleteViewSet):
         data = AISenseSerializer(sense).data
 
         return Response(data, status=status.HTTP_200_OK)
-
-        sense = AISense.objects.filter(id=sense_id).first()
-        if not sense:
-            return Response({"message": "Sense not found"}, status=status.HTTP_404_NOT_FOUND)
-
-        language_code = sense.language_code
-        # Chuyển list contents thành map để tra cứu nhanh và tránh KeyError
-        content_update_map = {str(c['id']): c['value'] for c in contents_list}
-
-        with transaction.atomic():
-            # --- CASE 1: frozen == None (Sửa trực tiếp trên bản ghi cũ) ---
-            if sense.is_frozen is None:
-                # Chỉ lấy những content thực sự được gửi lên để sửa
-                target_contents = AISenseContent.objects.filter(id__in=content_update_map.keys())
-                bulk_update_list = []
-                
-                for c in target_contents:
-                    new_val = content_update_map.get(str(c.id))
-                    if new_val is not None:
-                        c.value = new_val
-                        updated_at = timezone.now()
-                        c.updated_at = updated_at
-                        changes.append({'id': str(c.id), 'new_value': new_val})
-                        bulk_update_list.append(c)
-                
-                if bulk_update_list:
-                    AISenseContent.objects.bulk_update(bulk_update_list, fields=['value'])
-                
-                # Load lại data mới nhất để trả về
-                final_sense = sense
-
-            # --- CASE 2: frozen == True (Clone ra bản mới) ---
-            elif sense.is_frozen is True:
-                # Clone object Sense
-                new_sense = copy.copy(sense)
-                new_sense.pk = None # Đặt pk = None để tạo bản ghi mới
-                new_sense.is_frozen = False
-                new_sense.is_official=False
-                new_sense.is_ai_created=False
-
-                # Patch JSON và tạo Content mới
-                # Lưu ý: Truyền content_update_map (Dict) thay vì list
-                new_struct, bulk_content_list = patch_and_clone_contents(
-                    struct=sense.contents,
-                    update_data=content_update_map,
-                    user=user,
-                )
-
-                new_ids = []
-                if bulk_content_list:
-                    for c in bulk_content_list:
-                        new_ids.append(str(c.id))
-                        changes.append({'id': str(c.id),
-                                    'new_value': c.value, 
-                                    'language_code': c.language_code, 
-                                    'created_at': c.created_at, 
-                                    'updated_at': c.updated_at, 
-                                    'updated_by': user})
-                    AISenseContent.objects.bulk_create(bulk_content_list)
-
-                new_sense.contents = new_struct
-                new_sense.updated_by = user
-                new_sense.news = new_ids
-
-                print('nnnnnn',new_sense.contents)
-                print('nnnnnn',changes)
-                
-                previous_id = str(sense.id)
-                new_sense.is_frozen = False
-                new_sense.previous_id = previous_id
-                if sense.original:
-                    new_sense.original_id = sense.original_id
-                else:
-                    new_sense.original_id = previous_id
-                new_sense.origins = sense.origins + [previous_id]
-                new_sense.save()
-                final_sense = new_sense
-
-            elif sense.is_frozen is False:
-                free_update = set(sense.news or [])
-                bulk_update_list = []
-
-                update_map= {}
-
-                target_contents = AISenseContent.objects.filter(id__in=list(content_update_map.keys()))
-
-                for c in target_contents:
-                    id = str(c.id)
-                    new_val = content_update_map.get(id)
-                    if new_val is not None:
-                        if id in free_update:
-                            c.value = new_val
-                            now = timezone.now()
-                            c.updated_at = now
-                            c.updated_by = user
-                            changes.append({'id': str(c.id), 'value': new_val, 'updated_at': now, 'updated_by': user})
-                            bulk_update_list.append(c)
-                        else:
-                            update_map[id] = new_val
-
-                new_struct, bulk_create_list = patch_and_clone_contents(
-                    struct=sense.contents,
-                    update_data=update_map,
-                    user=user
-                )
-
-                if bulk_update_list:
-                    AISenseContent.objects.bulk_update(bulk_update_list, fields=['value'])
-                if bulk_create_list:
-                    # changes.extend(bulk_create_list)
-                    changes.extend([{'id': str(c.id),
-                                    'new_value': c.value, 
-                                    'language_code': c.language_code, 
-                                    'created_at': c.created_at, 
-                                    'updated_at': c.updated_at, 
-                                    'updated_by': user}
-                                 for c in bulk_create_list])
-                    AISenseContent.objects.bulk_create(bulk_create_list)
-
-                sense.contents = new_struct
-                sense.news = list(free_update.union(set([str(b.id) for b in bulk_create_list])))
-
-                print('ssssss',bulk_create_list)
-                print('ssssss',sense.news)
-                print('ssssss',sense.contents)
-                sense.save()
-                final_sense = sense
-
-            # --- CHUẨN HÓA DATA TRẢ VỀ (Dùng chung cho cả 3 case) ---
-            # Lấy lại tất cả content (cả cũ lẫn mới) để serialize
-            all_content_ids = flatten_ids_by_langs(final_sense.contents, [language_code, user_language_code])
-            all_content_instances = AISenseContent.objects.filter(id__in=all_content_ids)
-
-            print( final_sense.contents)
-
-            [return_data] = serialize_senses(
-                [final_sense],
-                all_content_instances,
-                language_code,
-                user_language_code
-            )
-
-            data = AISenseSerializer(return_data).data
-
-            return Response({
-                'detail': 'Update successful',
-                'is_cloned': sense.is_frozen is True,
-                'data': data,
-                'changes': changes
-            }, status=status.HTTP_200_OK)
-        return Response({"message": "Bad request"}, status=status.HTTP_400_BAD_REQUEST)
-    
-    @action(detail=False, methods=['get'], url_path='get-ai-word')
-    def get_ai_word(self, request, pk=None, *args, **kwargs):
-        queryset = self.get_queryset()
-        value = request.query_params.get('value')
-        lang = request.query_params.get('lang')
-        user_lang = request.query_params.get('user_lang')
-
-        example_trans_prefetch = limit_prefetch(
-            'translated_examples',
-            ExampleTranslate.objects.filter(language_code__in=[lang,user_lang],),
-            '-score',2)
-
-        example_prefetch = limit_prefetch(
-            'defination_examples',
-            Example.objects.filter(language_code__in=[lang,user_lang], is_deleted=False, is_active=True),
-            '-score',2,example_trans_prefetch)
-
-        defi_prefetch = limit_prefetch(
-            'definations',
-            Defination.objects.filter(language_code__in=[lang,user_lang], is_deleted=False, is_active=True), 
-            '-score',10, example_prefetch)
-        
-        form_prefetch = limit_prefetch(
-            'word_forms',
-             WordForm.objects.all(),
-            'value',4)
-        
-        trans_prefetch = limit_prefetch(
-            'word_translates',
-             Translate.objects.filter(language_code__in=[lang,user_lang]))
-
-        if not value:
-            return Response({'detail': 'value is required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        queryset = queryset.filter(value=value, language_code =lang).prefetch_related(defi_prefetch,trans_prefetch,form_prefetch)[:20]
-
-        # if not queryset.exists():
-        #     return Response({'detail': 'Word not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        serializer = self.get_serializer(queryset, many=True)
-        ai_modify_data = test(value, serializer.data, lang, user_lang)
-        return Response({"clgt":ai_modify_data})
-
-    @action(detail=False, methods=['get'], url_path='get-word')
-    def search_word(self, request, pk=None, *args, **kwargs):
-        queryset = self.get_queryset()
-        value = request.query_params.get('value')
-        lang = request.query_params.get('lang')
-        user_lang = request.query_params.get('user_lang')
-    def get_queryset(self):
-        # Nếu muốn lọc theo người dùng hoặc trạng thái
-        queryset = super().get_queryset()
-        user = self.request.user if self.request.user.is_authenticated else None
-
-        # Ví dụ: chỉ lấy các Word đang hoạt động
-        queryset = queryset.filter(is_active=True)
-
-        # Nếu muốn lọc theo người tạo (nếu có trường user), bạn có thể thêm:
-        # if user:
-        #     queryset = queryset.filter(user=user)
-
-        return queryset
 
 import copy
 def deep_merge(delta, base):

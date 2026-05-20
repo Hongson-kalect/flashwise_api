@@ -1,177 +1,240 @@
-
+# 1. Thiết lập Django
 import os
 import django
-import asyncio
-# 1. Thiết lập biến môi trường trỏ tới file settings của Django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'flashcardApi.settings')
-
-# 2. Khởi tạo Django
 django.setup()
-
+import asyncio
 import json
 import logging
-
+from django.utils import timezone
 from asgiref.sync import sync_to_async
+from django.apps import apps # Tuyệt chiêu đọc Model động của Django
+from django.db.models import Prefetch
+from ai.models import AIWord, AISense
+from ai.serializers import AIWordSerializer
+from utils.redis.word_init import WordCacheManager
+
 from utils.ai.word_render import ai_create_new_word_sema
 from utils.ai.translate import ai_create_translate_sema
 from utils.celery.fetch_image import get_image_by_keyword
-
+from utils.utils.sense_handle import serialize_entries
 
 # --- CẤU HÌNH ---
 REDIS_URL = 'redis://redis:6379/0'
-# Quota: 2 Worker x 10 Sema = 20 Concurrent (Điều chỉnh theo API Key)
 WORD_SEMA_LIMIT = 10 
 IMAGE_SEMA_LIMIT = 10 
 TRANS_SEMA_LIMIT = 20
-BATCH_SIZE = 50
-FLUSH_INTERVAL = 3  # Giây
+BATCH_SIZE = 500
+FLUSH_INTERVAL = 3 
+# Cấu hình danh sách các hàng đợi mà Flusher cần quét qua
+BUFFER_CONFIGS = [
+    {"key": "db_buffer:sense:update", "model_name": "AISense", "action": "bulk_update", "fields": ["contents"], "app":"ai"},
+    {"key": "db_buffer:word:update", "model_name": "AIWord", "action": "bulk_update", "fields": ["text", "updated_at"], "app":"ai"},
+    {"key": "db_buffer:user_card:create", "model_name": "UserCard", "action": "bulk_create", "fields": [], "app":"ai"},
+]
 
-# Setup Logging để dễ debug
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- TẦNG GIAO TIẾP NGOẠI VI (AI & DB) ---
+# --- TẦNG GIAO TIẾP DB TRÚT BUFFER ---
+def save_to_postgres_sync(batch_data, task_type):
+    """Thực thi ghi DB theo mẻ (Bulk Operations)"""
+    logger.info(f"[DB-SAVE] {task_type.upper()} | Trút thành công mẻ gồm: {len(batch_data)} records vào Postgres.")
+    # Thực tế: Model.objects.bulk_create(...) hoặc bulk_update(...)
 
-async def call_gemini_stream(job, task_type):
-    """Giả lập gọi Gemini API với cơ chế streaming"""
-    # Thực tế: await client.models.generate_content(...)
-    steps = 3 if task_type == "word" else 2
-    for i in range(steps):
-        logger.info(f"[AI] {task_type} job {job} | Chunk {i}")
-        await asyncio.sleep(0.2)  # Giả lập độ trễ I/O
-        yield f"{task_type}_chunk_{i}"
-
-# async def get_image(job, keyword):
-
-
-def save_to_postgres_sync(data_list, task_type):
-    """Hàm ghi DB đồng bộ - Nơi thực hiện Bulk Update/Create"""
-    # Ví dụ: Word.objects.bulk_update(...)
-    logger.info(f"[DB-SAVE] {task_type.upper()} | Batch size: {len(data_list)}")
-
-# --- TẦNG XỬ LÝ LOGIC (HANDLERS) ---
-
-from django.utils import timezone
+# --- TẦNG XỬ LÝ LOGIC WORKER ---
 async def handle_task(job, sema, task_type):
-    """Xử lý từng task riêng lẻ với Semaphore bảo vệ"""
-    async with sema:
-        time_start = timezone.now()
+    """Xử lý core logic task, đảm bảo giải phóng semaphore ở khối finally"""
+    time_start = timezone.now()
+    try:
+        if task_type == 'word':
+            await ai_create_new_word_sema(job)
+        elif task_type == 'image':
+            await get_image_by_keyword(job)
+        elif task_type == 'translate':
+            print('translate job', job)
+                # Hàm này nhận job (chứa id và contents cũ), gọi AI dịch và trả về contents đã update
+            updated_contents = await ai_create_translate_sema(job, False)
 
-        custom_log =None
+            payloads = []
+            word_id =[]
 
-        try:
-            result_chunks = []
-            # async for chunk in call_gemini_stream(job, task_type):
-            #     result_chunks.append(chunk)
+            for contents in updated_contents:
+                payload = {
+                    "id": contents.get("id"),
+                    "contents": contents.get("contents"),
+                    "updated_at": timezone.now().isoformat()
+                }
+                payloads.append(json.dumps(payload))
+                word_id.append(contents.get("word_id"))
 
-            if (task_type=='word'):
-                custom_log = 'word-'+job.get('value', None)
-                await ai_create_new_word_sema(job)
+            redis_key = "db_buffer:sense:update"
+            await redis_client.rpush(redis_key, *payloads)
 
-            if (task_type=='image'):
-                print('image job', job)
-                await get_image_by_keyword(job)
+            if word_id:
+                await sync_to_async(re_cache_word)(word_id)
 
-            if (task_type=='translate'):
-                print('translate job', job)
-                await ai_create_translate_sema(job)
-
-            print(task_type+' sema '+task_type+' done ', round((timezone.now() - time_start).total_seconds(), 2))
             
-            # Đẩy kết quả vào hàng chờ lưu DB (Buffer)
-            # result_key = f"redis_{task_type}_result"
-            # # payload = json.dumps({"job_id": job["id"], "result": result_chunks})
-            # payload = json.dumps({"job_id": job, "result": result_chunks})
-            
-            # # Dùng Redis Client từ instance global
-            # await redis_client.rpush(result_key, payload)
-            
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            logger.error(f"[AI-ERROR] {task_type} job {job}: {e}")
-            # logger.error(f"[AI-ERROR] {task_type} job {job.get('id')}: {e}")
+        logger.info(f"[{task_type.upper()}] Job xử lý thành công trong {round((timezone.now() - time_start).total_seconds(), 2)}s")
+        
+        # BẬT LÊN NẾU MUỐN DÙNG DB FLUSHER:
+        # result_key = f"redis_{task_type}_result"
+        # await redis_client.rpush(result_key, json.dumps(job))
 
-# --- TẦNG ĐIỀU PHỐI (CONSUMERS & FLUSHERS) ---
+    except Exception as e:
+        logger.error(f"[AI-ERROR] {task_type} gặp lỗi nghiêm trọng: {e}", exc_info=True)
+    finally:
+        # CHÌA KHÓA VÀNG: Trả lại ghế trống cho consumer nhặt việc tiếp
+        sema.release()
 
-async def consume_queue(queue_name, sema, handler_func, task_type):
-    """Vòng lặp nhặt việc từ Redis. Chỉ nhặt khi CÒN GHẾ TRỐNG."""
-    logger.info(f"[START] Consumer for {queue_name}")
+def re_cache_word(word_ids):
+    logger.info(f"Re-cache word: {word_ids}")
+    list = word_ids
+    cache_manager = WordCacheManager()
+    sense_qs = AISense.objects.filter(is_official=True).select_related('metadata').order_by('is_official')
+    if isinstance(word_ids, str):
+        list = [word_ids]
+
+    # 4. Gộp vào query chính
+    word_instances = AIWord.objects.filter(id__in=list).prefetch_related(
+        Prefetch('senses', queryset=sense_qs, to_attr='prefetched_senses')
+    ).all()
+
+    for word_instance in word_instances:
+
+        senses_instance = word_instance.prefetched_senses
+        entries = serialize_entries(senses_instance)
+        word_instance.processed_entries = entries
+
+        data = AIWordSerializer(word_instance).data
+
+        cache_manager.cache_word(word_instance.language_code, word_instance.value, data)
+        logger.info(f"Re-cache word completed: {word_instance.value}")
+
+# --- TẦNG ĐIỀU PHỐI (CONSUMER VÀ FLUSHER) ---
+async def consume_queue(queue_name, sema, task_type):
+    """Consumer thông minh: Chỉ bốc máy nhặt việc từ Redis khi thực sự CÒN GHẾ TRỐNG"""
+    logger.info(f"[START] Khởi động hàng chờ Consumer: {queue_name}")
     while True:
         try:
-            # CHỐT CHẶN: Kiểm tra Semaphore trước khi bốc máy khỏi Redis
-            if sema.locked():
-                await asyncio.sleep(0.1)
+            # Chặn tại đây, nếu hết ghế trống tiến trình sẽ dừng lại không spam Redis
+            await sema.acquire()
+
+            # Nhặt việc từ Redis với timeout chống treo
+            raw_data = await redis_client.blpop(queue_name, timeout=5)
+            if not raw_data:
+                logger.info(f"[CONSUMER-LOOP] {queue_name}: No data")
+                sema.release() # Trả lại ghế nếu hàng chờ trống
                 continue
 
-            # BLPOP trả về (key, data)
-            raw_data = await redis_client.blpop(queue_name, timeout=10)
-            if not raw_data:
-                continue
+            logger.info(f"[CONSUMER-LOOP] Chạy vòng lặp {queue_name}: {raw_data}")
 
             job = json.loads(raw_data[1])
-            # Bắn task vào background và quay lại nhặt tiếp ngay lập tức
-            asyncio.create_task(handler_func(job))
+            
+            # Tạo task chạy ngầm độc lập
+            asyncio.create_task(handle_task(job, sema, task_type))
 
         except Exception as e:
-            logger.error(f"[LOOP-ERROR] {queue_name}: {e}")
+            logger.error(f"[LOOP-ERROR] Lỗi vòng lặp Consumer {queue_name}: {e}")
             await asyncio.sleep(1)
 
-async def flush_buffer_to_db(result_key, save_func, task_type):
-    """Vòng lặp dọn dẹp Redis đổ vào DB theo mẻ (Atomic LPOP)"""
-    logger.info(f"[START] Flusher for {result_key}")
+async def flush_buffer_to_db(redis_client, batch_size=50):
+    """Worker tổng quát: Một mình cân hết tất cả các loại bảng và hành động ghi DB"""
     while True:
         try:
-            await asyncio.sleep(FLUSH_INTERVAL)
+            await asyncio.sleep(3) # Cứ 3 giây dọn dẹp các bảng 1 lần
             
-            batch_data = []
-            # Atomic: Lấy ra là mất luôn khỏi Redis, 2 worker không bao giờ trùng nhau
-            for _ in range(BATCH_SIZE):
-                item = await redis_client.lpop(result_key)
-                if not item:
-                    break
-                batch_data.append(json.loads(item))
-
-            if batch_data:
-                # Đẩy sang Thread riêng để không block Event Loop
-                await sync_to_async(save_func, thread_sensitive=False)(batch_data, task_type)
-
+            for config in BUFFER_CONFIGS:
+                redis_key = config["key"]
+                # logger.info(f"[START] Khởi động bộ Flusher cho key: {redis_key}")
+                
+                # 1. Hốt một mẻ dữ liệu từ Redis List ra
+                batch_data = []
+                for _ in range(batch_size):
+                    item = await redis_client.lpop(redis_key)
+                    if not item:
+                        break
+                    batch_data.append(json.loads(item))
+                
+                if not batch_data:
+                    continue # Hàng chờ này trống, chuyển sang hàng chờ tiếp theo
+                
+                # 2. Dùng hàm sync_to_async để gọi hàm thực thi DB đồng bộ phía dưới
+                await sync_to_async(execute_bulk_db, thread_sensitive=False)(batch_data, config)
+                
         except Exception as e:
-            logger.error(f"[FLUSH-ERROR] {result_key}: {e}")
-            await asyncio.sleep(1)
+            logger.error(f"[GENERIC-FLUSHER-ERROR]: {e}", exc_info=True)
 
-# --- KHỞI CHẠY ---
+def execute_bulk_db(batch_data, config):
+    """Hàm thực thi SQL đồng bộ bằng Django ORM dựa trên cấu hình động"""
+    Model = apps.get_model(app_label=config["app"], model_name=config["model_name"])
+    action = config["action"]
+    
+    try:
+        if action == "bulk_update":
+            # Tạo list các instance ảo dựa trên id và data truyền vào
+            objects_to_update = [Model(**item) for item in batch_data]
+            Model.objects.bulk_update(objects_to_update, config["fields"])
+            logger.info(f"[BULK-UPDATE] Đã cập nhật thành công {len(objects_to_update)} dòng cho bảng {config['model_name']}.")
+            
+        elif action == "bulk_create":
+            # Tạo list các instance mới hoàn toàn để insert
+            objects_to_create = [Model(**item) for item in batch_data]
+            Model.objects.bulk_create(objects_to_create, ignore_conflicts=True)
+            logger.info(f"[BULK-CREATE] Đã chèn mới thành công {len(objects_to_create)} dòng vào bảng {config['model_name']}.")
+            
+    except Exception as e:
+        logger.error(f"[SQL-EXECUTE-ERROR] Lỗi thực thi SQL cho bảng {config['model_name']}: {e}")
 
+# async def flush_buffer_to_db(result_key, save_func, task_type):
+#     """Cơ chế trút bộ đệm kết quả vào Postgres theo lô tuần tự"""
+#     logger.info(f"[START] Khởi động bộ Flusher cho key: {result_key}")
+#     while True:
+#         try:
+#             await asyncio.sleep(FLUSH_INTERVAL)
+            
+#             batch_data = []
+#             for _ in range(BATCH_SIZE):
+#                 item = await redis_client.lpop(result_key)
+#                 if not item:
+#                     break
+#                 batch_data.append(json.loads(item))
+
+#             if batch_data:
+#                 # Chuyển context sang ThreadPool để không block Event Loop chính
+#                 await sync_to_async(save_func, thread_sensitive=False)(batch_data, task_type)
+
+#         except Exception as e:
+#             logger.error(f"[FLUSH-ERROR] Lỗi trút dữ liệu {result_key}: {e}")
+#             await asyncio.sleep(1)
+
+# --- KHỞI ĐỘNG HỆ THỐNG ---
 import redis.asyncio as redis
+
 async def main():
     global redis_client
     redis_client = redis.from_url(REDIS_URL, decode_responses=True)
     
-    # Khởi tạo Semaphore riêng cho từng loại task
+    # Khởi tạo Semaphore riêng cho từng cụm ranh giới hạn mức
     word_sema = asyncio.Semaphore(WORD_SEMA_LIMIT)
     image_sema = asyncio.Semaphore(IMAGE_SEMA_LIMIT)
     trans_sema = asyncio.Semaphore(TRANS_SEMA_LIMIT)
 
-    # Đăng ký các "bánh răng" vào hệ thống
+    # Đăng ký các bánh răng chạy đồng thời
     tasks = [
-        # Nhóm Consumer (AI Workers)
-        consume_queue("redis_word", word_sema, 
-                      lambda j: handle_task(j, word_sema, "word"), "word"),
-        consume_queue("redis_image", image_sema, 
-                      lambda j: handle_task(j, image_sema, "image"), "image"),
-        consume_queue("redis_trans", trans_sema, 
-                      lambda j: handle_task(j, trans_sema, "translate"), "translate"),
+        consume_queue("redis_word", word_sema, "word"),
+        consume_queue("redis_image", image_sema, "image"),
+        consume_queue("redis_trans", trans_sema, "translate"),
         
-        # Nhóm Flusher (DB Workers)
-        flush_buffer_to_db("redis_word_result", save_to_postgres_sync, "word"),
-        flush_buffer_to_db("redis_translate_result", save_to_postgres_sync, "translate"),
+        # Flusher quản lý trút DB ngầm (Bật lên khi Sơn đưa cấu hình lưu kết quả vào redis)
+        flush_buffer_to_db(redis_client),
     ]
 
-    logger.info("--- SYSTEM ONLINE ---")
+    logger.info("--- ⚡ FLASHWISE ASYNC WORKER ONLINE VÀ SẴN SÀNG ⚡ ---")
     await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("System shutting down...")
+        logger.info("Hệ thống đang tắt cấu hình an toàn...")

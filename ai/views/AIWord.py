@@ -31,6 +31,8 @@ from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 from django.contrib.auth.models import User
 from utils.redis.word_init import WordCacheManager
 from utils.ai.translate import ai_create_translate_sema
+import json
+import redis
 
 def detect_missing_content(senses, language_code, user_language_code):
     # Kết quả trả về: { "sense_id": { "definition": "...", "examples": [...] } }
@@ -125,13 +127,22 @@ class AIWordViewSet(SoftDeleteViewSet):
                 user_lang_entries, missing_contents, current_senses = get_user_lang_content(language_code, user_language_code, cached_word)
 
                 if missing_contents:
-                    asyncio.create_task(ai_create_translate_sema({
-                        "word_value": word,
-                        "language_code": language_code,
-                        "user_language_code": user_language_code,
-                        "missing_translate": missing_contents,
-                        'current_senses':current_senses
-                    }, False))
+                    # Unique (word, user_language_code with 1 status PROCESSING allowed)
+                    try:
+                        r_queue = redis.Redis(host='redis', port=6379, db=0)
+
+                        # Đẩy vào queue "redis_word"
+                        r_queue.rpush("redis_trans", json.dumps({
+                            "word_id": str(word_instance.id),
+                            "language_code": language_code,
+                            "user_language_code": user_language_code,
+                            "missing_translate": missing_contents,
+                            "current_senses": current_senses
+                        }))
+                        # translate_instance = TranslateLog.objects.create(word=word_instance, language_code=user_language_code, status="PROCESSING")
+                        # background_task(render_translate(user, translate_instance, word, senses_instance, missing_contents , need_translation, language_code, user_language_code, socket_room))
+                    except:
+                        pass
                     return Response({'detail': 'CACHED', 'status': '200', "data":{**cached_word, "entries": user_lang_entries}}, status=status.HTTP_206_PARTIAL_CONTENT)
 
 
@@ -187,16 +198,14 @@ class AIWordViewSet(SoftDeleteViewSet):
                 )
 
                 print(12)
-                import json
-                import redis
                 
                 # Kết nối tới DB 0 (Làn đường xử lý)
                 r_queue = redis.Redis(host='redis', port=6379, db=0)
 
                 # Đẩy vào queue "redis_word"
                 r_queue.rpush("redis_word", json.dumps({
-                    "user_id": user.id,
-                    "word_id": word_instance.id,
+                    "user_id": str(user.id),
+                    "word_id": str(word_instance.id),
                     "value": word,
                     "language_code": language_code,
                     "user_language_code": user_language_code
@@ -217,7 +226,6 @@ class AIWordViewSet(SoftDeleteViewSet):
                 print(2)
                 return Response({'detail': 'PROCESSING', 'status': '202', 'data': init_data}, status=status.HTTP_201_CREATED)
            
-
             # Đây là nếu từ đã tồn tại trong db
             else:
                 # pass
@@ -233,17 +241,23 @@ class AIWordViewSet(SoftDeleteViewSet):
                 if missing_contents:
                     # Unique (word, user_language_code with 1 status PROCESSING allowed)
                     try:
-                        from utils.celery.translate import task_create_translate
-                        task_create_translate.delay({
-                            # "word_value": word,
+                        print(12)
+                        print(missing_contents)
+                        # Kết nối tới DB 0 (Làn đường xử lý)
+                        r_queue = redis.Redis(host='redis', port=6379, db=0)
+
+                        # Đẩy vào queue "redis_word"
+                        r_queue.rpush("redis_trans", json.dumps({
+                            "word_id": str(word_instance.id),
                             "language_code": language_code,
                             "user_language_code": user_language_code,
                             "missing_translate": missing_contents,
-                            'current_senses':current_senses
-                        }, False)
+                            "current_senses": current_senses
+                        }))
                         # translate_instance = TranslateLog.objects.create(word=word_instance, language_code=user_language_code, status="PROCESSING")
                         # background_task(render_translate(user, translate_instance, word, senses_instance, missing_contents , need_translation, language_code, user_language_code, socket_room))
-                    except:
+                    except Exception as e:
+                        print("Error", e)
                         pass
 
                     # Keep connect with socket to get result
@@ -264,10 +278,6 @@ class AIWordViewSet(SoftDeleteViewSet):
             # 5. Sử dụng sau đó (Cực nhanh vì là list Python)
             if word_instance:
                 translating = word_instance.active_logs[0] if word_instance.active_logs else None
-
-
-
-            
 
         if not created:
                 print("Word is processing")

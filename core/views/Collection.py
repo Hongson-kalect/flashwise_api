@@ -200,8 +200,8 @@ class CollectionViewSet(SoftDeleteViewSet):
 
                 # Đẩy vào queue "redis_word"
                 r_queue.rpush("redis_word", json.dumps({
-                    "user_id": user.id,
-                    "word_id": word_instance.id,
+                    "user_id": str(user.id),
+                    "word_id": str(word_instance.id),
                     "value": word,
                     "language_code": language_code,
                     "user_language_code": user_language_code
@@ -318,24 +318,29 @@ def normalize(word: str) -> str:
     return word
 # Hàm này khác với hàm dịch tất cả các sense của AISENSE vì hàm này là chứa nhiều loại từ chứ không phải 1, do đó sẽ cần gửi từng sense + definition + pos của từ đó
 def detect_missing(lang_code, user_lang_code, senses):
+    word_ids =[]
     missings = []
     all_senses = senses
     for sense in senses:
         sense.contents, missing = get_user_lang_sense(sense.language_code, user_lang_code, sense.contents or sense.original.contents, sense.id)
         if missing:
             missings.append(missing)
+            word_ids.append(str(sense.word_id))
 
     if missings:
         # Unique (word, user_language_code with 1 status PROCESSING allowed)
         try:
-            from utils.celery.translate import task_create_translate
-            task_create_translate.delay({
+            r_queue = redis.Redis(host='redis', port=6379, db=0)
+
+            # Đẩy vào queue "redis_word"
+            r_queue.rpush("redis_trans", json.dumps({
+                "word_id": word_ids,
                 "trunk":1,
                 "language_code": lang_code,
                 "user_language_code": user_lang_code,
                 "missing_translate": missings,
                 'current_senses':all_senses
-            }, False)
+            }))
             # translate_instance = TranslateLog.objects.create(word=word_instance, language_code=user_language_code, status="PROCESSING")
             # background_task(render_translate(user, translate_instance, word, senses_instance, missing_contents , need_translation, language_code, user_language_code, socket_room))
         except:

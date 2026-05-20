@@ -65,31 +65,3 @@ def task_create_metadata(self,  info):
         print(e)
         pass
         # raise self.retry(exc=e, countdown=5)
-
-@shared_task(bind=True, retry_backoff=True, max_retries=3)
-def task_create_translate_old(self, word, senses, user_languages):
-    print('vào bắt đầu dịch', user_languages)
-    """Task xử lý ảnh: Check Context -> Fetch Pixabay -> Save Local -> Link
-        word: {id, value, language_code}
-    """
-
-    contents = {}
-    need_translation = {}
-
-    for sense_id, sense in senses.items():
-        data = {}
-        for key, content in sense.items():
-            if key == 'examples':
-                data['examples'] = {}
-                for item in content:
-                    data["examples"][item.get('id')] = item
-
-            elif key in ['definition', 'usage']:
-                data[key] = content
-
-        contents[sense_id] = data
-    try:
-        asyncio.run(render_translate(word, contents, user_languages))
-    except Exception as e:
-        pass
-        # raise self.retry(exc=e, countdown=5)

@@ -106,6 +106,7 @@ def serialize_entries(senses):
             "level":sense.level,
             "register":sense.register,
             "ipas":sense.ipas,
+            "word_id": str(sense.word_id),
             # 'definition': sense.processed_definition,
             # 'usage': sense.processed_usage,
             # 'examples': sense.processed_examples,

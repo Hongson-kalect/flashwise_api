@@ -3,10 +3,8 @@ from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticatedOrReadOnly, AllowAny
 from rest_framework.decorators import action
-from core.models import Collection, UserCollection
+from core.models import Collection, UserCollection,CollectionItem
 from ai.models import AISense, AIWord
-from core.models.CollectionItem import CollectionItem
-from core.models.UserCollection import UserCollection
 from core.serializers.Collection import CollectionSerializer,CollectionPreviewSerializer,CollectionListSerializer,CollectionDetailSerializer
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 from utils.utils.sense_handle import get_user_lang_sense
@@ -29,7 +27,7 @@ class CollectionViewSet(SoftDeleteViewSet):
         instance = self.get_object()
         senses = instance.senses.all()
         language_code = request.query_params.get('lang', 'en')
-        user_language_code = request.query_params.get('user_lang', 'en')
+        user_language_code = request.query_params.get('user_lang', 'vi')
         bulk_item = []
         missings=[]
         all_senses = []
@@ -39,7 +37,7 @@ class CollectionViewSet(SoftDeleteViewSet):
         pending_words = instance.pending_words
         pending_set = set(pending_words)
         if not pending_words:
-            detect_missing(language_code, user_language_code, senses)
+            # detect_missing(language_code, user_language_code, senses)
 
             data = CollectionDetailSerializer(instance).data
             return Response(data, status=status.HTTP_200_OK)
@@ -50,7 +48,7 @@ class CollectionViewSet(SoftDeleteViewSet):
         words = AIWord.objects.filter(value__in=pending_words)
 
         if not words:
-            detect_missing(language_code, user_language_code, senses)
+            # detect_missing(language_code, user_language_code, senses)
             data = CollectionDetailSerializer(instance).data
             return Response(data, status=status.HTTP_200_OK)
 
@@ -78,7 +76,7 @@ class CollectionViewSet(SoftDeleteViewSet):
             
             senses = instance.senses.all()
 
-        detect_missing(language_code, user_language_code, senses)
+        # detect_missing(language_code, user_language_code, senses)
         data = CollectionDetailSerializer(instance).data
         return Response(data, status=status.HTTP_200_OK)
 
@@ -109,7 +107,7 @@ class CollectionViewSet(SoftDeleteViewSet):
         with transaction.atomic():
             # 1. Lưu Collection trước
             collection = serializer.save()
-            UserCollection(collection=collection, user_id=user.id).save()
+            user_collection = UserCollection(collection=collection, user_id=user.id).save()
 
             # 2. Chuẩn bị dữ liệu cho bảng phụ (CollectionItem)
 
@@ -126,7 +124,7 @@ class CollectionViewSet(SoftDeleteViewSet):
             # )
 
         headers = self.get_success_headers(serializer.data)
-        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+        return Response({"user_collection":user_collection.id,**serializer.data}, status=status.HTTP_201_CREATED, headers=headers)
 
     #create collection by list of sense, regardless it exist or not
     @action(detail=False, methods=['post'], url_path='bulk-create')
@@ -145,7 +143,6 @@ class CollectionViewSet(SoftDeleteViewSet):
         # Khởi tạo 1 usercollection.
         id = generate_uuid7()
         collection = Collection(id =id, name=name, description=description, language_code=language_code, is_official=False)
-
 
         # 1 lấy tất cả các sense hợp lệ đầu tiên của word với score cao nhất
         sense_instances = AISense.objects.filter(word_value__in=word_values).order_by('word_value','-score').distinct('word_value')
@@ -172,19 +169,18 @@ class CollectionViewSet(SoftDeleteViewSet):
 
             collection.invalid_words = invalid_words
             collection.pending_words = list(not_founds)
-            with transaction.atomic():
-                collection.save()
-                UserCollection.objects.create(
-                    user=user,
-                    collection=collection,
-                    created_by=user,
-                )
-                CollectionItem.objects.bulk_create(bulk_item)
+            collection.item_count = len(sense_instances)
 
             # Tạo từ cho danh sách từ mới chưa có dữ liệu
             for word in not_founds:
                 cache_manager = WordCacheManager()
                 created, init_data = cache_manager.cache_word_init(language_code, word, user_language_code)
+
+                REDIS_URL = 'redis://redis:6379/0'
+                redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+
+                word_key = f'collection_id:{word}'
+                redis_client.sadd(word_key, str(collection.id))
 
                 # Nếu có người khác khởi tạo trước, trả về và chờ
                 if not created:
@@ -199,7 +195,8 @@ class CollectionViewSet(SoftDeleteViewSet):
                 )
 
                 # Đẩy vào queue "redis_word"
-                r_queue.rpush("redis_word", json.dumps({
+                # r_queue.rpush("redis_word", json.dumps({
+                r_queue.rpush("redis_collection_word", json.dumps({
                     "user_id": str(user.id),
                     "word_id": str(word_instance.id),
                     "value": word,
@@ -210,9 +207,18 @@ class CollectionViewSet(SoftDeleteViewSet):
                 
                 print(f"[QUEUE] Pushed word '{word}' to redis_word queue")
 
+        with transaction.atomic():
+            collection.save()
+            user_collection = UserCollection.objects.create(
+                user=user,
+                collection=collection,
+                created_by=user,
+            )
+            CollectionItem.objects.bulk_create(bulk_item)
+
         serializer = CollectionPreviewSerializer
         data = serializer(collection).data
-        return Response({"data":data}, status=status.HTTP_201_CREATED)
+        return Response({"user_collection":user_collection.id,**data}, status=status.HTTP_201_CREATED)
 
         # Thêm tất cả các sense hợp lệ vào bảng collection item với usercollection đã tạo
         # 2. Kiểm tra có những từ nào chưa tồn tại, khởi tạo chúng và gán sense đầu tiên được khởi tạo với user collection
@@ -320,12 +326,15 @@ def normalize(word: str) -> str:
 def detect_missing(lang_code, user_lang_code, senses):
     word_ids =[]
     missings = []
-    all_senses = senses
+    missing_senses = []
     for sense in senses:
         sense.contents, missing = get_user_lang_sense(sense.language_code, user_lang_code, sense.contents or sense.original.contents, sense.id)
+
+        print(f"Contents: {sense.contents}, Missing: {missing}")
         if missing:
             missings.append(missing)
             word_ids.append(str(sense.word_id))
+            missing_senses.append(sense)
 
     if missings:
         # Unique (word, user_language_code with 1 status PROCESSING allowed)
@@ -339,7 +348,7 @@ def detect_missing(lang_code, user_lang_code, senses):
                 "language_code": lang_code,
                 "user_language_code": user_lang_code,
                 "missing_translate": missings,
-                'current_senses':all_senses
+                'current_senses': missing_senses
             }))
             # translate_instance = TranslateLog.objects.create(word=word_instance, language_code=user_language_code, status="PROCESSING")
             # background_task(render_translate(user, translate_instance, word, senses_instance, missing_contents , need_translation, language_code, user_language_code, socket_room))

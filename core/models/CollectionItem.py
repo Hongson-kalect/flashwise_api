@@ -1,8 +1,6 @@
 from django.db import models
 from uuid6 import uuid7
 from ai.models.AISense import AISense
-from config.models import BaseModel
-from django.contrib.postgres.indexes import GinIndex
 
 # from core.models.Collection import Collection
 

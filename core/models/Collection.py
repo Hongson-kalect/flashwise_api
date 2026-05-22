@@ -10,6 +10,7 @@ class Collection(BaseModel):
     description = models.TextField(blank=True)
     image = models.FileField(upload_to='images/collections',null=True, blank=True)
     score = models.IntegerField(default=0, null=True) #  có thể bằng uy tín người đăng.
+    item_count = models.IntegerField(default=0) #  Số lượng sense có thể học của collection.
     image_url = models.TextField(blank=True, null=True) #Đã dùng bảng image liên kết với bảng, chủ động add image khi post
     tags = models.ManyToManyField('utils.Tag', blank=True)
     is_frozen = models.BooleanField(default=False)

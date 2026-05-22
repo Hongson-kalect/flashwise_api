@@ -1,20 +1,19 @@
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Q
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticatedOrReadOnly
-from ai.models.AISense import AISense
-from core.models.Collection import Collection
-from core.models.CollectionItem import CollectionItem
-from core.models.UserCollection import UserCollection
-from core.serializers.Collection import CollectionSerializer
+from ai.models import AISense, AIWord
+from core.serializers import CollectionDetailSerializer
+from core.models import Collection,CollectionItem, UserCollection
+from core.serializers.UserCollection import UserCollectionSerializer
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 from django.db import transaction
 from rest_framework.decorators import action
 
 class UserCollectionViewSet(SoftDeleteViewSet):
     queryset = UserCollection.objects.all()
-    serializer_class = CollectionSerializer
+    serializer_class = UserCollectionSerializer
     permission_classes = [IsAuthenticatedOrReadOnly]
 
     # Giả sử nằm trong CollectionViewSet
@@ -34,69 +33,9 @@ class UserCollectionViewSet(SoftDeleteViewSet):
 
         return Response({"detail": "Tải bộ sưu tập thành công."}, status=201)
     
-    @action(detail=True, methods=['post'], url_path='get-collection')
-    def get_user_collection_detail(self, request, pk=None):
-        user = request.user
-        user_col_sub_id = request.params.get('user_collection_id')
-
-        # 1. Đảm bảo lấy đúng UserCollection của user đó
-        # Dùng prefetch_related để kéo luôn các Sense liên quan qua bảng trung gian
-        # Sắp xếp luôn theo thứ tự gốc (order) của Collection
+    # @action(detail=True, methods=['post'], url_path='get-collection')
+    # def get_user_collection_detail(self, request, pk=None):
         
-        user_col = get_object_or_404(
-            UserCollection.objects.select_related('collection').prefetch_related(
-                Prefetch(
-                    'collection__senses',
-                    queryset=AISense.objects.all().order_by('collectionitem__order'),
-                    to_attr='original_senses'
-                )
-            ),
-            sub_id=user_col_sub_id,
-            user=user
-        )
-
-        # 2. Lấy các ID từ JSONField
-        added_ids = user_col.added_sense or []
-        removed_ids = user_col.removed_sense or []
-
-        # 3. Lấy dữ liệu chi tiết cho các "Added Senses" (vì trong JSON chỉ lưu ID)
-        # Bước này cần 1 query phụ nếu added_ids có dữ liệu
-        added_senses_dict = {}
-        if added_ids:
-            added_senses_qs = AISense.objects.filter(id__in=added_ids)
-            # Chuyển về dict để map cho nhanh theo thứ tự của added_ids
-            added_senses_dict = {str(s.id): s for s in added_senses_qs}
-
-        # 4. Hợp nhất logic (Merge)
-        final_list = []
-
-        removed_set = set(removed_ids)
-        
-        # - Thêm những từ Gốc (loại bỏ những từ trong removed)
-        if user_col.collection:
-            for sense in user_col.collection.original_senses:
-                if str(sense.id) not in removed_set:
-                    final_list.append(sense)
-
-        # - Thêm những từ Mới (Added) - để ở cuối hoặc đầu tùy bạn
-        # Ở đây mình để ở cuối theo đúng thứ tự user đã add
-        for s_id in added_ids:
-            if s_id in added_senses_dict:
-                final_list.append(added_senses_dict[s_id])
-
-        return {
-            "metadata": {
-                "name": user_col.collection.name if user_col.collection else "Custom Collection",
-                "description": user_col.collection.description if user_col.collection else "",
-                "image": user_col.collection.image.url if user_col.collection and user_col.collection.image else None,
-                "is_official": user_col.collection.is_official if user_col.collection else False,
-                "sub_id": user_col.sub_id,
-            },
-            "added_ids": added_ids, # Trả về để FE biết cái nào là hàng "thêm ngoài"
-            "senses": final_list # Danh sách đã được merge và giữ thứ tự
-        }
-
-
     # override create request
     def create(self, request, *args, **kwargs):
         # params: name, description, image, tags, language_code, senses
@@ -136,51 +75,79 @@ class UserCollectionViewSet(SoftDeleteViewSet):
             headers = self.get_success_headers(serializer.data)
             return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
         
-    def get_queryset(self):
-        # Chỉ lấy những Collection mà User này sở hữu hoặc Official
-        # Dùng prefetch_related để kéo luôn các Item và Sense trong 1-2 query
-        return Collection.objects.filter(
-            # usercollection__user=self.request.user,
-            is_active=True
-        ).prefetch_related(
-            Prefetch(
-                'collectionitem_set', 
-                queryset=CollectionItem.objects.select_related('sense').order_by('order')
-            )
-        ).distinct()
+    def list(self, request, *args, **kwargs):
 
+        # Cần thêm: count số từ đã học
+        # Collection có count số lượng sense từ bảng trung gian để có Tiến độ học
+
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+    
+    
     def retrieve(self, request, *args, **kwargs):
-        instance = self.get_object()
-        serializer = self.get_serializer(instance)
-        
-        # Nếu muốn trả về format tùy chỉnh kèm danh sách senses
-        data = serializer.data
-        items = instance.collectionitem_set.all()
-        
-        # Format lại danh sách sense để client dễ dùng
-        data['senses'] = [
-            {
-                "id": item.sense.id,
-                "order": item.order,
-                "content": item.sense.content # Giả sử Sense có field content
-            } for item in items
-        ]
-        
-        return Response(data)
+        user = request.user
+        user_collection_id = kwargs.get('pk')
 
-    # def get_queryset(self):
-    #     # Nếu muốn lọc theo người dùng hoặc trạng thái
-    #     queryset = super().get_queryset()
-    #     user = self.request.user if self.request.user.is_authenticated else None
+        # 1. Đảm bảo lấy đúng UserCollection của user đó
+        # Dùng prefetch_related để kéo luôn các Sense liên quan qua bảng trung gian
+        # Sắp xếp luôn theo thứ tự gốc (order) của Collection
 
-    #     # Ví dụ: chỉ lấy các collection đang hoạt động
-    #     queryset = queryset.filter(is_active=True)
+        # Query 1: Lấy thông tin userCollection trước (Chỉ tốn vài miligiây)
+        user_col = UserCollection.objects.prefetch_related('collection').get(id=user_collection_id)
 
-    #     # Nếu muốn lọc theo người tạo (nếu có trường user), bạn có thể thêm:
-    #     # if user:
-    #     #     queryset = queryset.filter(user=user)
+        # Bố sung các từ đã được render trong pending_words vào collection_item
+        collection = user_col.collection
+        pending_words = collection.pending_words
+        if pending_words:
+            bulk_item = []
+            pending_set = set(pending_words)
+            invalid_words = collection.invalid_words or []
+            success_words = []
 
-    #     return queryset
+            words = AIWord.objects.filter(value__in=pending_words)
+
+            if len(words):
+                for word in words:
+                # từ đang pending hoặc chưa khởi tạo được thì vẫn kệ nó
+                    if word.status=='INVALID':
+                        invalid_words.append(word.value)
+                        pending_set.remove(word.value)
+                    
+                    if word.status =='COMPLETED':
+                        success_words.append(word.value)
+                        pending_set.remove(word.value)
+                
+                if success_words:
+                    sense_instances = AISense.objects.filter(word_value__in=success_words).order_by('word_value','-score').distinct('word_value')
+                    for sense in sense_instances:
+                        bulk_item.append(CollectionItem(sense_id=sense.id, collection_id=collection.id, original_id=sense.original_id, value=sense.word_value))
+
+                with transaction.atomic():
+                    if bulk_item:
+                        CollectionItem.objects.bulk_create(bulk_item)
+                    collection.pending_words = list(pending_set)
+                    collection.invalid_words = invalid_words
+                    collection.save()
+
+        # Trích xuất các list ID ra khỏi bản ghi
+        collection_id = user_col.collection_id
+        added_ids = user_col.added_item_ids or []     # Mảng ID từ thêm riêng
+        removed_ids = user_col.deleted_item_ids or [] # Mảng ID từ xóa bớt
+
+        # Query 2: Lấy toàn bộ items trúng index Khóa chính và Khóa ngoại
+        user_col.senses = AISense.objects.filter(
+            id__in=CollectionItem.objects.filter(
+                Q(collection_id=collection_id) | Q(sense_id__in=added_ids)
+            ).exclude(sense_id__in=removed_ids).values_list('sense_id', flat=True)
+        )
+
+        return Response(self.get_serializer(user_col).data, status=status.HTTP_200_OK)
 
     def perform_create(self, serializer):
         # Nếu bạn muốn gán user tạo collection

@@ -13,7 +13,7 @@ class AISense(BaseModel):
     previous = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='previous_sense') # Bản trước đó, dùng để lấy dữ liệu frozen
     origins = models.JSONField(default=list) # [id1, id2...]
     metadata = models.ForeignKey(AISenseMetadata, on_delete=models.SET_NULL, null=True, related_name='senses')
-    preview =models.JSONField(default=dict)
+    preview =models.JSONField(default=dict) # image url, định nghĩa, audio_url nếu cần
     image_preview = models.URLField(max_length=500, null=True, blank=True)
     image_context = models.ForeignKey('core.ImageContext', on_delete=models.SET_NULL, null=True, blank=True)
     language_code = models.CharField(max_length=10, blank=True, null=True)

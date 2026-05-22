@@ -1,4 +1,4 @@
-from .Collection import CollectionSerializer
+from .Collection import CollectionSerializer, CollectionDetailSerializer
 from .CommonPhrase import CommonPhraseSerializer
 from .Language import LanguageSerializer
 from .Quiz import QuizSerializer

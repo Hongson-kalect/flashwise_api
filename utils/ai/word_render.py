@@ -59,6 +59,8 @@ async def ai_create_new_word_sema(word_info):
     # word_instance = await sync_to_async(AIWord.objects.get)(id=word_id)
     LATIN_LANGS = ['vi', 'en', 'es', 'fr', 'de', 'it', 'pt', 'nl', 'pl', 'sv', 'no', 'da', 'fi', 'tr', 'cs', 'hu', 'id']
     SIMPLE_NON_LATIN = ['zh', 'ko', 'ru', 'el', 'ar', 'he', 'hi', 'th']
+    models = ['gemini-2.5-flash-lite', 'gemini-2.5-flash-lite', 'gemini-2.5-flash-lite']
+    # models = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-pro']
     
     if language_code in LATIN_LANGS:
         mode = "latin"
@@ -74,22 +76,19 @@ async def ai_create_new_word_sema(word_info):
     try:
         local_client = genai.Client(api_key=settings.GEMINI_API_KEY)
         ai_trunks =[]
-        async with local_client.aio as client:
-            try:
-                response = await client.models.generate_content_stream(
-                    model="gemini-2.5-flash-lite", # Đã cập nhật bản lite mới nhất 2026
-                    contents=current_prompt,
-                    config=types.GenerateContentConfig(
-                        max_output_tokens=8192,
-                        response_mime_type="application/json",
-                        response_schema=current_schema
-                    )
-                )
-            except Exception as e:
-                print('Word Error gemini-2.5-flash-lite', e)
+        is_valid = False
+
+        attempts = 0
+        while not ai_trunks and attempts < len(models):
+            async with local_client.aio as client:
+                model = models[attempts]
+                attempts += 1
+
+                # Nếu dùng ai local thì sẽ attempts<=len và khi attempts = len thì sẽ chạy local
+
                 try:
                     response = await client.models.generate_content_stream(
-                        model="gemini-2.5-flash", # Đã cập nhật bản lite mới nhất 2026
+                        model=model, # Đã cập nhật bản lite mới nhất 2026
                         contents=current_prompt,
                         config=types.GenerateContentConfig(
                             max_output_tokens=8192,
@@ -97,113 +96,108 @@ async def ai_create_new_word_sema(word_info):
                             response_schema=current_schema
                         )
                     )
+                        
+                    pointer = 0
+                    sense_objs=[]
+                    valid = False
+                    word_cache = WordCacheManager()
+                    task =[]
+                    async for chunk in response:
+                        if chunk.text:
+                            ai_trunks.append(chunk.text)
+
+                            # --- LOGIC ĐÁNH CHẶN LẤY ẢNH SỚM ---
+                            full_text = "".join(ai_trunks)
+
+                            if not valid:
+                                word_meta_str, _ = extract_json_fragment(full_text, "metadata") 
+
+                                if word_meta_str:
+                                    word_meta = json.loads(word_meta_str)
+                                    if not word_meta.get("should_be_saved", True):
+                                        print("Word rejected - Stopping stream")
+                                        AIWord.objects.filter(id=word_id).update(status='REJECTED', updated_at=timezone.now())
+                                        # Gửi socket thông báo từ không hợp lệ
+                                        # Ngắt stream/vòng lặp tại đây
+                                        break
+                                    else:
+                                        valid = True
+
+                                        print("Word accepted", full_text)
+                            
+                            if valid:
+                                while True:
+
+                                    sense_str, new_pointer = extract_json_fragment(full_text, "senses", pointer)
+                                    if sense_str:
+                                        pointer = new_pointer
+                                        try:
+                                            sense = json.loads(sense_str)
+                                            id = str(uuidv7.generate_uuid7())
+
+                                            processed_contents = {
+                                                "id":id,
+                                                "word_id": word_id,
+                                                "word_value":word_value,
+                                                "language_code":language_code,
+                                                "is_offensive":sense.get("is_offensive"),
+                                                "pos":sense.get("pos"),
+                                                "level":sense.get("level"),
+                                                "register":sense.get("register"),
+                                                "ipas":sense.get("ipas"),
+                                                "contents":{
+                                                    "definition": {language_code:{ **sense.get("definition")}},
+                                                    "usage": {language_code:{ **sense.get("usage")}},
+                                                    "examples": [
+                                                        {language_code:{ **ex}} 
+                                                        for ex in sense.get("examples", [])
+                                                    ],
+                                                }
+                                            }
+                                            sense_objs.append(processed_contents)
+                                            print(6)
+                                            word_cache.cache_word_add_sense(language_code, word_value, id, processed_contents)
+                                            print(7)
+                                            await socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": processed_contents})
+                                            print(8)
+                                            
+                                            # Kích hoạt lấy ảnh 1 ngay lập tức (không đợi stream xong)
+                                            img_desc = processed_contents.get('metadata',{}).get('image_keywords',None)
+                                            print(9)
+                                            print('img_desc', img_desc)
+                                            if img_desc:
+                                                # Kết nối tới DB 0 (Làn đường xử lý)
+                                                # Đẩy vào queue "redis_word"
+                                                # r_queue.rpush("redis_image", json.dumps({
+                                                #     "sense_info": sense_word_obj,
+                                                #     "keyword": img_desc
+                                                # }))
+
+                                                task.append(asyncio.create_task(get_image_by_keyword({
+                                                    "sense_info": processed_contents,
+                                                    "keyword": img_desc
+                                                })))
+                                                print('Lấy ảnh, máy cty pixabay hoạt động hơi lỏ nên tạm tắt')
+                                                # task_fetch_image_single.delay(sense_word_obj, img_desc, socket_room, temp_index=0)
+                                        except Exception as e: 
+                                            print('error on exec ai trunks',e)
+                                            pass
+                                    else:
+                                        break
+                    
+                    is_valid = valid
                 except Exception as e:
-                    print('Word Error gemini-2.5-flash', e)
-                    try:
-                        response = await client.models.generate_content_stream(
-                            model="gemini-2.5-pro", # Đã cập nhật bản lite mới nhất 2026
-                            contents=current_prompt,
-                            config=types.GenerateContentConfig(
-                                max_output_tokens=8192,
-                                response_mime_type="application/json",
-                                response_schema=current_schema
-                            )
-                        )
-                    except Exception as e:
-                        print(f"Word Error gemini-2.5-pro, trigger local ai: {e}")
-                        # response = local_ai(word_value, language_code, user_language_code, word_id) 
-                        await socket_message(socket_room, {"type": "TRANSLATE_SENSE_ERROR", "payload": str(e)})
-                        return None
-                    
-            pointer = 0
-            sense_objs=[]
-            valid = False
-            word_cache = WordCacheManager()
-            task =[]
-            async for chunk in response:
-                if chunk.text:
-                    ai_trunks.append(chunk.text)
+                    if attempts == len(models)+1:
+                        def word_failed(word_instance):
+                            word_instance.status = 'FAILED'
+                            word_instance.save()
 
-                    # --- LOGIC ĐÁNH CHẶN LẤY ẢNH SỚM ---
-                    full_text = "".join(ai_trunks)
+                        await sync_to_async(word_failed)(word_instance)
 
-                    if not valid:
-                        word_meta_str, _ = extract_json_fragment(full_text, "metadata") 
+                        return {"word_id": word_id, "senses":[], "error": str(e)}
+                    print(f'Word Error in attempt {attempts} with {model}:', e)
 
-                        if word_meta_str:
-                            word_meta = json.loads(word_meta_str)
-                            if not word_meta.get("should_be_saved", True):
-                                print("Word rejected - Stopping stream")
-                                AIWord.objects.filter(id=word_id).update(status='REJECTED', updated_at=timezone.now())
-                                # Gửi socket thông báo từ không hợp lệ
-                                # Ngắt stream/vòng lặp tại đây
-                                break
-                            else:
-                                valid = True
-
-                                print("Word accepted", full_text)
-                    
-                    if valid:
-                        while True:
-
-                            sense_str, new_pointer = extract_json_fragment(full_text, "senses", pointer)
-                            if sense_str:
-                                pointer = new_pointer
-                                try:
-                                    sense = json.loads(sense_str)
-                                    id = str(uuidv7.generate_uuid7())
-
-                                    processed_contents = {
-                                        "id":id,
-                                        "word_id": word_id,
-                                        "word_value":word_value,
-                                        "language_code":language_code,
-                                        "is_offensive":sense.get("is_offensive"),
-                                        "pos":sense.get("pos"),
-                                        "level":sense.get("level"),
-                                        "register":sense.get("register"),
-                                        "ipas":sense.get("ipas"),
-                                        "contents":{
-                                            "definition": {language_code:{ **sense.get("definition")}},
-                                            "usage": {language_code:{ **sense.get("usage")}},
-                                            "examples": [
-                                                {language_code:{ **ex}} 
-                                                for ex in sense.get("examples", [])
-                                            ],
-                                        }
-                                    }
-                                    sense_objs.append(processed_contents)
-                                    print(6)
-                                    word_cache.cache_word_add_sense(language_code, word_value, id, processed_contents)
-                                    print(7)
-                                    await socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": processed_contents})
-                                    print(8)
-                                    
-                                    # Kích hoạt lấy ảnh 1 ngay lập tức (không đợi stream xong)
-                                    img_desc = processed_contents.get('metadata',{}).get('image_keywords',None)
-                                    print(9)
-                                    print('img_desc', img_desc)
-                                    if img_desc:
-                                        # Kết nối tới DB 0 (Làn đường xử lý)
-                                        # Đẩy vào queue "redis_word"
-                                        # r_queue.rpush("redis_image", json.dumps({
-                                        #     "sense_info": sense_word_obj,
-                                        #     "keyword": img_desc
-                                        # }))
-
-                                        task.append(asyncio.create_task(get_image_by_keyword({
-                                            "sense_info": processed_contents,
-                                            "keyword": img_desc
-                                        })))
-                                        print('Lấy ảnh, máy cty pixabay hoạt động hơi lỏ nên tạm tắt')
-                                        # task_fetch_image_single.delay(sense_word_obj, img_desc, socket_room, temp_index=0)
-                                except Exception as e: 
-                                    print('error on exec ai trunks',e)
-                                    pass
-                            else:
-                                break
         print('full_response_text', sense_objs)
-
 
         word_data = word_cache.cache_word_get_data(language_code, word_value)
         redis_user_language_code = word_data['langs']
@@ -266,7 +260,7 @@ async def ai_create_new_word_sema(word_info):
             traceback.print_exc()
             print(f"Error creating translate: {e}")
 
-    
+        return {"id": word_id, "senses": sense_objs, "valid": is_valid}
         # try:
         #     # ✅ Dùng DjangoJSONEncoder để convert UUID
         #     cache.cache_word_set_status(language_code, word_value, 'SENSE_COMPLETED')

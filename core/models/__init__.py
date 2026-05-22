@@ -1,4 +1,5 @@
 from core.models.Collection import Collection
+from core.models.CollectionItem import CollectionItem
 from core.models.CommonPhrase import CommonPhrase
 from core.models.Defination import Defination
 from core.models.UserCollection import UserCollection

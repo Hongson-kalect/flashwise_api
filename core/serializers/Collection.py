@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from config.serializers.BaseModel import BaseModelSerializer
 from core.models.Word import Word
-from ai.serializers.AISense import AISenseSerializer
+from ai.serializers.AISense import AISenseSerializer,AISenseSerializerBasic
 from core.models.Collection import Collection
 from utils.models.Tag import Tag
 
@@ -30,7 +30,7 @@ class CollectionPreviewSerializer(BaseModelSerializer):
 class CollectionDetailSerializer(BaseModelSerializer):
     # Bạn có thể dùng Serializer của CollectionItem ở đây để lôi chi tiết word, meaning...
     # items = serializers.SerializerMethodField() 
-    senses = AISenseSerializer(many=True, read_only=True)
+    senses = AISenseSerializerBasic(many=True, read_only=True)
 
     class Meta:
         model = Collection

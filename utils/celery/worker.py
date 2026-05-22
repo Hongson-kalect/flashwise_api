@@ -8,9 +8,16 @@ import json
 import logging
 from django.utils import timezone
 from asgiref.sync import sync_to_async
+
+from collections import defaultdict
+from django.db import connection, transaction
 from django.apps import apps # Tuyệt chiêu đọc Model động của Django
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Case, When, F, Value, Func, ExpressionWrapper, IntegerField
+from django.contrib.postgres.fields import ArrayField
+from django.db.models import CharField
+
 from ai.models import AIWord, AISense
+from core.models import Collection
 from ai.serializers import AIWordSerializer
 from utils.redis.word_init import WordCacheManager
 
@@ -22,6 +29,7 @@ from utils.utils.sense_handle import serialize_entries
 # --- CẤU HÌNH ---
 REDIS_URL = 'redis://redis:6379/0'
 WORD_SEMA_LIMIT = 10 
+COLLECTION_WORD_SEMA_LIMIT = 10 
 IMAGE_SEMA_LIMIT = 10 
 TRANS_SEMA_LIMIT = 20
 BATCH_SIZE = 500
@@ -30,7 +38,8 @@ FLUSH_INTERVAL = 3
 BUFFER_CONFIGS = [
     {"key": "db_buffer:sense:update", "model_name": "AISense", "action": "bulk_update", "fields": ["contents"], "app":"ai"},
     {"key": "db_buffer:word:update", "model_name": "AIWord", "action": "bulk_update", "fields": ["text", "updated_at"], "app":"ai"},
-    {"key": "db_buffer:user_card:create", "model_name": "UserCard", "action": "bulk_create", "fields": [], "app":"ai"},
+    {"key": "db_buffer:collection:atoms_update", "model_name": "Collection", "action": "atoms_update", "fields": [], "app":"core"},
+    {"key": "db_buffer:collectionItem:create", "model_name": "CollectionItem", "action": "bulk_create", "fields": [], "app":"core"},
 ]
 
 logging.basicConfig(level=logging.INFO)
@@ -72,15 +81,33 @@ async def handle_task(job, sema, task_type):
             await redis_client.rpush(redis_key, *payloads)
 
             if word_id:
-                await sync_to_async(re_cache_word)(word_id)
-
-            
-        logger.info(f"[{task_type.upper()}] Job xử lý thành công trong {round((timezone.now() - time_start).total_seconds(), 2)}s")
+                await sync_to_async(re_cache_word)(word_id)     
         
-        # BẬT LÊN NẾU MUỐN DÙNG DB FLUSHER:
-        # result_key = f"redis_{task_type}_result"
-        # await redis_client.rpush(result_key, json.dumps(job))
+        elif task_type == 'collection_word':
+            # Tạo word mới
+            results = await ai_create_new_word_sema(job)
+            word = job.get('value', None)
 
+            # Từ result có {id, senses:id[]}
+            # Lấy list collection trong redis word key
+            word_key = f'collection_id:{word}'
+            senses = results.get('senses')
+
+            # Kiểm tra nếu senses tồn tại và có ít nhất 1 phần tử
+            selected_sense = senses[0] if senses else None
+
+            if not selected_sense:
+                return
+
+            action = 'accept' if results.get('is_valid', False) else 'reject'
+            
+            collection_ids = await redis_client.spop(word_key, count=9999)
+            for collection_id in collection_ids:
+                await redis_client.rpush("db_buffer:collection:atoms_update", json.dumps({"collection_id": collection_id, "value": word, "sense_id": selected_sense.get("id"), 'action':action}))
+                if action == 'accept':
+                    await redis_client.rpush("db_buffer:collectionItem:create", json.dumps({"collection_id": collection_id, "value": word, "sense_id": selected_sense.get("id")}))
+
+        logger.info(f"[{task_type.upper()}] Job xử lý thành công trong {round((timezone.now() - time_start).total_seconds(), 2)}s")
     except Exception as e:
         logger.error(f"[AI-ERROR] {task_type} gặp lỗi nghiêm trọng: {e}", exc_info=True)
     finally:
@@ -123,11 +150,10 @@ async def consume_queue(queue_name, sema, task_type):
             # Nhặt việc từ Redis với timeout chống treo
             raw_data = await redis_client.blpop(queue_name, timeout=5)
             if not raw_data:
-                logger.info(f"[CONSUMER-LOOP] {queue_name}: No data")
                 sema.release() # Trả lại ghế nếu hàng chờ trống
                 continue
 
-            logger.info(f"[CONSUMER-LOOP] Chạy vòng lặp {queue_name}: {raw_data}")
+            logger.info(f"[CONSUMER-LOOP] Chạy vòng lặp {queue_name}")
 
             job = json.loads(raw_data[1])
             
@@ -138,7 +164,7 @@ async def consume_queue(queue_name, sema, task_type):
             logger.error(f"[LOOP-ERROR] Lỗi vòng lặp Consumer {queue_name}: {e}")
             await asyncio.sleep(1)
 
-async def flush_buffer_to_db(redis_client, batch_size=50):
+async def flush_buffer_to_db(redis_client, batch_size=BATCH_SIZE):
     """Worker tổng quát: Một mình cân hết tất cả các loại bảng và hành động ghi DB"""
     while True:
         try:
@@ -176,13 +202,117 @@ def execute_bulk_db(batch_data, config):
             objects_to_update = [Model(**item) for item in batch_data]
             Model.objects.bulk_update(objects_to_update, config["fields"])
             logger.info(f"[BULK-UPDATE] Đã cập nhật thành công {len(objects_to_update)} dòng cho bảng {config['model_name']}.")
+
+            return len(objects_to_update)
             
         elif action == "bulk_create":
             # Tạo list các instance mới hoàn toàn để insert
             objects_to_create = [Model(**item) for item in batch_data]
             Model.objects.bulk_create(objects_to_create, ignore_conflicts=True)
             logger.info(f"[BULK-CREATE] Đã chèn mới thành công {len(objects_to_create)} dòng vào bảng {config['model_name']}.")
-            
+
+            return len(objects_to_create)
+
+        elif action == 'atoms_update':
+            # case đặc biệt hiện chỉ áp dụng để update bảng collection các cột pending và invalid tự động
+
+            if not batch_data:
+                return 0
+
+            # =========================================================
+            # STEP 1: GROUP DATA IN PYTHON
+            # =========================================================
+
+            grouped = defaultdict(lambda: {
+                "remove_pending": [],
+                "invalid_words": [],
+                "valid_count": 0,
+            })
+
+            for item in batch_data:
+                collection_id = item["collection_id"]
+                word = item["value"]
+                action = item.get("action", "approve")
+
+                grouped[collection_id]["remove_pending"].append(word)
+
+                if action == "reject":
+                    grouped[collection_id]["invalid_words"].append(word)
+                else:
+                    grouped[collection_id]["valid_count"] += 1
+
+            # =========================================================
+            # STEP 2: BUILD VALUES
+            # =========================================================
+
+            values = []
+
+            for collection_id, data in grouped.items():
+                values.append((
+                    collection_id,
+                    data["remove_pending"],
+                    data["invalid_words"],
+                    data["valid_count"],
+                ))
+
+            table = Model._meta.db_table
+
+            # =========================================================
+            # STEP 3: SINGLE ATOMIC UPDATE
+            # =========================================================
+
+            sql = f"""
+                UPDATE {table} AS c
+                SET
+                    pending_words = ARRAY(
+                        SELECT x
+                        FROM unnest(
+                            COALESCE(c.pending_words, ARRAY[]::varchar[])
+                        ) AS x
+                        WHERE NOT (x = ANY(v.remove_pending))
+                    ),
+
+                    invalid_words = CASE
+                        WHEN v.invalid_words IS NOT NULL
+                            AND cardinality(v.invalid_words) > 0
+                        THEN array_cat(
+                            COALESCE(c.invalid_words, ARRAY[]::varchar[]),
+                            v.invalid_words
+                        )
+                        ELSE c.invalid_words
+                    END,
+
+                    item_count = c.item_count + v.valid_count
+
+                FROM (
+                    VALUES %s
+                ) AS v(
+                    id,
+                    remove_pending,
+                    invalid_words,
+                    valid_count
+                )
+
+                WHERE c.id = v.id
+                """
+
+            # =========================================================
+            # STEP 4: EXECUTE
+            # =========================================================
+
+            from psycopg2.extras import execute_values
+
+            with transaction.atomic():
+                with connection.cursor() as cursor:
+                    execute_values(
+                        cursor,
+                        sql,
+                        values,
+                        template="(%s::uuid, %s::varchar[], %s::varchar[], %s)"  # Nếu ID là UUID
+                    )
+
+                    return cursor.rowcount
+                
     except Exception as e:
         logger.error(f"[SQL-EXECUTE-ERROR] Lỗi thực thi SQL cho bảng {config['model_name']}: {e}")
 
@@ -217,12 +347,14 @@ async def main():
     
     # Khởi tạo Semaphore riêng cho từng cụm ranh giới hạn mức
     word_sema = asyncio.Semaphore(WORD_SEMA_LIMIT)
+    collection_word_sema = asyncio.Semaphore(COLLECTION_WORD_SEMA_LIMIT)
     image_sema = asyncio.Semaphore(IMAGE_SEMA_LIMIT)
     trans_sema = asyncio.Semaphore(TRANS_SEMA_LIMIT)
 
     # Đăng ký các bánh răng chạy đồng thời
     tasks = [
         consume_queue("redis_word", word_sema, "word"),
+        consume_queue("redis_collection_word", collection_word_sema, "collection_word"),
         consume_queue("redis_image", image_sema, "image"),
         consume_queue("redis_trans", trans_sema, "translate"),
         

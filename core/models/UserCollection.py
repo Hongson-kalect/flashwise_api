@@ -11,6 +11,7 @@ class UserCollection(BaseModel):
     )
     name = models.CharField(max_length=255, null=True, blank=True)
     description = models.TextField(blank=True,null=True)
+    learned_count = models.IntegerField(default=0) #  Số lượng sense người dùng đã học.
 
     added_item_ids = ArrayField(models.UUIDField(), default=list, blank=True)
     deleted_item_ids = ArrayField(models.UUIDField(), default=list, blank=True)

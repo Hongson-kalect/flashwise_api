@@ -30,7 +30,7 @@ from utils.utils.background_task import background_task
 from utils.utils.flatten_id import flatten_ids_by_langs
 from utils.utils.limit_prefetch import limit_prefetch
 from utils.utils.sense_content_tree import patch_and_clone_contents
-from utils.utils.sense_handle import serialize_entries, serialize_senses
+from utils.utils.sense_handle import serialize_entries, serialize_senses, deep_merge
 from utils.utils.socket import get_safe_room_id, run_async_task, socket_close
 from ai.serializers.AISenseMetadata import AISenseMetadataSerializer
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
@@ -294,29 +294,3 @@ class AISenseViewSet(SoftDeleteViewSet):
         data = AISenseSerializer(sense).data
 
         return Response(data, status=status.HTTP_200_OK)
-
-import copy
-def deep_merge(delta, base):
-    """
-    Merge delta vào base. 
-    - Nếu cả hai đều là dict, sẽ merge đệ quy.
-    - Ưu tiên giá trị từ delta (kể cả None).
-    """
-    if not delta: return base
-    if not base: return delta
-    # Nếu không phải cả hai đều là dict, lấy luôn delta (theo logic ưu tiên object1 của bạn)
-    if not isinstance(delta, dict) or not isinstance(base, dict):
-        return delta
-
-    # Tạo bản copy từ base để không làm ảnh hưởng đến object cũ
-    result = copy.deepcopy(base)
-
-    for key, value in delta.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            # Nếu cả 2 đều là dict, đệ quy xuống tầng sâu hơn
-            result[key] = deep_merge(value, result[key])
-        else:
-            # Nếu key mới hoàn toàn hoặc không phải dict, ghi đè/thêm mới từ delta
-            result[key] = value
-
-    return result

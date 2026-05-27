@@ -250,3 +250,28 @@ def get_object_lang(obj, language_code, user_language_code):
         }, True
     
     return {}, False
+
+def deep_merge(delta, base):
+    """
+    Merge delta vào base. 
+    - Nếu cả hai đều là dict, sẽ merge đệ quy.
+    - Ưu tiên giá trị từ delta (kể cả None).
+    """
+    if not delta: return base
+    if not base: return delta
+    # Nếu không phải cả hai đều là dict, lấy luôn delta (theo logic ưu tiên object1 của bạn)
+    if not isinstance(delta, dict) or not isinstance(base, dict):
+        return delta
+
+    # Tạo bản copy từ base để không làm ảnh hưởng đến object cũ
+    result = copy.deepcopy(base)
+
+    for key, value in delta.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            # Nếu cả 2 đều là dict, đệ quy xuống tầng sâu hơn
+            result[key] = deep_merge(value, result[key])
+        else:
+            # Nếu key mới hoàn toàn hoặc không phải dict, ghi đè/thêm mới từ delta
+            result[key] = value
+
+    return result

@@ -54,8 +54,6 @@ async def process_translation_chunk(chunk, language_code, language_str, translat
         sense_ids = list(chunk.keys())
         schema = render_translate_schema(word, language_code, chunk, translate_lang)
 
-        print('schema', schema)
-        
         prompt = f"""
         # ROLE: Translator
         # WORD: {word} | FROM: {language_code} | TO: {language_str}
@@ -199,11 +197,8 @@ async def ai_create_translate_sema(props, translate_base_language=True):
         mapping_table = {}
         temp_senses = {}
 
-        print('senses', senses)
-        
         for s_idx, (s_uuid, s_data) in enumerate(senses.items(), 1):
 
-            print('s-data', s_data)
             s_key = f"s{s_idx}"
             mapping_table[s_key] = s_uuid
             
@@ -263,7 +258,6 @@ async def ai_create_translate_sema(props, translate_base_language=True):
         full_translated_data = []
 
         for result in results:
-            print('result aaaaaaaaaa', result)
             for sense_id, sense_translate_content in result.items():
                 sense = mapping_sense.get(sense_id)
                 
@@ -278,10 +272,7 @@ async def ai_create_translate_sema(props, translate_base_language=True):
 
 
                     if key == 'translations':
-
                         current_trans = merge_content.get('translations', {})
-                        print('current_trans', current_trans)
-                        print('content', content)
                         merge_content['translations'] = {**current_trans, **content}
 
                         continue
@@ -298,7 +289,6 @@ async def ai_create_translate_sema(props, translate_base_language=True):
                             #     # **trans_arr[index]
                             # })
                             trans_obj = content.get(f'ex{str(index+1)}', {})
-                            print('trans_obj', trans_obj)
                             if not trans_obj:
                                 continue
 

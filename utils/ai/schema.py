@@ -2,8 +2,6 @@ def render_translate_schema(word, word_lang, sense_object: dict, translate_lang:
     properties = {}
     required = []
 
-    print('sense_object', sense_object)
-
     def render_obj(key, type="STRING"):
         # Tạo properties cho từng ngôn ngữ
         lang_props = {
@@ -42,8 +40,6 @@ def render_translate_schema(word, word_lang, sense_object: dict, translate_lang:
         need_translate = True
         
         for key, item in sense.items():
-
-            print('key', key, 'item', item)
 
             if key =='translations':
                 # item ở đây là định nghĩa của sense hiện tại

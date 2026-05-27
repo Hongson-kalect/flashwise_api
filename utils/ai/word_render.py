@@ -44,7 +44,6 @@ def get_schema(mode='latin'):
     
 async def ai_create_new_word_sema(word_info):
 
-    print('create new word sema')
     socket_room='test'
     cache = WordCacheManager()
     r_queue = redis.Redis(host='redis', port=6379, db=0)
@@ -122,8 +121,6 @@ async def ai_create_new_word_sema(word_info):
                                         break
                                     else:
                                         valid = True
-
-                                        print("Word accepted", full_text)
                             
                             if valid:
                                 while True:
@@ -155,16 +152,11 @@ async def ai_create_new_word_sema(word_info):
                                                 }
                                             }
                                             sense_objs.append(processed_contents)
-                                            print(6)
                                             word_cache.cache_word_add_sense(language_code, word_value, id, processed_contents)
-                                            print(7)
                                             await socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": processed_contents})
-                                            print(8)
                                             
                                             # Kích hoạt lấy ảnh 1 ngay lập tức (không đợi stream xong)
                                             img_desc = processed_contents.get('metadata',{}).get('image_keywords',None)
-                                            print(9)
-                                            print('img_desc', img_desc)
                                             if img_desc:
                                                 # Kết nối tới DB 0 (Làn đường xử lý)
                                                 # Đẩy vào queue "redis_word"
@@ -260,7 +252,7 @@ async def ai_create_new_word_sema(word_info):
             traceback.print_exc()
             print(f"Error creating translate: {e}")
 
-        return {"id": word_id, "senses": sense_objs, "valid": is_valid}
+        return {"id": word_id, "senses": sense_objs, "is_valid": is_valid}
         # try:
         #     # ✅ Dùng DjangoJSONEncoder để convert UUID
         #     cache.cache_word_set_status(language_code, word_value, 'SENSE_COMPLETED')
@@ -400,10 +392,8 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                             if sense_str:
                                 pointer = new_pointer
                                 try:
-                                    print(1)
                                     sense = json.loads(sense_str)
                                     id = str(uuidv7.generate_uuid7())
-                                    print(2)
 
                                     sense_word_obj = {
                                         "id": id,
@@ -412,7 +402,6 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                                         "language_code": language_code,
                                         "created_by_id": user.id,
                                     }
-                                    print(3)
 
                                     processed_contents = {
                                         "id":id,
@@ -427,16 +416,11 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                                         ]
                                     }
                                     sense_objs.append(processed_contents)
-                                    print(6)
                                     word_cache.cache_word_add_sense(language_code, word_instance.value, id, processed_contents)
-                                    print(7)
                                     await socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": processed_contents})
-                                    print(8)
                                     
                                     # Kích hoạt lấy ảnh 1 ngay lập tức (không đợi stream xong)
                                     img_desc = processed_contents.get('metadata',{}).get('image_keywords',None)
-                                    print(9)
-                                    print('img_desc', img_desc)
                                     if img_desc:
                                         print('Lấy ảnh, máy cty pixabay hoạt động hơi lỏ nên tạm tắt')
                                         # task_fetch_image_single.delay(sense_word_obj, img_desc, socket_room, temp_index=0)

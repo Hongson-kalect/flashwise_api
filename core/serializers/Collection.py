@@ -14,13 +14,13 @@ class CollectionListSerializer(BaseModelSerializer):
         fields = ['id', 'sub_id', 'name', 'description', 'image_url', 'senses_count', 'is_official']
 
 # Dùng riêng cho hàm retrieve (Chi tiết kèm từ vựng)
-class CollectionPreviewSerializer(BaseModelSerializer):
+class CollectionBasicSerializer(BaseModelSerializer):
     # Bạn có thể dùng Serializer của CollectionItem ở đây để lôi chi tiết word, meaning...
     # items = serializers.SerializerMethodField() 
 
     class Meta:
         model = Collection
-        fields = ['id', 'name', 'description', 'image_url', 'is_official']
+        fields = ['id', 'name', 'description', 'image_url', 'is_official', "item_count",'image_url']
 
     # def get_items(self, obj):
     #     # Truy cập vào tập dữ liệu đã được prefetch tối ưu ở hàm retrieve

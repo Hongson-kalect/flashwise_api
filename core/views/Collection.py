@@ -5,7 +5,7 @@ from rest_framework.permissions import IsAuthenticatedOrReadOnly, AllowAny
 from rest_framework.decorators import action
 from core.models import Collection, UserCollection,CollectionItem
 from ai.models import AISense, AIWord
-from core.serializers.Collection import CollectionSerializer,CollectionPreviewSerializer,CollectionListSerializer,CollectionDetailSerializer
+from core.serializers.Collection import CollectionSerializer,CollectionBasicSerializer,CollectionListSerializer,CollectionDetailSerializer
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 from utils.utils.sense_handle import get_user_lang_sense
 from utils.utils.uuidv7 import generate_uuid7
@@ -216,7 +216,7 @@ class CollectionViewSet(SoftDeleteViewSet):
             )
             CollectionItem.objects.bulk_create(bulk_item)
 
-        serializer = CollectionPreviewSerializer
+        serializer = CollectionBasicSerializer
         data = serializer(collection).data
         return Response({"user_collection":user_collection.id,**data}, status=status.HTTP_201_CREATED)
 
@@ -231,7 +231,7 @@ class CollectionViewSet(SoftDeleteViewSet):
     def get_serializer_class(self):
         # Chọn Serializer tương ứng với hành động để tối ưu dữ liệu trả về
         if self.action == 'retrieve':
-            return CollectionPreviewSerializer
+            return CollectionBasicSerializer
         return CollectionListSerializer # Mặc định cho list và các hàm khác
 
     def get_queryset(self):
@@ -330,7 +330,6 @@ def detect_missing(lang_code, user_lang_code, senses):
     for sense in senses:
         sense.contents, missing = get_user_lang_sense(sense.language_code, user_lang_code, sense.contents or sense.original.contents, sense.id)
 
-        print(f"Contents: {sense.contents}, Missing: {missing}")
         if missing:
             missings.append(missing)
             word_ids.append(str(sense.word_id))

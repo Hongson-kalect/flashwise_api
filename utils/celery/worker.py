@@ -28,8 +28,8 @@ from utils.utils.sense_handle import serialize_entries
 
 # --- CẤU HÌNH ---
 REDIS_URL = 'redis://redis:6379/0'
-WORD_SEMA_LIMIT = 10 
-COLLECTION_WORD_SEMA_LIMIT = 10 
+WORD_SEMA_LIMIT = 5 
+COLLECTION_WORD_SEMA_LIMIT = 5 
 IMAGE_SEMA_LIMIT = 10 
 TRANS_SEMA_LIMIT = 20
 BATCH_SIZE = 500

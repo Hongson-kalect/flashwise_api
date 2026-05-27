@@ -171,8 +171,6 @@ class AIWordViewSet(SoftDeleteViewSet):
                 status="PROCESSING"
             ).order_by('-created_at')
 
-            print(1)
-
             # 3. Prefetch Senses
             sense_qs = AISense.objects.filter(is_official=True).select_related('metadata').order_by('is_official')
 
@@ -196,8 +194,6 @@ class AIWordViewSet(SoftDeleteViewSet):
                 created_by=user,
                 status= "PROCESSING"
                 )
-
-                print(12)
                 
                 # Kết nối tới DB 0 (Làn đường xử lý)
                 r_queue = redis.Redis(host='redis', port=6379, db=0)
@@ -223,7 +219,6 @@ class AIWordViewSet(SoftDeleteViewSet):
                 #     socket_room
                 # )
                 # ai_create_new_word(user.id, word_instance.id, language_code, user_language_code, socket_room)
-                print(2)
                 return Response({'detail': 'PROCESSING', 'status': '202', 'data': init_data}, status=status.HTTP_201_CREATED)
            
             # Đây là nếu từ đã tồn tại trong db
@@ -241,7 +236,6 @@ class AIWordViewSet(SoftDeleteViewSet):
                 if missing_contents:
                     # Unique (word, user_language_code with 1 status PROCESSING allowed)
                     try:
-                        print(12)
                         print(missing_contents)
                         # Kết nối tới DB 0 (Làn đường xử lý)
                         r_queue = redis.Redis(host='redis', port=6379, db=0)
@@ -287,9 +281,6 @@ class AIWordViewSet(SoftDeleteViewSet):
         # Nếu chưa có thì tạo bản ghi mới trong redis, nếu sucess thì tạo bản ghi vào word, delay tạo
         # #
 
-
-        print(1)
-
         # 1. Định nghĩa bộ lọc Sense
         sense_filter = Q(is_official=True) | Q(created_by=user) | Q(updated_by=user)
 
@@ -299,8 +290,6 @@ class AIWordViewSet(SoftDeleteViewSet):
             language_code=user_language_code, 
             status="PROCESSING"
         ).order_by('-created_at')
-
-        print(1)
 
         # 3. Prefetch Senses
         sense_qs = AISense.objects.filter(sense_filter).select_related('metadata', 'previous').order_by('-updated_at')
@@ -335,7 +324,6 @@ class AIWordViewSet(SoftDeleteViewSet):
             status= "PROCESSING"
             )
 
-            print(12)
             # GỌI CELERY: Bọc phát mất hút ở đây
             # sửa lại, bỏ content, lưu toàn bộ ở bảng sense, dùng cơ chế origin-delta
             ai_create_new_word_task.delay(
@@ -346,7 +334,6 @@ class AIWordViewSet(SoftDeleteViewSet):
                 socket_room
             )
             # ai_create_new_word(user.id, word_instance.id, language_code, user_language_code, socket_room)
-            print(2)
             return Response({'detail': 'PROCESSING', 'status': '202', 'data': init_data}, status=status.HTTP_202_ACCEPTED)
            
 

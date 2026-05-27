@@ -24,6 +24,9 @@ class Collection(BaseModel):
     invalid_words = ArrayField(base_field=models.CharField(max_length=255), blank=True, default=list)
     pending_words = ArrayField(base_field=models.CharField(max_length=255), blank=True, default=list)
 
+    original = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True) # Bản gốc, dùng để compare hiển thị cho người dùng (unique original - Không có thì giời biết 2 bản có phải cùng 1 sense không)
+    parents = ArrayField(default=list, base_field=models.UUIDField(), blank=True)
+
     # update_requests = models.ManyToManyField('update_request', blank=True)
     # update_logs = models.ManyToManyField('update_log', blank=True)
 
@@ -32,6 +35,7 @@ class Collection(BaseModel):
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['is_active']),
+            models.Index(fields=['original']),
             models.Index(fields=['is_deleted']),
             models.Index(fields=['is_official']),
             models.Index(fields=['is_active', 'is_deleted', '-score']),

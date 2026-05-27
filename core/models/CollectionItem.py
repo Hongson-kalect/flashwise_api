@@ -7,7 +7,7 @@ from ai.models.AISense import AISense
 class CollectionItem(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid7, editable=False)
     value= models.CharField(max_length=100, null=True, blank=True)
-    collection = models.ForeignKey("core.Collection", on_delete=models.CASCADE)
+    collection = models.ForeignKey("core.Collection", on_delete=models.SET_NULL, null=True, blank=True)
     original = models.ForeignKey(AISense, on_delete=models.CASCADE, related_name='original_items', null=True) # Khóa UUIDv7 của gốc, không cho sửa thủ công
     sense = models.ForeignKey(AISense, on_delete=models.CASCADE, related_name='sense_items')
     order = models.FloatField(null=True, blank=True)

@@ -122,7 +122,6 @@ async def ai_create_metadata(props):
         mapping_table = {}
         temp_senses = {}
 
-        print('senses', senses)
         
         for s_idx, (s_uuid, s_content) in enumerate(senses.items(), 1):
 
@@ -149,7 +148,6 @@ async def ai_create_metadata(props):
         keywords = {}
 
         # for result in results:
-        print('result aaaaaaaaaa', result)
         # Lấy image_keyword để lấy ảnh, hoặc lấy list keyword, sau đó search trong db sau đó chạy song song api để lấy ảnh, tạo context và lib và gán preview 
 
         for sense_id, sense_metadata in result.items():

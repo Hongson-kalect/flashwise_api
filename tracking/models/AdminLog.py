@@ -21,12 +21,13 @@ class AdminLog(BaseModel):
 
     class Meta:
         db_table = "admin_log"
-        indexes = [
-            models.Index(fields=["admin"]),
-            models.Index(fields=["action"]),
-            models.Index(fields=["created_at"]),
-        ]
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["admin", "-created_at"]),
+            models.Index(fields=["action", "-created_at"]),
+            # Index phức hợp phục vụ việc tìm nhanh lịch sử xử lý của 1 thực thể cụ thể
+            models.Index(fields=["target_type", "target_id"]), 
+        ]
 
     def __str__(self):
         admin_repr = getattr(self.admin, "email", str(self.admin)) if self.admin else "system"

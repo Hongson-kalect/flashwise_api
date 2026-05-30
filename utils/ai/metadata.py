@@ -107,14 +107,15 @@ from utils.redis.word_init import WordCacheManager
 async def ai_create_metadata(props):
 
     try:
-        
         r_queue = redis.Redis(host='redis', port=6379, db=0)
         cache = WordCacheManager()
-        socket_room = 'test'
 
         word = props.get('word_value')
         language_code = props.get('language_code')
         current_senses = props.get('current_senses')
+
+        # socket_room = 'test'
+        socket_room=f"{word}:{language_code}"
 
         senses = {sense['id']:{'definition': sense['contents']['definition'][language_code]['value'], "pos":sense['pos']} for sense in current_senses}
         mapping_sense = {sense["id"]: sense for sense in current_senses}
@@ -163,7 +164,7 @@ async def ai_create_metadata(props):
         # nếu ko phân biệt được thì gọi lần lượt thôi, gán cho sense và gửi socket nếu cần.
 
         # Báo cáo hoàn tất toàn bộ tiến trình
-        asyncio.create_task(socket_message(socket_room, {"type": "GET_METADATA_COMPLETED"}))
+        asyncio.create_task(socket_message(socket_room, {"type": "METADATA", "payload": full_metadata_data}))
         return full_metadata_data
     
     except Exception as e:

@@ -1,6 +1,7 @@
 from django.db import models
+from config.models.UUIDModel import UUIDModel
 
-class Dashboard(models.Model):
+class Dashboard(UUIDModel):
     user = models.ForeignKey('auth.User', on_delete=models.CASCADE)
     updated_at = models.DateTimeField(auto_now=True)
     summary = models.JSONField()

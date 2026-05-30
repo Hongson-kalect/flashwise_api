@@ -1,5 +1,3 @@
-from Asset import AssetSerializer
-from BanList import BanListSerializer
 from Device import DeviceSerializer
 from Login import LoginSerializer
 from LoginProvider import LoginProviderSerializer
@@ -7,6 +5,4 @@ from Notification import NotificationSerializer
 from Profile import ProfileSerializer
 from PurchaseRecord import PurchaseRecordSerializer
 from RestrictList import RestrictListSerializer
-from Setting import SettingSerializer
-from Stat import StatSerializer
-from Token import TokenSerializer
+from user.serializers.UserSetting import UserSettingSerializer

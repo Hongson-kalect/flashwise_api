@@ -13,36 +13,40 @@ temp_storage = FileSystemStorage(location=os.path.join(settings.MEDIA_ROOT, 'ima
 class ImageLibrary(models.Model):
     id = models.UUIDField(primary_key=True, default=uuidv7.generate_uuid7, editable=False)
 
-    file = models.ImageField(storage=temp_storage, upload_to='v1/', null=True)
-    url = models.URLField(max_length=500, null=True)
-    thumbnail_url = models.URLField(max_length=500, null=True, blank=True)
+    file = models.ImageField(storage=temp_storage, upload_to='v1/', null=True, blank=True)
+    url = models.URLField(max_length=1000, null=True, db_index=True) # Tăng max_length đề phòng CDN link dài
+    thumbnail_url = models.URLField(max_length=1000, null=True, blank=True)
     version = models.IntegerField(default=1)
     
-    # Quản lý trạng thái
-    is_active = models.BooleanField(default=True)  # Hiện/Ẩn trong hệ thống
-    is_public = models.BooleanField(default=True)  # Cộng đồng dùng chung hay cá nhân
-    is_deleted = models.BooleanField(default=False) # Soft delete
+    is_active = models.BooleanField(default=True, db_index=True)
+    is_public = models.BooleanField(default=True, db_index=True)
+    is_deleted = models.BooleanField(default=False, db_index=True)
     
-    # Nguồn và định danh
-    provider = models.CharField(max_length=50, default='unsplash') # unsplash, user, ai
+    provider = models.CharField(max_length=50, default='unsplash') 
     provider_id = models.CharField(max_length=100, null=True, blank=True)
     contributor = models.ForeignKey('auth.User', on_delete=models.SET_NULL, null=True, blank=True)
     
-    # Metadata & Credit
-    metadata = JSONField(default=dict, blank=True) # {blurhash, width, height, size}
-    attribution = JSONField(default=dict, blank=True) # {author_name, author_link, site_link}
+    metadata = JSONField(default=dict, blank=True) 
+    attribution = JSONField(default=dict, blank=True) 
     
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     def save(self, *args, **kwargs):
-        # Tự động cập nhật URL mỗi khi lưu
-        if self.file:
+        if self.file and not self.url:
             self.url = self.file.url
         super().save(*args, **kwargs)
 
     class Meta:
-        # Tránh một mô tả bị lặp lại cùng một version ảnh từ cùng một nguồn
-        unique_together = ('provider_id', 'provider')
+        db_table = "image_library"
+        ordering = ["-created_at"]
+        constraints = [
+            # Chặn trùng lặp chuẩn xác cho ảnh từ Unsplash/AI, bỏ qua ảnh user (khi provider_id bị null)
+            models.UniqueConstraint(
+                fields=['provider', 'provider_id'],
+                condition=models.Q(provider_id__isnull=False),
+                name='unique_provider_image_id'
+            )
+        ]
 
     def soft_delete(self):
         self.is_deleted = True
@@ -91,3 +95,8 @@ class ImageLibraryContext(models.Model):
         # Quan trọng: Không cho phép trùng cặp (ảnh - ngữ cảnh)
         unique_together = ('image', 'context')
         ordering = ['order', '-created_at']
+
+        indexes = [
+            # Tối ưu hóa cho các câu lệnh query ảnh kèm thứ tự của một ngữ cảnh cụ thể
+            models.Index(fields=['context', 'order'], name='idx_ctx_order'),
+        ]

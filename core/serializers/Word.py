@@ -1,15 +1,11 @@
 from rest_framework import serializers
 from config.serializers.BaseModel import BaseModelSerializer
-from core.models import Language, Translate, WordInfo
+from core.models import Language, WordInfo
 from django.contrib.auth import get_user_model
 
 from core.models.Word import Word
 from core.serializers.WordForm import BasicFormSerializer
-from core.serializers.Defination import DefinationSerializer
-from core.serializers.Example import BasicExampleSerializer, ExampleSerializer
-from core.serializers.ExampleTranslate import BasicExampleTranslateSerializer
 from core.serializers.Language import LanguageSerializer
-from core.serializers.Translate import BasicTranslateSerializer, TranslateSerializer
 from core.serializers.WordInfo import BasicWordInfoSerializer, WordInfoSerializer
 from utils.models import Ruby
 from utils.serializers.Ruby import RubySerializer
@@ -19,9 +15,6 @@ User = get_user_model()
 class WordSerializer(BaseModelSerializer):
     # language = LanguageSerializer(read_only=True)
     word_info = BasicWordInfoSerializer(read_only=True)
-    ruby = serializers.SerializerMethodField()
-    translates = BasicTranslateSerializer(many=True, read_only=True, source="word_translates")
-    definations = DefinationSerializer(many=True, read_only=True)
     # forms = BasicFormSerializer(many=True, read_only=True, source ="word_forms")
 
     class Meta:

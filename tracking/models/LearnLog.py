@@ -2,6 +2,7 @@
 from django.db import models
 from django.utils import timezone
 from config.models import BaseModel
+from django.contrib.postgres.fields import ArrayField
 
 # Bảng này có thể sẽ không dùng đến, các bảng log gần như đã có thể thực hiện đầy đủ các chức năng cần thiết.
 
@@ -14,8 +15,19 @@ class LearnLog(BaseModel):
         ("fail", "Fail"),
     ]
 
+    user = models.ForeignKey('auth.User', on_delete=models.CASCADE, related_name="daily_logs")
+    date = models.DateField(default=timezone.now)
+    words_learned = ArrayField(default=list, base_field=models.UUIDField(), blank=True)
+    words_relearned = ArrayField(default=list, base_field=models.UUIDField(), blank=True)
+
+    learn_time = models.PositiveIntegerField(default=0, help_text="Thời gian học (phút hoặc giây)")
+
+    xp_earned = models.PositiveIntegerField(default=0)
+
+    progress = models.JSONField(default=dict, blank=True) # Mô tả lại cách user trả lời
+    metadata = models.JSONField(default=dict, blank=True) # đúng sai dư lào, số thống kê
+
     user = models.ForeignKey('auth.User', on_delete=models.CASCADE, related_name="learn_logs")
-    session_id = models.UUIDField(null=True, blank=True)
     learned_at = models.DateTimeField(default=timezone.now)
     result = models.CharField(max_length=10, choices=RESULT_CHOICES)
     xp_earned = models.PositiveIntegerField(default=0)

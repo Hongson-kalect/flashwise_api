@@ -2,7 +2,7 @@ from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticatedOrReadOnly
-from core.models import Defination, Example, ExampleTranslate, Translate, WordForm
+from core.models import WordForm
 from core.models.Word import Word
 from django.db.models import Prefetch, Window, F
 from django.db.models.functions import RowNumber
@@ -15,92 +15,6 @@ class WordViewSet(SoftDeleteViewSet):
     queryset = Word.objects.all()
     serializer_class = WordSerializer
     permission_classes = [IsAuthenticatedOrReadOnly]
-
-    @action(detail=False, methods=['get'], url_path='get-word')
-    def get_word(self, request, pk=None, *args, **kwargs):
-        queryset = self.get_queryset()
-        value = request.query_params.get('value')
-        lang = request.query_params.get('lang')
-        user_lang = request.query_params.get('user_lang')
-
-        example_trans_prefetch = limit_prefetch(
-            'translated_examples',
-            ExampleTranslate.objects.filter(language_code__in=[lang,user_lang],),
-            '-score',2)
-
-        example_prefetch = limit_prefetch(
-            'defination_examples',
-            Example.objects.filter(language_code__in=[lang,user_lang], is_deleted=False, is_active=True),
-            '-score',2,example_trans_prefetch)
-
-        defi_prefetch = limit_prefetch(
-            'definations',
-            Defination.objects.filter(language_code__in=[lang,user_lang], is_deleted=False, is_active=True), 
-            '-score',10, example_prefetch)
-        
-        form_prefetch = limit_prefetch(
-            'word_forms',
-             WordForm.objects.all(),
-            'value',4)
-        
-        trans_prefetch = limit_prefetch(
-            'word_translates',
-             Translate.objects.filter(language_code__in=[lang,user_lang]))
-
-        if not value:
-            return Response({'detail': 'value is required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        queryset = queryset.filter(value=value, language_code =lang).prefetch_related(defi_prefetch,trans_prefetch,form_prefetch)[:20]
-
-        if not queryset.exists():
-            return Response({'detail': 'Word not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        serializer = self.get_serializer(queryset, many=True)
-        # ai_modify_data = test(value, serializer.data, lang, user_lang)
-        return Response({"data":serializer.data}, status=status.HTTP_200_OK)
-    
-    @action(detail=False, methods=['get'], url_path='get-ai-word')
-    def get_ai_word(self, request, pk=None, *args, **kwargs):
-        queryset = self.get_queryset()
-        value = request.query_params.get('value')
-        lang = request.query_params.get('lang')
-        user_lang = request.query_params.get('user_lang')
-
-        example_trans_prefetch = limit_prefetch(
-            'translated_examples',
-            ExampleTranslate.objects.filter(language_code__in=[lang,user_lang],),
-            '-score',2)
-
-        example_prefetch = limit_prefetch(
-            'defination_examples',
-            Example.objects.filter(language_code__in=[lang,user_lang], is_deleted=False, is_active=True),
-            '-score',2,example_trans_prefetch)
-
-        defi_prefetch = limit_prefetch(
-            'definations',
-            Defination.objects.filter(language_code__in=[lang,user_lang], is_deleted=False, is_active=True), 
-            '-score',10, example_prefetch)
-        
-        form_prefetch = limit_prefetch(
-            'word_forms',
-             WordForm.objects.all(),
-            'value',4)
-        
-        trans_prefetch = limit_prefetch(
-            'word_translates',
-             Translate.objects.filter(language_code__in=[lang,user_lang]))
-
-        if not value:
-            return Response({'detail': 'value is required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        queryset = queryset.filter(value=value, language_code =lang).prefetch_related(defi_prefetch,trans_prefetch,form_prefetch)[:20]
-
-        # if not queryset.exists():
-        #     return Response({'detail': 'Word not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        serializer = self.get_serializer(queryset, many=True)
-        ai_modify_data = test(value, serializer.data, lang, user_lang)
-        return Response({"clgt":ai_modify_data})
 
     @action(detail=False, methods=['get'], url_path='get-word')
     def search_word(self, request, pk=None, *args, **kwargs):

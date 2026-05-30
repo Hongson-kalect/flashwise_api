@@ -13,8 +13,15 @@ class WordTranslation(models.Model):
     created_at = models.DateTimeField(auto_now_add=True) # Score / (Hours + 2)^1.8)
 
     class Meta:
-        unique_together = ('source_word', 'target_word')
+        unique_together = ('source_word', 'target_word', 'language_code', 'translate_language_code')
+        
         indexes = [
-            # Tối ưu cho luồng Reverse Search: Gõ chữ tiếng Việt -> Lấy các từ tiếng Anh có điểm cao nhất
-            models.Index(fields=['source_word', '-translate_score']),
+            # INDEX CỐT LÕI 1: Dịch xuôi thông minh (Ví dụ: Tra từ 'bàn' hệ VI -> Lấy các từ EN có điểm cao nhất)
+            models.Index(fields=['language_code', 'source_word', '-translate_score']),
+            
+            # INDEX CỐT LÕI 2: Hỗ trợ ngược lại (Ví dụ: Gõ từ 'table' hệ EN -> Gợi ý nhanh từ VI có điểm cao nhất)
+            models.Index(fields=['translate_language_code', 'target_word', '-translate_score']),
         ]
+
+    def __str__(self):
+        return f"Translation({self.source_word} [{self.language_code}] → {self.target_word} | Score: {self.translate_score})"

@@ -33,6 +33,7 @@ from utils.ai.prompt import render_word_prompt
 from utils.celery.fetch_image import get_image_by_keyword 
 from utils.ai.translate import ai_create_translate_sema 
 from utils.ai.metadata import ai_create_metadata 
+from core.views.Collection import normalize
 
 def get_schema(mode='latin'):
     if mode == "latin":
@@ -44,16 +45,16 @@ def get_schema(mode='latin'):
     
 async def ai_create_new_word_sema(word_info):
 
-    socket_room='test'
     cache = WordCacheManager()
     r_queue = redis.Redis(host='redis', port=6379, db=0)
 
-
     word_id = word_info.get('word_id', None)
     user_id = word_info.get('user_id', None)
-    word_value = word_info.get('value', None)
+    word_value = normalize(word_info.get('value', ''))
     language_code = word_info.get('language_code', None)
     user_language_code = word_info.get('user_language_code', None)
+
+    socket_room=f"{word_value}:{language_code}"
 
     # word_instance = await sync_to_async(AIWord.objects.get)(id=word_id)
     LATIN_LANGS = ['vi', 'en', 'es', 'fr', 'de', 'it', 'pt', 'nl', 'pl', 'sv', 'no', 'da', 'fi', 'tr', 'cs', 'hu', 'id']

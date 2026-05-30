@@ -27,15 +27,20 @@ class Theme(BaseModel):
     name = models.CharField(max_length=150, unique=True)
     color_palette = models.JSONField(default=dict, blank=True)
     font = models.CharField(max_length=150, blank=True)
+    
+    is_active = models.BooleanField(default=False)
+    is_auto_active = models.BooleanField(default=False)
     is_default = models.BooleanField(default=False)
+
+    # Client chủ động lấy active sense khi sync dựa vào updated_at, nếu auto_active thì hỏi user để active, đến dịp thì chạy clon_job để đầu ngày cập nhật là sẽ có theme chủ đề cho user
 
     class Meta:
         db_table = "theme"
         ordering = ["-is_default", "name"]
         indexes = [
-            models.Index(fields=["is_default"]),
+            # INDEX TỐI ƯU: Kết hợp trường mặc định và các trạng thái của BaseModel để Django API quét lẹ nhất
+            models.Index(fields=["is_default", "is_active", "is_deleted"], name="idx_theme_status_lookup"),
         ]
 
     def __str__(self):
-        return f"Theme({self.name})"
-
+        return f"Theme({self.name}) {'[DEFAULT]' if self.is_default else ''}"

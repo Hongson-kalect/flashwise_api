@@ -1,16 +1,12 @@
 # core/admin.py
 from django.contrib import admin
 
-from .models import Example,ExampleTranslate, Collection,CommonPhrase,UserCollection,Language,Quiz,Translate,Word,WordInfo
+from .models import Collection,UserCollection,Language,Quiz,Word,WordInfo
 
 admin.site.register(Collection)
-admin.site.register(CommonPhrase)
 admin.site.register(UserCollection)
 admin.site.register(Language)
-admin.site.register(Example)
-admin.site.register(ExampleTranslate)
 admin.site.register(Quiz)
-admin.site.register(Translate)
 # admin.site.register(Word)
 admin.site.register(Word)
 # class WordConfig(admin.ModelAdmin):

@@ -6,6 +6,7 @@ from django.contrib.postgres.fields import ArrayField
 class LearnSession(BaseModel):
     TYPE_CHOICES = [
         ("learn", "Learn"),
+        ("quicklearn", "Quick Learn"),
         ("recall", "Recall"),
         ("review", "Review"),
     ]
@@ -13,8 +14,8 @@ class LearnSession(BaseModel):
     user = models.ForeignKey('auth.User', on_delete=models.CASCADE, related_name="learn_sessions")
     start_at = models.DateTimeField(default=timezone.now)
     end_at = models.DateTimeField(blank=True, null=True)
-    words = ArrayField(base_field=models.CharField(max_length=50), blank=True, default=list) #word subId or user Word id 
-    word_count = models.PositiveIntegerField(default=0)
+    senses = ArrayField(base_field=models.CharField(max_length=50), blank=True, default=list) #word subId or user Word id 
+    sense_count = models.PositiveIntegerField(default=0)
     time = models.PositiveIntegerField(default=0)  # tổng thời gian (giây)
     type = models.CharField(max_length=20, choices=TYPE_CHOICES, default="learn")
 

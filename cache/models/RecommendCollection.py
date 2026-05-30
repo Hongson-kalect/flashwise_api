@@ -1,8 +1,7 @@
 from django.db import models
+from config.models.UUIDModel import UUIDModel
 
-from core.models import Collection, Language
-
-class RecommendCollection(models.Model):
+class RecommendCollection(UUIDModel):
     """
     Lưu cache danh sách gợi ý cho người dùng.
     - strategy: 'system' => gợi ý chung; 'personalized' => dựa trên hành vi học của user.

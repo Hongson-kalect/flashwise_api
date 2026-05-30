@@ -14,7 +14,7 @@ class AISense(BaseModel):
     origins = models.JSONField(default=list) # [id1, id2...]
     metadata = models.ForeignKey(AISenseMetadata, on_delete=models.SET_NULL, null=True, related_name='senses')
     preview =models.JSONField(default=dict) # image url, định nghĩa, audio_url nếu cần
-    image_preview = models.URLField(max_length=500, null=True, blank=True)
+    image_preview = models.URLField(max_length=1000, null=True, blank=True)
     image_context = models.ForeignKey('core.ImageContext', on_delete=models.SET_NULL, null=True, blank=True)
     language_code = models.CharField(max_length=10, blank=True, null=True)
     contents = models.JSONField(default=dict, null=True, blank=True)
@@ -40,7 +40,7 @@ class AISense(BaseModel):
 
     is_official = models.BooleanField(default=True)
     is_ai_created = models.BooleanField(default=True)
-    score = models.IntegerField(default=0)
+    score = models.IntegerField(default=0, db_index=True)
     like_count = models.IntegerField(default=0)
     main_count = models.IntegerField(default=0)
 
@@ -51,19 +51,12 @@ class AISense(BaseModel):
         db_table = "ai_sense"
         ordering = ["-created_at"]
         indexes = [
-            models.Index(fields=["word"]),
-            models.Index(fields=["language_code"]),
-            models.Index(fields=["metadata"]),
-            models.Index(fields=["original"]),
-            models.Index(fields=["is_frozen"]),
-            models.Index(fields=["is_active"]),
-            models.Index(fields=["is_deleted"]),
-            models.Index(fields=["score"]),
-            models.Index(fields=["likes"]),
-            models.Index(fields=["views"]),
+            # INDEX CHÍ MẠNG TỐI ƯU API: Lấy các sense active, sạch sẽ của 1 từ cụ thể
+            models.Index(fields=["word", "is_active", "is_deleted", "is_official"], name="idx_sense_core_lookup"),
+            # Index phục vụ bộ lọc tìm kiếm nâng cao theo ngôn ngữ, từ loại và trình độ
+            models.Index(fields=["language_code", "pos", "level"], name="idx_sense_filter"),
             models.Index(fields=["created_at"]),
-            models.Index(fields=["is_offensive"]),
         ]
 
     def __str__(self):
-        return f"Sense ({self.word_value}, {self.metadata.pos})"
+        return f"Sense ({self.word_value} - {self.pos or 'Unknown'})"

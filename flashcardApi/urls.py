@@ -18,7 +18,7 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
-from utils.utils.get_token import add_bonus_word, add_kanji, add_word, dev_token, fix_data, jmdict, read_word
+from utils.utils.get_token import add_bonus_word, add_kanji, add_word, dev_token, fix_data, read_word
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -28,8 +28,6 @@ urlpatterns = [
     path('read-word/', read_word),
     path('fix-data/', fix_data),
     path('add-kanji/', add_kanji),
-    # path('test-ai/', test),
-    path('jmdict/', jmdict),
     
     # path('api/', include(('core.urls', 'flashcards.urls', 'ai.urls'))),
     path('api/', include('core.urls')),

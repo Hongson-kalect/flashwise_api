@@ -5,7 +5,6 @@ from django.contrib.postgres.fields import ArrayField
 from config.models import BaseModel
 
 class UserCollection(BaseModel):
-    sub_id = models.CharField(max_length=100, blank=True, null=True, db_index=True) # uuid v7
     collection = models.ForeignKey(
         'core.Collection', on_delete=models.CASCADE, related_name="user_collections", null=True
     )
@@ -13,9 +12,10 @@ class UserCollection(BaseModel):
     description = models.TextField(blank=True,null=True)
     learned_count = models.IntegerField(default=0) #  Số lượng sense người dùng đã học.
 
-    added_item_ids = ArrayField(models.UUIDField(), default=list, blank=True)
-    deleted_item_ids = ArrayField(models.UUIDField(), default=list, blank=True)
+    # added_item_ids = ArrayField(models.UUIDField(), default=list, blank=True)
+    # deleted_item_ids = ArrayField(models.UUIDField(), default=list, blank=True)
     user = models.ForeignKey('auth.User', on_delete=models.CASCADE, related_name="downloaded_collections")
+    version = models.IntegerField(default=0)
     sync = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
 
@@ -28,9 +28,3 @@ class UserCollection(BaseModel):
 
     def __str__(self):
         return f"UserCollection({self.user_id} → {self.collection_id})"
-    
-    def save(self, *args, **kwargs):
-        if not self.sub_id:
-            self.sub_id = self.id
-            # self.sub_id = str(uuid.uuid4())
-        super().save(*args, **kwargs)

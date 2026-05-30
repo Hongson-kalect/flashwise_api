@@ -1,6 +1,7 @@
 from django.db import models
+from config.models.UUIDModel import UUIDModel
 
-class MostForgetWord(models.Model):
+class MostForgetWord(UUIDModel):
     """
     Thống kê những từ mà người dùng (toàn hệ thống) hay quên nhất.
     -> Hỗ trợ hiển thị “Những từ đáng ôn lại” hoặc bảng từ gợi ý.

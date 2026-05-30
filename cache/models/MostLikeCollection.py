@@ -1,8 +1,7 @@
 from django.db import models
+from config.models.UUIDModel import UUIDModel
 
-from core.models import Collection, Language
-
-class MostLikeCollection(models.Model):
+class MostLikeCollection(UUIDModel):
     """
     Dữ liệu top collection được yêu thích (được tính toán định kỳ).
     Dùng để hiển thị trong trang Discover hoặc tab xu hướng.

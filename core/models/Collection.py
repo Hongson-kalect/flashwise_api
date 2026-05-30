@@ -5,7 +5,6 @@ from core.models.CollectionItem import CollectionItem
 from django.contrib.postgres.fields import ArrayField
 
 class Collection(BaseModel):
-    sub_id = models.CharField(max_length=100, blank=True, null=True, db_index=True) # uuid v7
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     image = models.FileField(upload_to='images/collections',null=True, blank=True)
@@ -13,18 +12,26 @@ class Collection(BaseModel):
     item_count = models.IntegerField(default=0) #  Số lượng sense có thể học của collection.
     image_url = models.TextField(blank=True, null=True) #Đã dùng bảng image liên kết với bảng, chủ động add image khi post
     tags = models.ManyToManyField('utils.Tag', blank=True)
-    is_frozen = models.BooleanField(default=False)
+    released = models.BooleanField(default=False)
+    metadatas = ArrayField(base_field=models.JSONField(), blank=True, default=list) # title, description, image, change log,...
+    
+    total_likes = models.IntegerField(default=0)
+    total_views = models.IntegerField(default=0)
+    total_downloads = models.IntegerField(default=0)
+
     is_uploaded = models.BooleanField(default=False)
     language_code = models.CharField(max_length=10, blank=True, null=True)
     is_active = models.BooleanField(default=True)
     is_official = models.BooleanField(default=False)
+    version = models.IntegerField(default=0)
     senses = models.ManyToManyField('ai.AISense', through=CollectionItem, 
                                     through_fields=('collection', 'sense'),
                                     blank=True)
     invalid_words = ArrayField(base_field=models.CharField(max_length=255), blank=True, default=list)
     pending_words = ArrayField(base_field=models.CharField(max_length=255), blank=True, default=list)
 
-    original = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True) # Bản gốc, dùng để compare hiển thị cho người dùng (unique original - Không có thì giời biết 2 bản có phải cùng 1 sense không)
+    original = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='original_collection') # Bản gốc, dùng để compare hiển thị cho người dùng (unique original - Không có thì giời biết 2 bản có phải cùng 1 sense không)
+    previous = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='previous_collection')
     parents = ArrayField(default=list, base_field=models.UUIDField(), blank=True)
 
     # update_requests = models.ManyToManyField('update_request', blank=True)
@@ -34,19 +41,12 @@ class Collection(BaseModel):
         db_table = 'collection'
         ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['is_active']),
-            models.Index(fields=['original']),
-            models.Index(fields=['is_deleted']),
-            models.Index(fields=['is_official']),
-            models.Index(fields=['is_active', 'is_deleted', '-score']),
-            models.Index(fields=['is_active', 'is_deleted', '-created_at']),
-            GinIndex(fields=['name'],name = 'collection_name_trgm',opclasses=['gin_trgm_ops']),
+            # INDEX TỔ HỢP TRUY VẤN LÕI: Phục vụ API lấy các bộ từ đang hot/mới nhất theo ngôn ngữ
+            models.Index(fields=['language_code', 'is_active', 'is_deleted', '-score'], name='idx_coll_lang_score'),
+            models.Index(fields=['language_code', 'is_active', 'is_deleted', '-created_at'], name='idx_coll_lang_created'),
+            # GinIndex tối ưu hoá tìm kiếm chuỗi gần đúng (Trigram) cho thanh tìm kiếm bộ từ
+            GinIndex(fields=['name'], name='collection_name_trgm', opclasses=['gin_trgm_ops']),
         ]
     def __str__(self):
-        return f"Collection: {self.name}"
-    
-    def save(self, *args, **kwargs):
-        if not self.sub_id:
-            self.sub_id = self.id
-            # self.sub_id = str(uuid.uuid4())
-        super().save(*args, **kwargs)
+        return f"({self.language_code}) Collection: {self.name} - {self.item_count}"
+

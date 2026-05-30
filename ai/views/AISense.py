@@ -18,12 +18,7 @@ from ai.models.TranslateLog import TranslateLog
 from ai.serializers.AISense import AISenseSerializer
 from ai.serializers.AISenseContent import AISenseContentSerializer
 from ai.views.AIWord import detect_missing_content
-from core.models import Defination, Example, ExampleTranslate, Translate, WordForm
 from ai.models.AIWord import AIWord
-from django.db.models import Prefetch, Window, F, Q
-from django.db.models.functions import RowNumber
-from ai.serializers.AIWord import AIWordSerializer
-from core.models.Language import Language
 from utils.utils import uuidv7
 from utils.utils.ai import ai_create_new_word, render_translate
 from utils.utils.background_task import background_task

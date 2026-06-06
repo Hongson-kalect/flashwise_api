@@ -60,7 +60,7 @@ def task_create_metadata(self,  info):
         # socket
 
         asyncio.run(socket_message(socket_room, {"type": "FULL_SENSE",
-                                "payload": user_lang_content}, True))
+                                "payload": user_lang_content}))
     except Exception as e:
         print(e)
         pass

@@ -61,7 +61,7 @@ async def handle_task(job, sema, task_type):
         elif task_type == 'image':
             await get_image_by_keyword(job)
         elif task_type == 'translate':
-            print('translate job', job)
+            # print('translate job', job)
                 # Hàm này nhận job (chứa id và contents cũ), gọi AI dịch và trả về contents đã update
             updated_contents = await ai_create_translate_sema(job, False)
 

@@ -44,7 +44,7 @@ def chunk_dict(data, size=3):
         yield {k: v for k, v in [next(it) for _ in range(min(size, len(data) - i))]}
 
 @retry_async()
-async def process_translation_chunk(chunk, language_code, language_str, translate_lang, mapping_table, socket_room):
+async def process_translation_chunk(chunk, language_code, language_str, translate_lang, mapping_table):
     try:
         # 1. Khởi tạo Schema và Client cho riêng Task này
         word = None
@@ -99,7 +99,7 @@ async def process_translation_chunk(chunk, language_code, language_str, translat
                         )
                     except Exception as e:
                         print(f"Translate gemini-2.5-pro error, trigger local ai: {e}")
-                        await socket_message(socket_room, {"type": "TRANSLATE_SENSE_ERROR", "payload": str(e)})
+                        # await socket_message(socket_room, {"type": "TRANSLATE_SENSE_ERROR", "payload": str(e)})
                         return None
         
         data = json.loads(response.text.strip())
@@ -123,20 +123,20 @@ async def process_translation_chunk(chunk, language_code, language_str, translat
 
         # 3. BẮN SOCKET NGAY LẬP TỨC (Xong cái nào bắn cái đó)
         print('final_chunk_data', final_chunk_data)
-        await socket_message(
-            socket_room,
-            {
-                "type": "TRANSLATE_SENSE_SUCCESS",
-                "payload": final_chunk_data # Trả về data đã hồi nguyên UUID
-            },
-            True
-        )
+        # await socket_message(
+        #     socket_room,
+        #     {
+        #         "type": "TRANSLATE_SENSE_SUCCESS",
+        #         "payload": final_chunk_data # Trả về data đã hồi nguyên UUID
+        #     },
+        #     True
+        # )
         return final_chunk_data
 
     except Exception as e:
         traceback.print_exc()
         print(f"Error in chunk {list(chunk.keys())}: {e}")
-        await socket_message(socket_room, {"type": "TRANSLATE_SENSE_ERROR", "payload": str(e)})
+        # await socket_message(socket_room, {"type": "TRANSLATE_SENSE_ERROR", "payload": str(e)})
         return None # Hoặc trả về lỗi để gather xử lý
 
 def patch_content_id(data, target_id, new_id, lang_dest):
@@ -159,12 +159,12 @@ def patch_content_id(data, target_id, new_id, lang_dest):
     return False
 import redis, json
 from utils.redis.word_init import WordCacheManager
+from utils.utils.socket import get_safe_room_id
 async def ai_create_translate_sema(props, translate_base_language=True):
 
     try:
         r_queue = redis.Redis(host='redis', port=6379, db=0)
         cache = WordCacheManager()
-        socket_room = 'test'
 
         # word = props.get('word_value')
         trunk = props.get('trunk',2)
@@ -172,6 +172,7 @@ async def ai_create_translate_sema(props, translate_base_language=True):
         user_language_code = props.get('user_language_code')
         senses_obj = props.get('missing_translate')
         current_senses = props.get('current_senses')
+        # socket_room = get_safe_room_id(word, language_code)
 
         senses = {}
         need_translation = {}
@@ -246,7 +247,7 @@ async def ai_create_translate_sema(props, translate_base_language=True):
             tasks.append(
                 process_translation_chunk(
                     chunk, language_code, language_str, 
-                    translate_lang, mapping_table, socket_room
+                    translate_lang, mapping_table
                 )
             )
 
@@ -327,7 +328,7 @@ async def ai_create_translate_sema(props, translate_base_language=True):
 
 
         # Báo cáo hoàn tất toàn bộ tiến trình
-        asyncio.create_task(socket_message(socket_room, {"type": "TRANSLATE_ALL_COMPLETED"}))
+        # asyncio.create_task(socket_message(socket_room, {"type": "TRANSLATE_ALL_COMPLETED"}))
         return full_translated_data
     
     except Exception as e:

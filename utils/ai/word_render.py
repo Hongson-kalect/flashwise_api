@@ -23,7 +23,7 @@ from utils.utils.extract_object_from_string import extract_json_fragment
 from utils.utils.flatten_id import flatten_ids
 from utils.utils.kanji import get_ruby_generator
 from utils.utils.sense_handle import serialize_entries, get_user_lang_content
-from utils.utils.socket import socket_message
+from utils.utils.socket import socket_message, get_safe_room_id
 from utils.redis.word_init import WordCacheManager
 from utils.celery.translate import task_create_translate
 from asgiref.sync import sync_to_async
@@ -54,7 +54,8 @@ async def ai_create_new_word_sema(word_info):
     language_code = word_info.get('language_code', None)
     user_language_code = word_info.get('user_language_code', None)
 
-    socket_room=f"{word_value}:{language_code}"
+    socket_room= get_safe_room_id(word_value, language_code)
+    print(f"socket_room: {socket_room}")
 
     # word_instance = await sync_to_async(AIWord.objects.get)(id=word_id)
     LATIN_LANGS = ['vi', 'en', 'es', 'fr', 'de', 'it', 'pt', 'nl', 'pl', 'sv', 'no', 'da', 'fi', 'tr', 'cs', 'hu', 'id']
@@ -245,8 +246,10 @@ async def ai_create_new_word_sema(word_info):
 
             # socket
 
-            asyncio.create_task(socket_message(socket_room, {"type": "FULL_SENSE",
-                                    "payload": data}, True))
+            asyncio.create_task(
+                socket_message(socket_room, {"type": "FULL_SENSE",
+                "payload": data})
+            )
 
             # task_create_translate.delay(redis_word,redis_senses, redis_translates)
         except Exception as e:

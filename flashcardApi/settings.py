@@ -61,7 +61,7 @@ SECRET_KEY = 'django-insecure-w6_%s0#68-eh#gqr2(uqmg04!yvwekvsc3#i*+1$x(i#8448hb
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['192.168.1.100','localhost', "192.168.34.140","192.168.1.111",'flashwise.loca.lt','celebs-baths-adjacent-purpose.trycloudflare.com']
+ALLOWED_HOSTS = ['192.168.1.100','localhost', "192.168.34.140","192.168.50.64",'flashwise.loca.lt','celebs-baths-adjacent-purpose.trycloudflare.com']
 
 CORS_ALLOWED_HEADERS = [
     'Content-Type',

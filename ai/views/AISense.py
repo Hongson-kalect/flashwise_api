@@ -135,7 +135,7 @@ class AISenseViewSet(SoftDeleteViewSet):
             return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "Missing definition"})
 
         # socket_room = get_safe_room_id(word_instance.value, user_language_code, user_language_code)+str(user.id)
-        socket_room = 'test'
+        # socket_room = get_safe_room_id(word_instance.value, word_instance.language_code) 
 
         with transaction.atomic():
             # save contents

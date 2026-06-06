@@ -2,24 +2,30 @@ import json
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 import asyncio
+from core.views.Collection import normalize 
 
 import hashlib
 import re
 
-def get_safe_room_id(word, language, user_language):
+def get_safe_room_id(word,word_lang=None, user_lang=None):
     # 1. Làm sạch word: chuyển về chữ thường, xóa khoảng trắng thừa
-    clean_word = word.strip().lower()
-    
-    # 2. Xử lý ký tự đặc biệt: Chỉ giữ lại chữ cái và số (hoặc dùng MD5 cho an toàn tuyệt đối)
-    # MD5 giúp độ dài room luôn cố định và không bị lỗi ký tự lạ (như tiếng Trung, Nhật, Arabic)
-    word_hash = hashlib.md5(clean_word.encode('utf-8')).hexdigest()[:16]
-    
-    # 3. Kết hợp: language (ngôn ngữ gốc) + user_lang (ngôn ngữ đích) + hash
-    # Ví dụ: en_vi_ab12cd34...
-    return f"{word_hash}_{language}_{user_language}"
+
+    normalized_word = word.strip()                  # Cắt khoảng trắng 2 đầu
+    normalized_word = re.sub(r'\s+', ' ', normalized_word) # Thu gọn khoảng trắng ở giữa
+    normalized_word = normalized_word.lower()       # Chuyển thành chữ thường
+
+    # 2. Băm MD5 (Bắt buộc phải mã hóa chuỗi sang định dạng bytes bằng utf-8 trước khi băm)
+    hash_object = hashlib.md5(normalized_word.encode('utf-8'))
+    hash_str = hash_object.hexdigest()
+
+    if not word_lang:
+        return f"{hash_str}"
+    if not user_lang:
+        return f"{hash_str}_{word_lang.strip().lower()}"
+    return f"{hash_str}_{word_lang.strip().lower()}_{user_lang.strip().lower()}"
 
 async def socket_message(group, data, is_close=False):
-    print('Debug: socket_message',group)
+    print('Debug: socket_message',group, data)
     channel_layer = get_channel_layer()
     
     # Gắn flag close_now vào data để Consumer nhận diện

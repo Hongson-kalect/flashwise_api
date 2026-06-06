@@ -92,8 +92,7 @@ async def process_metadata(chunk, word, language_code, mapping_table, socket_roo
             {
                 "type": "METADATA_SENSE",
                 "payload": final_chunk_data # Trả về data đã hồi nguyên UUID
-            },
-            True
+            }
         )
         return final_chunk_data
 
@@ -104,6 +103,7 @@ async def process_metadata(chunk, word, language_code, mapping_table, socket_roo
 
 import redis, json
 from utils.redis.word_init import WordCacheManager
+from utils.utils.socket import get_safe_room_id
 async def ai_create_metadata(props):
 
     try:
@@ -115,7 +115,7 @@ async def ai_create_metadata(props):
         current_senses = props.get('current_senses')
 
         # socket_room = 'test'
-        socket_room=f"{word}:{language_code}"
+        socket_room = get_safe_room_id(word, language_code)
 
         senses = {sense['id']:{'definition': sense['contents']['definition'][language_code]['value'], "pos":sense['pos']} for sense in current_senses}
         mapping_sense = {sense["id"]: sense for sense in current_senses}

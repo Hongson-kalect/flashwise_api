@@ -101,8 +101,8 @@ class AIWordViewSet(SoftDeleteViewSet):
         word = unquote(raw_word).strip().lower()
         language_code = request.GET.get('lang')
         user_language_code = request.GET.get('user_lang')
-        socket_room = get_safe_room_id(word, language_code, user_language_code) 
-        socket_room = 'test'
+        socket_room = get_safe_room_id(word, language_code) 
+        # socket_room = 'test'
 
         # Lấy dữ liệu trong redis
         cached = cache_manager.cache_word_get_data(language_code, word)

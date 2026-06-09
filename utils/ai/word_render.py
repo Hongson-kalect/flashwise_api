@@ -76,19 +76,21 @@ async def ai_create_new_word_sema(word_info):
 
     try:
         local_client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        ai_trunks =[]
+        ai_trunks = []
         is_valid = False
+        
+        # Tập hợp quản lý toàn bộ task chạy ngầm (Socket, Ảnh, Dịch, Metadata)
+        background_tasks = set()
 
         attempts = 0
         while not ai_trunks and attempts < len(models):
             async with local_client.aio as client:
                 model = models[attempts]
                 attempts += 1
-                # Nếu dùng ai local thì sẽ attempts<=len và khi attempts = len thì sẽ chạy local
 
                 try:
                     response = await client.models.generate_content_stream(
-                        model=model, # Đã cập nhật bản lite mới nhất 2026
+                        model=model,
                         contents=current_prompt,
                         config=types.GenerateContentConfig(
                             max_output_tokens=8192,
@@ -97,10 +99,10 @@ async def ai_create_new_word_sema(word_info):
                         )
                     )   
                     pointer = 0
-                    sense_objs=[]
+                    sense_objs = []
                     valid = False
                     word_cache = WordCacheManager()
-                    task =[]
+                    
                     async for chunk in response:
                         if chunk.text:
                             ai_trunks.append(chunk.text)
@@ -115,16 +117,17 @@ async def ai_create_new_word_sema(word_info):
                                     word_meta = json.loads(word_meta_str)
                                     if not word_meta.get("should_be_saved", True):
                                         print("Word rejected - Stopping stream")
-                                        AIWord.objects.filter(id=word_id).update(status='REJECTED', updated_at=timezone.now())
-                                        # Gửi socket thông báo từ không hợp lệ
-                                        # Ngắt stream/vòng lặp tại đây
+                                        await sync_to_async(
+                                            lambda: AIWord.objects.filter(id=word_id).update(
+                                                status='REJECTED', updated_at=timezone.now()
+                                            )
+                                        )()
                                         break
                                     else:
                                         valid = True
                             
                             if valid:
                                 while True:
-
                                     sense_str, new_pointer = extract_json_fragment(full_text, "senses", pointer)
                                     if sense_str:
                                         pointer = new_pointer
@@ -133,125 +136,117 @@ async def ai_create_new_word_sema(word_info):
                                             id = str(uuidv7.generate_uuid7())
 
                                             processed_contents = {
-                                                "id":id,
+                                                "id": id,
                                                 "word_id": word_id,
-                                                "word_value":word_value,
-                                                "language_code":language_code,
-                                                "is_offensive":sense.get("is_offensive"),
-                                                "pos":sense.get("pos"),
-                                                "level":sense.get("level"),
-                                                "register":sense.get("register"),
-                                                "ipas":sense.get("ipas"),
-                                                "contents":{
-                                                    "definition": {language_code:{ **sense.get("definition")}},
-                                                    "usage": {language_code:{ **sense.get("usage")}},
+                                                "word_value": word_value,
+                                                "language_code": language_code,
+                                                "is_offensive": sense.get("is_offensive"),
+                                                "pos": sense.get("pos"),
+                                                "level": sense.get("level"),
+                                                "register": sense.get("register"),
+                                                "ipas": sense.get("ipas"),
+                                                "contents": {
+                                                    "definition": {language_code: sense.get("definition")},
+                                                    "usage": {language_code: sense.get("usage")},
                                                     "examples": [
-                                                        {language_code:{ **ex}} 
-                                                        for ex in sense.get("examples", [])
+                                                        {language_code: ex} for ex in sense.get("examples", [])
                                                     ],
                                                 }
                                             }
                                             sense_objs.append(processed_contents)
                                             word_cache.cache_word_add_sense(language_code, word_value, id, processed_contents)
-                                            # await socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": processed_contents})
-                                            asyncio.create_task(socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": processed_contents}))
                                             
-                                            # Kích hoạt lấy ảnh 1 ngay lập tức (không đợi stream xong)
-                                            img_desc = processed_contents.get('metadata',{}).get('image_keywords',None)
+                                            # 🚀 1. Gửi socket PARTIAL ngầm an toàn
+                                            s_task = asyncio.create_task(socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": processed_contents}))
+                                            background_tasks.add(s_task)
+                                            s_task.add_done_callback(background_tasks.discard)
+                                            
+                                            # 🚀 2. Kích hoạt lấy ảnh ngầm ngay lập tức
+                                            img_desc = processed_contents.get('metadata', {}).get('image_keywords', None)
                                             if img_desc:
-                                                task.append(asyncio.create_task(get_image_by_keyword({
+                                                img_task = asyncio.create_task(get_image_by_keyword({
                                                     "sense_info": processed_contents,
                                                     "keyword": img_desc
-                                                })))
-                                                print('Lấy ảnh, máy cty pixabay hoạt động hơi lỏ nên tạm tắt')
-                                                # task_fetch_image_single.delay(sense_word_obj, img_desc, socket_room, temp_index=0)
+                                                }))
+                                                background_tasks.add(img_task)
+                                                img_task.add_done_callback(background_tasks.discard)
+
+                                            # Lấy thông tin ngôn ngữ từ cache phục vụ cho việc dịch thuật cuốn chiếu
+                                            word_data_tmp = word_cache.cache_word_get_data(language_code, word_value)
+                                            redis_user_language_code = word_data_tmp.get('langs', [language_code])
+
+                                            # 🚀 3. KÍCH HOẠT CHẠY NGẦM METADATA & BẢN DỊCH CUỐN CHIẾU CHO RIÊNG SENSE NÀY
+                                            # Đóng gói mảng chỉ chứa 1 mục duy nhất để AI xử lý siêu tốc (gần như tức thì)
+                                            single_sense_list = [processed_contents]
+
+                                            meta_task = asyncio.create_task(ai_create_metadata({
+                                                "word_value": word_value,
+                                                "language_code": language_code,
+                                                "current_senses": single_sense_list
+                                            }))
+                                            background_tasks.add(meta_task)
+                                            meta_task.add_done_callback(background_tasks.discard)
+
+                                            trans_task = asyncio.create_task(ai_create_translate_sema({
+                                                "language_code": language_code,
+                                                "user_language_code": redis_user_language_code,
+                                                "missing_translate": single_sense_list,
+                                                "current_senses": single_sense_list
+                                            }))
+                                            background_tasks.add(trans_task)
+                                            trans_task.add_done_callback(background_tasks.discard)
+
                                         except Exception as e: 
-                                            print('error on exec ai trunks',e)
+                                            print('error on exec ai trunks', e)
                                             pass
                                     else:
                                         break
                     
                     is_valid = valid
                 except Exception as e:
-                    if attempts == len(models)+1:
-                        def word_failed(word_instance):
-                            word_instance.status = 'FAILED'
-                            word_instance.save()
+                    if attempts == len(models):
+                        def word_failed(word_instance_fn):
+                            word_instance_fn.status = 'FAILED'
+                            word_instance_fn.save()
 
                         await sync_to_async(word_failed)(word_instance)
-
-                        return {"word_id": word_id, "senses":[], "error": str(e)}
+                        return {"word_id": word_id, "senses": [], "error": str(e)}
                     print(f'Word Error in attempt {attempts} with {model}:', e)
 
         print('full_response_text', sense_objs)
 
-        word_data = word_cache.cache_word_get_data(language_code, word_value)
-        redis_user_language_code = word_data['langs']
+        # =====================================================================
+        # 🏁 CHẶNG CUỐI: ĐỢI TOÀN BỘ CÁC TASK CHẠY NGẦM (ẢNH, DỊCH, META) HOÀN THÀNH XONG XUÔI
+        if background_tasks:
+            print(f"Đang đợi {len(background_tasks)} tác vụ ngầm gối đầu hoàn thành...")
+            await asyncio.gather(*background_tasks, return_exceptions=True)
+
         try:
-            task.append(asyncio.create_task(ai_create_metadata({
-                    "word_value": word_value,
-                    "language_code": language_code,
-                    "current_senses": sense_objs
-                })))
-
-        except Exception as e:
-            print('error on get metadata',e)
-        
-        try:
-            task.append(asyncio.create_task(ai_create_translate_sema({
-                    "language_code": language_code,
-                    "user_language_code": redis_user_language_code,
-                    "missing_translate": sense_objs,
-                    "current_senses": sense_objs
-                })))
-
-            await asyncio.gather(*task)
-
-            print('lưu các sense trong redis khi đã hoàn tất các chạy ngầm', sense_objs)
-
+            print('Lưu toàn bộ các sense vào postgres khi đã hoàn tất hết các chạy ngầm', sense_objs)
             await sync_to_async(save_sense)(sense_objs, word_id)
 
-            # load lại dữ liệu word rồi lưu vào cache
-            # 3. Prefetch Senses
-            word_instance =await sync_to_async(get_word_by_id)(word_id)
-            senses_instance = word_instance.prefetched_senses # Thay vì .senses.all()
+            # Load lại dữ liệu word và đồng bộ cache
+            word_instance = await sync_to_async(get_word_by_id)(word_id)
+            senses_instance = word_instance.prefetched_senses
 
             entries = serialize_entries(senses_instance)
             word_instance.processed_entries = entries
 
             data = AIWordSerializer(word_instance).data
-
             cache.cache_word(language_code=language_code, word_val=word_value, data=data)
 
-            user_lang_content = get_user_lang_content(language_code, user_language_code, data)
-
-            # socket
-
-            asyncio.create_task(
-                socket_message(socket_room, {"type": "FULL_SENSE",
-                "payload": data}, True)
+            # Gửi socket FULL chốt hạ dữ liệu cuối cùng
+            final_socket_task = asyncio.create_task(
+                socket_message(socket_room, {"type": "FULL_SENSE", "payload": data}, True)
             )
+            background_tasks.add(final_socket_task)
+            final_socket_task.add_done_callback(background_tasks.discard)
 
-            # task_create_translate.delay(redis_word,redis_senses, redis_translates)
         except Exception as e:
             traceback.print_exc()
-            print(f"Error creating translate: {e}")
+            print(f"Error creating final database and cache records: {e}")
 
         return {"id": word_id, "senses": sense_objs, "is_valid": is_valid}
-        # try:
-        #     # ✅ Dùng DjangoJSONEncoder để convert UUID
-        #     cache.cache_word_set_status(language_code, word_value, 'SENSE_COMPLETED')
-        #     json_data = JSONRenderer().render(word_data)
-        #     clean_data = json.loads(json_data)  # Convert bytes → dict
-        #     print('Socket full data')
-        #     asyncio.create_task(socket_message(socket_room, {"type": "FULL_SENSE",
-        #                             "payload": clean_data}, True))
-        #     # await socket_message(socket_room, {"type": "FULL_SENSE",
-        #     #                         "payload": clean_data}, True)
-        # except Exception as socket_error:
-        #     print(f"Failed to send full data via socket: {socket_error}")
-    
-        # return sense_objs
     
     except Exception as e:
         # Cách 1: In đầy đủ stack trace ra console (Dễ nhìn nhất khi dev)

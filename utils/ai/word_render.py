@@ -84,7 +84,6 @@ async def ai_create_new_word_sema(word_info):
             async with local_client.aio as client:
                 model = models[attempts]
                 attempts += 1
-
                 # Nếu dùng ai local thì sẽ attempts<=len và khi attempts = len thì sẽ chạy local
 
                 try:
@@ -96,8 +95,7 @@ async def ai_create_new_word_sema(word_info):
                             response_mime_type="application/json",
                             response_schema=current_schema
                         )
-                    )
-                        
+                    )   
                     pointer = 0
                     sense_objs=[]
                     valid = False
@@ -155,18 +153,12 @@ async def ai_create_new_word_sema(word_info):
                                             }
                                             sense_objs.append(processed_contents)
                                             word_cache.cache_word_add_sense(language_code, word_value, id, processed_contents)
-                                            await socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": processed_contents})
+                                            # await socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": processed_contents})
+                                            asyncio.create_task(socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": processed_contents}))
                                             
                                             # Kích hoạt lấy ảnh 1 ngay lập tức (không đợi stream xong)
                                             img_desc = processed_contents.get('metadata',{}).get('image_keywords',None)
                                             if img_desc:
-                                                # Kết nối tới DB 0 (Làn đường xử lý)
-                                                # Đẩy vào queue "redis_word"
-                                                # r_queue.rpush("redis_image", json.dumps({
-                                                #     "sense_info": sense_word_obj,
-                                                #     "keyword": img_desc
-                                                # }))
-
                                                 task.append(asyncio.create_task(get_image_by_keyword({
                                                     "sense_info": processed_contents,
                                                     "keyword": img_desc
@@ -195,17 +187,6 @@ async def ai_create_new_word_sema(word_info):
 
         word_data = word_cache.cache_word_get_data(language_code, word_value)
         redis_user_language_code = word_data['langs']
-        redis_senses = word_data['senses']
-        redis_word = word_data['word']
-
-        # lưu senses, update word thành completed
-        # r_queue.rpush("redis_word_result", json.dumps({
-        #     "word_id": word_id,
-        #     "word_value": word_value,
-        #     "language_code": language_code,
-        #     "sense_info": sense_objs
-        # }))
-
         try:
             task.append(asyncio.create_task(ai_create_metadata({
                     "word_value": word_value,
@@ -248,7 +229,7 @@ async def ai_create_new_word_sema(word_info):
 
             asyncio.create_task(
                 socket_message(socket_room, {"type": "FULL_SENSE",
-                "payload": data})
+                "payload": data}, True)
             )
 
             # task_create_translate.delay(redis_word,redis_senses, redis_translates)
@@ -305,7 +286,8 @@ def save_sense(sense_obj, word_id):
     metadata_instances = []
     sense_instances =[]
     for s in sense_obj:
-        id = uuidv7.generate_uuid7()
+        # id = uuidv7.generate_uuid7()
+        id = s['metadata'].get("id", str(uuidv7.generate_uuid7()))
 
         metadata_obj = {
             'id': id,

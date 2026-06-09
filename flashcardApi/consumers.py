@@ -89,8 +89,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps(data, ensure_ascii=False))
         
         # 2. Xử lý "Chủ động kick Client khỏi Group từ phía Server" (Nếu data từ server có lệnh)
-        target_room = data.get("unsubscribe_room")
-        if target_room and target_room in self.subscribed_rooms:
+        target_room = data.get("word_room")
+        is_unsubscribe = data.get("unsubscribe")
+        if is_unsubscribe  and target_room and target_room in self.subscribed_rooms:
             await self.channel_layer.group_discard(target_room, self.channel_name)
             self.subscribed_rooms.remove(target_room)
             print(f"⚡ Server chủ động mời {self.channel_name} rời khỏi: {target_room}")

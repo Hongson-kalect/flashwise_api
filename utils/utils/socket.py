@@ -24,18 +24,21 @@ def get_safe_room_id(word,word_lang=None, user_lang=None):
         return f"{hash_str}_{word_lang.strip().lower()}"
     return f"{hash_str}_{word_lang.strip().lower()}_{user_lang.strip().lower()}"
 
-async def socket_message(group, data, is_close=False):
-    print('Debug: socket_message',group, data)
+async def socket_message(group, data, unsubscribe=False):
+    print('Debug: socket_message',group, data,'abc')
     channel_layer = get_channel_layer()
     
     # Gắn flag close_now vào data để Consumer nhận diện
-    if is_close:
-        data['close_now'] = True
+    if unsubscribe:
+        data['unsubscribe'] = True
+    if group:
+        data['word_room'] = group
 
     await channel_layer.group_send(
         group,
         {
-            "type": "chat_message", # Phải trùng với tên hàm trong Consumer
+            # "word_room": group,
+            "type": "chat_handler", # Phải trùng với tên hàm trong Consumer
             "data": data
         })
     

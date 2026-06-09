@@ -166,7 +166,7 @@ async def ai_create_translate_sema(props, translate_base_language=True):
         r_queue = redis.Redis(host='redis', port=6379, db=0)
         cache = WordCacheManager()
 
-        # word = props.get('word_value')
+        word = props.get('word_value',None)
         trunk = props.get('trunk',2)
         language_code = props.get('language_code')
         user_language_code = props.get('user_language_code')
@@ -309,6 +309,8 @@ async def ai_create_translate_sema(props, translate_base_language=True):
                                 "value":value
                             }
                 sense['contents'] = merge_content
+                if word:
+                    cache.cache_word_add_sense_translate(language_code, word, sense_id, merge_content)
                 full_translated_data.append(sense)
 
         # for r in results:

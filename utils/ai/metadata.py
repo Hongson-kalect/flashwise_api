@@ -90,7 +90,7 @@ async def process_metadata(chunk, word, language_code, mapping_table, socket_roo
         await socket_message(
             socket_room,
             {
-                "type": "METADATA_SENSE",
+                "type": "METADATA",
                 "payload": final_chunk_data # Trả về data đã hồi nguyên UUID
             }
         )
@@ -152,9 +152,11 @@ async def ai_create_metadata(props):
         # Lấy image_keyword để lấy ảnh, hoặc lấy list keyword, sau đó search trong db sau đó chạy song song api để lấy ảnh, tạo context và lib và gán preview 
 
         for sense_id, sense_metadata in result.items():
+            metadata = {"id": str(uuidv7.generate_uuid7()), **sense_metadata}
+            cache.cache_word_add_metadata(language_code, word, sense_id, metadata)
             sense = mapping_sense.get(sense_id)
 
-            sense['metadata'] = sense_metadata or {}
+            sense['metadata'] = metadata or {}
             
             full_metadata_data.append(sense)
 
@@ -164,7 +166,7 @@ async def ai_create_metadata(props):
         # nếu ko phân biệt được thì gọi lần lượt thôi, gán cho sense và gửi socket nếu cần.
 
         # Báo cáo hoàn tất toàn bộ tiến trình
-        asyncio.create_task(socket_message(socket_room, {"type": "METADATA", "payload": full_metadata_data}))
+        # asyncio.create_task(socket_message(socket_room, {"type": "METADATA", "payload": full_metadata_data}))
         return full_metadata_data
     
     except Exception as e:

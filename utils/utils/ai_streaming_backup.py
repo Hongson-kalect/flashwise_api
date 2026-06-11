@@ -145,7 +145,8 @@ def render_all_word_data(user, word, language, user_language):
             config=types.GenerateContentConfig(
                 max_output_tokens=8192, # Tăng từ 2048 lên 8192
                 response_mime_type="application/json",
-                response_schema=current_schema
+                response_schema=current_schema,
+                thinking_config=types.ThinkingConfig(thinking_budget=0)
             )
         )
 
@@ -270,7 +271,8 @@ def render_translate(user, word, language, user_language, contents):
             config=types.GenerateContentConfig(
                 max_output_tokens=8192, # Tăng từ 2048 lên 8192
                 response_mime_type="application/json",
-                response_schema=schema
+                response_schema=schema,
+                thinking_config=types.ThinkingConfig(thinking_budget=0)
             )
         )
 

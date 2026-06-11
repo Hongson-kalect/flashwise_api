@@ -117,6 +117,7 @@ CHANNEL_LAYERS = {
 }
 
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+GEMINI_API_MODEL = ["gemini-2.5-flash-lite","gemini-3.1-flash-lite","gemini-2.5-flash-lite","gemini-3.1-flash-lite"]
 
 ROOT_URLCONF = 'flashcardApi.urls'
 

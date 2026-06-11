@@ -53,7 +53,7 @@ def task_create_metadata(self,  info):
 
         data = AIWordSerializer(word_instance).data
 
-        cache.cache_word(language_code=language_code, word_val=word_value, data=data)
+        cache.cache_word(language_code=language_code, word_id=word_id, word_val=word_value, data=data)
 
         user_lang_content = get_user_lang_content(language_code, user_language_code, data)
 

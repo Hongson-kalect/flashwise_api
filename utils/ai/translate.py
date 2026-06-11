@@ -44,7 +44,7 @@ def chunk_dict(data, size=3):
         yield {k: v for k, v in [next(it) for _ in range(min(size, len(data) - i))]}
 
 @retry_async()
-async def process_translation_chunk(chunk, language_code, language_str, translate_lang, mapping_table):
+async def process_translation_chunk(chunk, language_code, language_str, translate_lang, mapping_table, socket_room):
     try:
         # 1. Khởi tạo Schema và Client cho riêng Task này
         word = None
@@ -61,48 +61,34 @@ async def process_translation_chunk(chunk, language_code, language_str, translat
         # TASK: Translate into {language_str}. Output MINIFIED JSON only.
         """
 
-        local_client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        async with local_client.aio as client:
-            try:
-                response = await client.models.generate_content(
-                    model="gemini-2.5-flash-lite", # Đã cập nhật bản lite mới nhất 2026
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        max_output_tokens=8192,
-                        response_mime_type="application/json",
-                        response_schema=schema
-                    )
-                )
-            except Exception as e:
-                print('Translate Error gemini-2.5-flash-lite', e)
+
+        models = settings.GEMINI_API_MODEL
+        attempts = 0
+        while attempts < len(models):
+            local_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            model = models[attempts]
+            attempts += 1
+            async with local_client.aio as client:
                 try:
                     response = await client.models.generate_content(
-                        model="gemini-2.5-flash", # Đã cập nhật bản lite mới nhất 2026
+                        model=model, # Đã cập nhật bản lite mới nhất 2026
                         contents=prompt,
                         config=types.GenerateContentConfig(
                             max_output_tokens=8192,
                             response_mime_type="application/json",
-                            response_schema=schema
+                            response_schema=schema,
+                            thinking_config=types.ThinkingConfig(thinking_budget=0)
                         )
                     )
+                    data = json.loads(response.text.strip())
+                    break
                 except Exception as e:
-                    print('Translate Error gemini-2.5-flash', e)
-                    try:
-                        response = await client.models.generate_content(
-                            model="gemini-2.5-pro", # Đã cập nhật bản lite mới nhất 2026
-                            contents=prompt,
-                            config=types.GenerateContentConfig(
-                                max_output_tokens=8192,
-                                response_mime_type="application/json",
-                                response_schema=schema
-                            )
-                        )
-                    except Exception as e:
-                        print(f"Translate gemini-2.5-pro error, trigger local ai: {e}")
-                        # await socket_message(socket_room, {"type": "TRANSLATE_SENSE_ERROR", "payload": str(e)})
-                        return None
-        
-        data = json.loads(response.text.strip())
+                    print(f'Translate Error {model}', attempts)
+                    if attempts < len(models):
+                        continue
+                    else:
+                        raise e
+                        #socket error
         
         # 2. Hồi nguyên UUID (Logic mapping của bạn)
         final_chunk_data = {}
@@ -123,14 +109,15 @@ async def process_translation_chunk(chunk, language_code, language_str, translat
 
         # 3. BẮN SOCKET NGAY LẬP TỨC (Xong cái nào bắn cái đó)
         print('final_chunk_data', final_chunk_data)
-        # await socket_message(
-        #     socket_room,
-        #     {
-        #         "type": "TRANSLATE_SENSE_SUCCESS",
-        #         "payload": final_chunk_data # Trả về data đã hồi nguyên UUID
-        #     },
-        #     True
-        # )
+
+        if socket_room:
+            await socket_message(
+                socket_room,
+                {
+                    "type": "PARTIAL_TRANSLATE",
+                    "payload": final_chunk_data # Trả về data đã hồi nguyên UUID
+                },
+            )
         return final_chunk_data
 
     except Exception as e:
@@ -172,7 +159,9 @@ async def ai_create_translate_sema(props, translate_base_language=True):
         user_language_code = props.get('user_language_code')
         senses_obj = props.get('missing_translate')
         current_senses = props.get('current_senses')
-        # socket_room = get_safe_room_id(word, language_code)
+
+        if word: socket_room = get_safe_room_id(word, language_code)
+        else: socket_room = None
 
         senses = {}
         need_translation = {}
@@ -247,7 +236,7 @@ async def ai_create_translate_sema(props, translate_base_language=True):
             tasks.append(
                 process_translation_chunk(
                     chunk, language_code, language_str, 
-                    translate_lang, mapping_table
+                    translate_lang, mapping_table, socket_room
                 )
             )
 

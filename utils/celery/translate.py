@@ -58,12 +58,12 @@ def task_create_translate(self,  info, translate_base_language = True):
         
             senses_instance = word_instance.prefetched_senses # Thay vì .senses.all()
 
-            entries = serialize_entries(senses_instance)
-            word_instance.processed_entries = entries
+            # entries = serialize_entries(senses_instance)
+            # word_instance.processed_entries = entries
 
             data = AIWordSerializer(word_instance).data
 
-            cache.cache_word(language_code=language_code, word_val=word_instance.value, data=data)
+            cache.cache_word(language_code=language_code, word_id=word_instance.id, word_val=word_instance.value, data=data)
 
             user_lang_content = get_user_lang_content(language_code, user_language_code, data)
 

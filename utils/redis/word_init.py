@@ -27,7 +27,7 @@ class WordCacheManager:
                 "value": word_val,
                 "language_code": language_code
             },
-            "senses": {},      # Lưu dạng { sense_id: { definition: "...", image: "...", translate: "..." } }
+            "senses": {},      # Lưu dạng { sense_id: { image: "...", contents: "...", metadata: "..." ,... } }
             "langs": [user_language_code],
             "status": "PROCESSING"
         }
@@ -55,11 +55,16 @@ class WordCacheManager:
             return False, initial_data
 
     # ================= FINAL CACHE =================
-    def cache_word(self, language_code, word_val, data):
+    def cache_word(self, language_code, word_id, word_val, data):
         key = self._key(language_code, word_val)
 
         redis_data = {
-            "word": data,
+            "word": {
+                "id": str(word_id),
+                "value": word_val,
+                "language_code": language_code
+            },
+            "senses": data,
             "status": "CACHED",
         }
 

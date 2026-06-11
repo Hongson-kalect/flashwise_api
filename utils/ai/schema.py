@@ -102,6 +102,7 @@ def render_translate_schema(word, word_lang, sense_object: dict, translate_lang:
 word_schema = {
     "type": "OBJECT",
     "properties": {
+        "word": { "type": "STRING" },
         "metadata": {
             "type": "OBJECT",
             "properties": {
@@ -112,100 +113,88 @@ word_schema = {
                 "is_common": { "type": "BOOLEAN" },
                 "language_confidence": { "type": "NUMBER", "description": "0-1 score of how sure AI is about the language" }
             },
-            "required": ["should_be_saved"]
+            "required": ["should_be_saved", "is_common", "language_confidence"]
         },
-        "entries": {
+        # Đập bỏ "entries", chuyển thẳng thành một mảng phẳng chứa toàn bộ các senses
+        "senses": {
             "type": "ARRAY",
             "items": {
                 "type": "OBJECT",
                 "properties": {
                     "pos": {
                         "type": "STRING",
-                        "description": "Part of speech (noun, verb, adjective, etc.)"
+                        "description": "Part of speech (noun, verb, adjective, etc.) of THIS specific sense."
                     },
-                    "senses": {
+                    "definition": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "value": { "type": "STRING" },
+                        },
+                        "required": ["value"]
+                    },
+                    "usage": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "value": { 
+                                "type": "STRING",
+                                "description": "How to use the word: grammar patterns, prepositions (e.g. particle NI), register (formal/slang), or specific context. NO object function description."
+                            },
+                        },
+                        "required": ["value"],
+                    },
+                    "examples": {
                         "type": "ARRAY",
                         "items": {
                             "type": "OBJECT",
                             "properties": {
-                                "definition": {
-                                    "type": "OBJECT",
-                                    "properties": {
-                                        "value": { "type": "STRING" },
-                                    },
-                                    "required": ["value"]
-                                },
-                                "usage": {
-                                    "type": "OBJECT",
-                                    "properties": {
-                                        "value": { 
-                                            "type": "STRING",
-                                            "description": "How to use the word: grammar patterns, prepositions (e.g. particle NI), register (formal/slang), or specific context. NO object function description."
-                                        },
-
-                                    },
-                                    "required": ["value"],
-                                },
-                                "examples": {
-                                    "type": "ARRAY",
-                                    "items": {
-                                        "type": "OBJECT",
-                                        "properties": {
-                                            "value": { "type": "STRING" }
-                                        },
-                                        "required": ["value"]
-                                    },
-                                    "maxItems": 2,
-                                },
-                                "is_offensive":{"type":"BOOLEAN"},
-                                "pos":{"type":"STRING"},
-                                "level": {
+                                "value": { "type": "STRING" }
+                            },
+                            "required": ["value"]
+                        },
+                        "maxItems": 2,
+                    },
+                    "is_offensive": { "type": "BOOLEAN" },
+                    "level": {
+                        "type": "STRING",
+                        "description": "A1–C2, N1–N5, TOPIK1, etc."
+                    },
+                    "register": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "STRING",
+                            "enum": ["neutral", "formal", "informal", "slang", "vulgar", "technical", "literary", "archaic", "dialect", "humorous"]
+                        },
+                        "description": "Danh sách các sắc thái của từ. Nếu là từ phổ thông, chỉ cần trả về ['neutral']."
+                    },
+                    "ipas": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "value": { "type": "STRING" },
+                                "label": {
                                     "type": "STRING",
-                                    "description": "A1–C2, N1–N5, TOPIC1, etc."
-                                },
-                                "register": {
-                                    "type": "ARRAY",
-                                    "items": {
-                                    "type": "STRING",
-                                    "enum": ["neutral", "formal", "informal", "slang", "vulgar", "technical", "literary", "archaic", "dialect", "humorous"]
-                                    },
-                                    "description": "Danh sách các sắc thái của từ. Nếu là từ phổ thông, chỉ cần trả về ['neutral']."
-                                },
-                                "ipas": {
-                                    "type": "ARRAY",
-                                    "items": {
-                                        "type": "OBJECT",
-                                        "properties": {
-                                            "value": { "type": "STRING" },
-                                            "label": {
-                                                "type": "STRING",
-                                                "description": "US, UK, ROMAN, etc."
-                                            },
-                                        },
-                                        "required": ["value", "label"]
-                                    }
+                                    "description": "US, UK, ROMAN, etc."
                                 },
                             },
-
-                            "required": [
-                                "definition",
-                                "usage",
-                                "examples",
-                                "is_offensive",
-                                "pos",
-                                "level",
-                                "register",
-                                "ipas"
-                            ]
+                            "required": ["value", "label"]
                         }
-                    }
+                    },
                 },
-                "required": ["pos", "senses"]
+                "required": [
+                    "pos", # Khóa bảo chứng để Client chạy hàm gom nhóm O(n)
+                    "definition",
+                    "usage",
+                    "examples",
+                    "is_offensive",
+                    "level",
+                    "register",
+                    "ipas"
+                ]
             }
-        },
-        "word": { "type": "STRING" }, 
+        }
     },
-    "required": ["word", "entries", "metadata"]
+    "required": ["word", "metadata", "senses"]
 }
 
 def render_enhanced_schema(sense_ids):

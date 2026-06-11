@@ -110,6 +110,7 @@ class AIWordViewSet(SoftDeleteViewSet):
         if cached:
             # Nếu full thì trực tiếp lấy dữ liệu và return
             if cached.get('status') == 'CACHED':
+                cached_senses = cached.get('senses')
                 cached_word = cached.get('word')
                 # languages = cached.get('languages')
 
@@ -124,7 +125,7 @@ class AIWordViewSet(SoftDeleteViewSet):
                 #     # return language_code val, run translate and send from socket
                 #     return Response({'detail': 'CACHED, NEW TRANSLATED', 'status': '201', 'data':word_lang_content}, status=status.HTTP_201_CREATED)
                 
-                user_lang_entries, missing_contents, current_senses = get_user_lang_content(language_code, user_language_code, cached_word)
+                senses, missing_contents, current_senses = get_user_lang_content(language_code, user_language_code, cached_senses)
 
                 if missing_contents:
                     # Unique (word, user_language_code with 1 status PROCESSING allowed)
@@ -143,10 +144,9 @@ class AIWordViewSet(SoftDeleteViewSet):
                         # background_task(render_translate(user, translate_instance, word, senses_instance, missing_contents , need_translation, language_code, user_language_code, socket_room))
                     except:
                         pass
-                    return Response({'detail': 'CACHED', 'status': '200', "data":{**cached_word, "entries": user_lang_entries}}, status=status.HTTP_206_PARTIAL_CONTENT)
+                    return Response({'detail': 'CACHED', 'status': '200', "data":{**cached_word, "senses": cached_senses}}, status=status.HTTP_206_PARTIAL_CONTENT)
 
-
-                return Response({'detail': 'CACHED', 'status': '200', "data":{**cached_word, "entries": user_lang_entries}}, status=status.HTTP_200_OK)
+                return Response({'detail': 'CACHED', 'status': '200', "data":{**cached_word, "senses": cached_senses}}, status=status.HTTP_200_OK)
                 # return language_code val, run translate and send from socket
                 return Response({'detail': 'CACHED, NEW TRANSLATED', 'status': '201', 'data':word_lang_content}, status=status.HTTP_201_CREATED)
             # Nếu có dữ liệu nhưng không full thì duy trì socket và trả về init
@@ -225,12 +225,12 @@ class AIWordViewSet(SoftDeleteViewSet):
             else:
                 # pass
                 senses_instance = word_instance.prefetched_senses
-                entries = serialize_entries(senses_instance)
-                word_instance.processed_entries = entries
+                # entries = serialize_entries(senses_instance)
+                # word_instance.processed_entries = entries
 
                 data = AIWordSerializer(word_instance).data
 
-                user_lang_entries, missing_contents, current_senses = get_user_lang_content(language_code, user_language_code, data)
+                senses, missing_contents, current_senses = get_user_lang_content(language_code, user_language_code, data)
 
                 # Content missing. Return current, generate new and send via socket
                 if missing_contents:
@@ -255,12 +255,12 @@ class AIWordViewSet(SoftDeleteViewSet):
                         pass
 
                     # Keep connect with socket to get result
-                    return Response({'detail': 'Word incomplete.', 'status': '206', 'data': {**data, "entries": user_lang_entries}}, status=status.HTTP_206_PARTIAL_CONTENT)
+                    return Response({'detail': 'Word incomplete.', 'status': '206', 'data': {**data, "senses": {sense.get('id'):sense for sense in senses}}}, status=status.HTTP_206_PARTIAL_CONTENT)
 
-                cache_manager.cache_word(language_code, word, data)
+                cache_manager.cache_word(language_code, word_instance.id, word, data)
 
                 # Word ok, return data, close socket
-                return Response({'detail':"DATABASE_DATA","data":{**data, "entries": user_lang_entries}}, status=status.HTTP_200_OK)
+                return Response({'detail':"DATABASE_DATA","data":{**data, "senses": {sense.get('id'):sense for sense in senses}}}, status=status.HTTP_200_OK)
 
                 # Get original senses
                 # Tiến hành merge, kiểm tra đủ bản dịch hay chưa, delay translate
@@ -358,9 +358,9 @@ class AIWordViewSet(SoftDeleteViewSet):
         translating = word_instance.translate_logs.first()
 
         contents = AISenseContent.objects.filter(id__in=content_ids)
-        senses = serialize_senses(senses_instance, contents, language_code, user_language_code)
-        entries = serialize_entries(senses)
-        word_instance.processed_entries = entries
+        # senses = serialize_senses(senses_instance, contents, language_code, user_language_code)
+        # entries = serialize_entries(senses)
+        # word_instance.processed_entries = entries
 
 
         data = AIWordSerializer(word_instance).data

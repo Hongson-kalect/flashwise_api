@@ -34,48 +34,34 @@ async def process_metadata(chunk, word, language_code, mapping_table, socket_roo
         
         prompt = render_enhanced_prompt(word, language_code, chunk)
 
-        local_client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        async with local_client.aio as client:
-            try:
-                response = await client.models.generate_content(
-                    model="gemini-2.5-flash-lite", # Đã cập nhật bản lite mới nhất 2026
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        max_output_tokens=8192,
-                        response_mime_type="application/json",
-                        response_schema=schema
-                    )
-                )
-            except Exception as e:
-                print('Translate Error gemini-2.5-flash-lite', e)
+
+        models = settings.GEMINI_API_MODEL
+        attempts = 0
+        while attempts < len(models):
+            local_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            model = models[attempts]
+            attempts += 1
+            async with local_client.aio as client:
                 try:
                     response = await client.models.generate_content(
-                        model="gemini-2.5-flash", # Đã cập nhật bản lite mới nhất 2026
+                        model=model, # Đã cập nhật bản lite mới nhất 2026
                         contents=prompt,
                         config=types.GenerateContentConfig(
                             max_output_tokens=8192,
                             response_mime_type="application/json",
-                            response_schema=schema
+                            response_schema=schema,
+                            thinking_config=types.ThinkingConfig(thinking_budget=0)
                         )
                     )
+                    data = json.loads(response.text.strip())
+                    break
                 except Exception as e:
-                    print('Translate Error gemini-2.5-flash', e)
-                    try:
-                        response = await client.models.generate_content(
-                            model="gemini-2.5-pro", # Đã cập nhật bản lite mới nhất 2026
-                            contents=prompt,
-                            config=types.GenerateContentConfig(
-                                max_output_tokens=8192,
-                                response_mime_type="application/json",
-                                response_schema=schema
-                            )
-                        )
-                    except Exception as e:
-                        print(f"Translate gemini-2.5-pro error, trigger local ai: {e}")
-                        await socket_message(socket_room, {"type": "TRANSLATE_SENSE_ERROR", "payload": str(e)})
-                        return None
-        
-        data = json.loads(response.text.strip())
+                    print(f'Translate Error {model}', attempts)
+                    if attempts < len(models):
+                        continue
+                    else:
+                        raise e
+            
         
         # 2. Hồi nguyên UUID (Logic mapping của bạn)
         final_chunk_data = {}
@@ -90,7 +76,7 @@ async def process_metadata(chunk, word, language_code, mapping_table, socket_roo
         await socket_message(
             socket_room,
             {
-                "type": "METADATA",
+                "type": "PARTIAL_METADATA",
                 "payload": final_chunk_data # Trả về data đã hồi nguyên UUID
             }
         )

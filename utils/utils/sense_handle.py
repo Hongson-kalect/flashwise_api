@@ -151,22 +151,22 @@ def get_word_lang_content(language_code, contents):
     return entries, missing_content
 
 import copy
-def get_user_lang_content(language_code, user_language_code, contents):
+def get_user_lang_content(language_code, user_language_code, contents, get_user_value_only = False):
     copy_contents = copy.deepcopy(contents)
-    entries = copy_contents['entries']
+    senses = copy_contents['senses']
     user_entries = []
     missing_content = []
     current_senses =[]
 
-    # user_lang_entries = []
-    for entry in entries:
-        senses = entry['senses']
-        for sense in senses:
-            current_senses.append(copy.deepcopy(sense))
-            sense['contents'], missing = get_user_lang_sense(language_code, user_language_code, sense['contents'], sense['id'])
-            if missing:
-                missing_content.append(missing)
-    return entries, missing_content, current_senses
+    for sense in senses:
+        current_senses.append(copy.deepcopy(sense))
+        user_value, missing = get_user_lang_sense(language_code, user_language_code, sense['contents'], sense['id'])
+        if get_user_value_only: sense['contents'] = user_value
+
+        if missing:
+            missing_content.append(missing)
+
+    return senses, missing_content, current_senses
 
 def get_user_lang_sense(language_code, user_language_code, contents, sense_id = None):
     if not sense_id: return None, False

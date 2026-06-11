@@ -60,7 +60,6 @@ async def ai_create_new_word_sema(word_info):
     # word_instance = await sync_to_async(AIWord.objects.get)(id=word_id)
     LATIN_LANGS = ['vi', 'en', 'es', 'fr', 'de', 'it', 'pt', 'nl', 'pl', 'sv', 'no', 'da', 'fi', 'tr', 'cs', 'hu', 'id']
     SIMPLE_NON_LATIN = ['zh', 'ko', 'ru', 'el', 'ar', 'he', 'hi', 'th']
-    models = ['gemini-2.5-flash-lite', 'gemini-2.5-flash-lite', 'gemini-2.5-flash-lite']
     # models = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-pro']
     
     if language_code in LATIN_LANGS:
@@ -75,7 +74,7 @@ async def ai_create_new_word_sema(word_info):
     current_prompt = render_word_prompt(word_value, language_code)
 
     try:
-        local_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        models = settings.GEMINI_API_MODEL
         ai_trunks = []
         is_valid = False
         
@@ -84,6 +83,8 @@ async def ai_create_new_word_sema(word_info):
 
         attempts = 0
         while not ai_trunks and attempts < len(models):
+            local_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+
             async with local_client.aio as client:
                 model = models[attempts]
                 attempts += 1
@@ -95,7 +96,8 @@ async def ai_create_new_word_sema(word_info):
                         config=types.GenerateContentConfig(
                             max_output_tokens=8192,
                             response_mime_type="application/json",
-                            response_schema=current_schema
+                            response_schema=current_schema,
+                            thinking_config=types.ThinkingConfig(thinking_budget=0)
                         )
                     )   
                     pointer = 0
@@ -157,7 +159,7 @@ async def ai_create_new_word_sema(word_info):
                                             word_cache.cache_word_add_sense(language_code, word_value, id, processed_contents)
                                             
                                             # 🚀 1. Gửi socket PARTIAL ngầm an toàn
-                                            s_task = asyncio.create_task(socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": processed_contents}))
+                                            s_task = asyncio.create_task(socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": {id:processed_contents}}))
                                             background_tasks.add(s_task)
                                             s_task.add_done_callback(background_tasks.discard)
                                             
@@ -188,6 +190,7 @@ async def ai_create_new_word_sema(word_info):
                                             meta_task.add_done_callback(background_tasks.discard)
 
                                             trans_task = asyncio.create_task(ai_create_translate_sema({
+                                                "word_value": word_value,
                                                 "language_code": language_code,
                                                 "user_language_code": redis_user_language_code,
                                                 "missing_translate": single_sense_list,
@@ -227,13 +230,13 @@ async def ai_create_new_word_sema(word_info):
 
             # Load lại dữ liệu word và đồng bộ cache
             word_instance = await sync_to_async(get_word_by_id)(word_id)
-            senses_instance = word_instance.prefetched_senses
+            # senses_instance = word_instance.prefetched_senses
 
-            entries = serialize_entries(senses_instance)
-            word_instance.processed_entries = entries
+            # entries = serialize_entries(senses_instance)
+            # word_instance.processed_entries = entries
 
             data = AIWordSerializer(word_instance).data
-            cache.cache_word(language_code=language_code, word_val=word_value, data=data)
+            cache.cache_word(language_code=language_code, word_id=word_id, word_val=word_value, data=data)
 
             # Gửi socket FULL chốt hạ dữ liệu cuối cùng
             final_socket_task = asyncio.create_task(
@@ -272,7 +275,7 @@ def get_word_by_id(word_id):
 
     # 4. Gộp vào query chính
     word_instance = AIWord.objects.filter(id=word_id).prefetch_related(
-        Prefetch('senses', queryset=sense_qs, to_attr='prefetched_senses')
+        Prefetch('senses', queryset=sense_qs)
     ).first()
 
     return word_instance
@@ -282,7 +285,7 @@ def save_sense(sense_obj, word_id):
     sense_instances =[]
     for s in sense_obj:
         # id = uuidv7.generate_uuid7()
-        id = s['metadata'].get("id", str(uuidv7.generate_uuid7()))
+        id = str(s['metadata'].pop("id", uuidv7.generate_uuid7()))
 
         metadata_obj = {
             'id': id,
@@ -337,7 +340,8 @@ async def ai_create_new_word(user, word_instance, language_code, user_language_c
                 config=types.GenerateContentConfig(
                     max_output_tokens=8192, # Tăng từ 2048 lên 8192
                     response_mime_type="application/json",
-                    response_schema=current_schema
+                    response_schema=current_schema,
+                    thinking_config=types.ThinkingConfig(thinking_budget=0)
                 )
             )
             pointer = 0
@@ -649,7 +653,7 @@ def saveword(user_id, word_instance, language_code, user_language_code, entries,
         json_data = JSONRenderer().render(word_data)
 
         print("json_data", json_data)
-        cache_manager.cache_word(language_code, word_instance.value, word_data)
+        cache_manager.cache_word(language_code, word_instance.id, word_instance.value, word_data)
         
         return word_data
 

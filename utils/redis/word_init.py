@@ -58,6 +58,35 @@ class WordCacheManager:
     def cache_word(self, language_code, word_id, word_val, data):
         key = self._key(language_code, word_val)
 
+        final_lang_set = None
+        senses = data.values()
+
+        for sense in senses:
+            # 1. Lấy contents, phòng thủ nếu contents là string JSON hoặc dict
+            contents = sense.get('contents', {})
+            if isinstance(contents, str):
+                import json
+                contents = json.loads(contents) # Chỉ load nếu là chuỗi string
+                
+            if not contents:
+                continue
+
+            # 2. Quét qua các type (definition, usage, example...) bên trong contents
+            for content_type, lang_dict in contents.items():
+                if not isinstance(lang_dict, dict):
+                    continue
+                    
+                # Lấy ra danh sách ngôn ngữ đang có của type này (ví dụ: {'en', 'vi'})
+                current_type_langs = set(lang_dict.keys())
+
+                # 3. Tiến hành giao tập hợp (Intersection)
+                if final_lang_set is None:
+                    # Lượt đầu tiên: Khởi tạo set gốc
+                    final_lang_set = current_type_langs
+                else:
+                    # Các lượt sau: Chỉ giữ lại ngôn ngữ nào ĐỀU CÓ ở mọi nơi
+                    final_lang_set.intersection_update(current_type_langs)
+
         redis_data = {
             "word": {
                 "id": str(word_id),

@@ -112,6 +112,11 @@ class AIWordViewSet(SoftDeleteViewSet):
             if cached.get('status') == 'CACHED':
                 cached_senses = cached.get('senses')
                 cached_word = cached.get('word')
+
+                # Cân nhắc lưu 1 array nơi các ngôn ngữ đã có đủ bản dịch bên trong senses, 
+                # Ưu điểm: khi này thì sẽ không cần detect missing nữa.
+                # Nhược: khi lưu vào cache, admin edit sẽ phải kiểm tra hết 1 lượt, không cache custom sense
+                # khi custom sense thì
                 # languages = cached.get('languages')
 
                 # if user_language_code not in languages:

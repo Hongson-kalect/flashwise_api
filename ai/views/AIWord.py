@@ -124,8 +124,9 @@ class AIWordViewSet(SoftDeleteViewSet):
                 #     }, False))
                 #     # return language_code val, run translate and send from socket
                 #     return Response({'detail': 'CACHED, NEW TRANSLATED', 'status': '201', 'data':word_lang_content}, status=status.HTTP_201_CREATED)
+                cached_senses_list = list(cached_senses.values())
                 
-                senses, missing_contents, current_senses = get_user_lang_content(language_code, user_language_code, cached_senses)
+                senses, missing_contents, current_senses = get_user_lang_content(language_code, user_language_code, {**cached_word, "senses": cached_senses_list})
 
                 if missing_contents:
                     # Unique (word, user_language_code with 1 status PROCESSING allowed)
@@ -257,7 +258,7 @@ class AIWordViewSet(SoftDeleteViewSet):
                     # Keep connect with socket to get result
                     return Response({'detail': 'Word incomplete.', 'status': '206', 'data': {**data, "senses": {sense.get('id'):sense for sense in senses}}}, status=status.HTTP_206_PARTIAL_CONTENT)
 
-                cache_manager.cache_word(language_code, word_instance.id, word, data)
+                cache_manager.cache_word(language_code, word_instance.id, word, {sense.get('id'):sense for sense in senses})
 
                 # Word ok, return data, close socket
                 return Response({'detail':"DATABASE_DATA","data":{**data, "senses": {sense.get('id'):sense for sense in senses}}}, status=status.HTTP_200_OK)

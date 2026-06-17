@@ -63,7 +63,7 @@ def task_create_translate(self,  info, translate_base_language = True):
 
             data = AIWordSerializer(word_instance).data
 
-            cache.cache_word(language_code=language_code, word_id=word_instance.id, word_val=word_instance.value, data=data)
+            cache.cache_word(language_code=language_code, word_id=word_instance.id, word_val=word_instance.value, data=data.get('senses'))
 
             user_lang_content = get_user_lang_content(language_code, user_language_code, data)
 

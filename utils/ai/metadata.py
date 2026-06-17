@@ -65,11 +65,30 @@ async def process_metadata(chunk, word, language_code, mapping_table, socket_roo
         
         # 2. Hồi nguyên UUID (Logic mapping của bạn)
         final_chunk_data = {}
-        for s_key, s_trans in data.items():
+        for s_key, s_metadata in data.items():
             original_s_uuid = mapping_table.get(s_key)
             if not original_s_uuid: continue
+
+            id = str(s_metadata.pop("id", uuidv7.generate_uuid7()))
+
+            metadata_obj = {
+                'id': id,
+                'tags': s_metadata.pop('tags', []),
+                'image_keywords' : s_metadata.pop('image_keywords', []),
+            }
+
+            advanced = {}
+
+            for key, value in s_metadata.items():
+                if not value: continue
+                advanced[key] = value
+
+            metadata_obj['advanced'] = advanced
             
-            final_chunk_data[original_s_uuid] = s_trans
+            final_chunk_data[original_s_uuid] = metadata_obj
+
+        # id = uuidv7.generate_uuid7()
+        
 
         # 3. BẮN SOCKET NGAY LẬP TỨC (Xong cái nào bắn cái đó)
         print('final_chunk_data', final_chunk_data)

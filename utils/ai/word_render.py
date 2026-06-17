@@ -236,7 +236,9 @@ async def ai_create_new_word_sema(word_info):
             # word_instance.processed_entries = entries
 
             data = AIWordSerializer(word_instance).data
-            cache.cache_word(language_code=language_code, word_id=word_id, word_val=word_value, data=data)
+
+            print('data', word_instance.senses.all(), data)
+            cache.cache_word(language_code=language_code, word_id=word_id, word_val=word_value, data=data.get('senses'))
 
             # Gửi socket FULL chốt hạ dữ liệu cuối cùng
             final_socket_task = asyncio.create_task(
@@ -284,27 +286,10 @@ def save_sense(sense_obj, word_id):
     metadata_instances = []
     sense_instances =[]
     for s in sense_obj:
-        # id = uuidv7.generate_uuid7()
-        id = str(s['metadata'].pop("id", uuidv7.generate_uuid7()))
-
-        metadata_obj = {
-            'id': id,
-            'tags': s['metadata'].pop('tags', []),
-            'image_keywords' : s['metadata'].pop('image_keywords', []),
-        }
-
-        advanced = {}
-
-        for key, value in s.pop('metadata').items():
-            if not value: continue
-            advanced[key] = value
-
-        metadata_obj['advanced'] = advanced
-
-        metadata_instances.append(AISenseMetadata(**metadata_obj)) 
-
+        metadata_instances.append(AISenseMetadata(**s['metadata']))
+        metadata_id = s.pop('metadata').get('id')
         
-        sense_instances.append(AISense(metadata_id=id, **s))
+        sense_instances.append(AISense(metadata_id=metadata_id, **s))
 
     # Bây giờ mới gọi bulk_create
     AISenseMetadata.objects.bulk_create(metadata_instances)
@@ -649,11 +634,7 @@ def saveword(user_id, word_instance, language_code, user_language_code, entries,
         word_instance.processed_entries = serialize_entries(senses)
 
         word_data = AIWordSerializer(word_instance).data
-
-        json_data = JSONRenderer().render(word_data)
-
-        print("json_data", json_data)
-        cache_manager.cache_word(language_code, word_instance.id, word_instance.value, word_data)
+        cache_manager.cache_word(language_code, word_instance.id, word_instance.value, word_data.senses)
         
         return word_data
 

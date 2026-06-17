@@ -135,7 +135,7 @@ def re_cache_word(word_ids):
 
         data = AIWordSerializer(word_instance).data
 
-        cache_manager.cache_word(word_instance.language_code, word_instance.id, word_instance.value, data)
+        cache_manager.cache_word(word_instance.language_code, word_instance.id, word_instance.value, data.get('senses'))
         logger.info(f"Re-cache word completed: {word_instance.value}")
 
 # --- TẦNG ĐIỀU PHỐI (CONSUMER VÀ FLUSHER) ---

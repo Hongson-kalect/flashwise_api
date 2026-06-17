@@ -188,12 +188,14 @@ class AIWordViewSet(SoftDeleteViewSet):
             # Nếu từ này chưa được khởi tạo ở db
             if not word_instance or word_instance.status == 'FAILED':
                 created, init_data = cache_manager.cache_word_init(language_code, word, user_language_code)
+                cached_word = init_data.get('word')
+                cached_senses = init_data.get('senses')
 
                 # Nếu có người khác khởi tạo trước, trả về và chờ
                 if not created:
                     print("Word is processing")
                     cache_manager.cache_word_add_translate(language_code, word, user_language_code)
-                    return Response({'detail': 'PROCESSING', 'status': '202', 'data':init_data}, status=status.HTTP_202_ACCEPTED)
+                    return Response({'detail': 'PROCESSING', 'status': '202', 'data':{**cached_word, "senses": cached_senses}}, status=status.HTTP_202_ACCEPTED)
 
                 word_instance = AIWord.objects.create(
                 **init_data.get('word'),
@@ -225,7 +227,7 @@ class AIWordViewSet(SoftDeleteViewSet):
                 #     socket_room
                 # )
                 # ai_create_new_word(user.id, word_instance.id, language_code, user_language_code, socket_room)
-                return Response({'detail': 'PROCESSING', 'status': '202', 'data': init_data}, status=status.HTTP_201_CREATED)
+                return Response({'detail': 'PROCESSING', 'status': '202', 'data': {**cached_word, "senses": cached_senses}}, status=status.HTTP_201_CREATED)
            
             # Đây là nếu từ đã tồn tại trong db
             else:

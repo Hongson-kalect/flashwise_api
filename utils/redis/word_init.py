@@ -55,11 +55,24 @@ class WordCacheManager:
             return False, initial_data
 
     # ================= FINAL CACHE =================
-    def cache_word(self, language_code, word_id, word_val, data):
+    def cache_word(self, language_code, word_id, word_val, data=[]):
         key = self._key(language_code, word_val)
 
+        # 2. CHUẨN HÓA ĐẦU VÀO: Biến thành dict chuẩn dạng {sense_id: sense}
+        if isinstance(data, list):
+            # Convert list thành dict chuẩn theo ý bạn
+            senses_dict = {sense.get('id'): sense for sense in data if isinstance(sense, dict)}
+        elif isinstance(data, dict):
+            # Nếu đã là dict sẵn rồi thì dùng luôn
+            senses_dict = data
+        else:
+            # Phòng trường hợp data lỗi không phải list/dict
+            senses_dict = {}
+
+        # 3. Lấy list các sense object ra để xử lý tiếp
+        senses = senses_dict.values()
+        print('aaaaaaaaaaaa', data, senses)
         final_lang_set = None
-        senses = data.values()
 
         for sense in senses:
             # 1. Lấy contents, phòng thủ nếu contents là string JSON hoặc dict
@@ -93,7 +106,7 @@ class WordCacheManager:
                 "value": word_val,
                 "language_code": language_code
             },
-            "senses": data,
+            "senses": senses_dict,
             "status": "CACHED",
         }
 

@@ -285,3 +285,26 @@ def deep_merge(delta, base):
             result[key] = value
 
     return result
+
+
+def merge_translations(base, new, source_language):
+    """
+    Gộp bản dịch mới vào contents đang có trong DB mà không ghi đè bản dịch ngôn ngữ khác vừa được job khác lưu.
+    Chỉ lấy từ `new` các ngôn ngữ khác ngôn ngữ gốc; nội dung gốc luôn giữ nguyên của `base`.
+    """
+    merged = copy.deepcopy(base or {})
+    for key, node in (new or {}).items():
+        if key == 'examples' and isinstance(node, list):
+            examples = merged.setdefault('examples', [])
+            for index, example in enumerate(node):
+                if index >= len(examples) or not isinstance(example, dict):
+                    continue
+                for lang, value in example.items():
+                    if lang != source_language:
+                        examples[index][lang] = value
+        elif key in ('definition', 'usage', 'translations') and isinstance(node, dict):
+            target = merged.setdefault(key, {})
+            for lang, value in node.items():
+                if lang != source_language:
+                    target[lang] = value
+    return merged

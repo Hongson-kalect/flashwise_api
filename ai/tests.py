@@ -17,9 +17,12 @@ from uuid6 import uuid7
 from ai.models import AISense, AISenseMetadata, AIWord
 from utils.ai import refine
 from utils.ai.word_render import ai_create_new_word_sema
+from utils.ai.japanese import add_ruby
+from utils.ai.schema import complex_schema
+from utils.celery.worker import re_cache_word, save_translated_contents
 from utils.redis.word_init import WordCacheManager, compute_languages
 from utils.utils.extract_object_from_string import extract_json_object
-from utils.utils.sense_handle import get_object_lang, get_user_lang_sense
+from utils.utils.sense_handle import get_object_lang, get_user_lang_sense, merge_translations
 from utils.utils.permissions import WordGenerateThrottle
 
 User = get_user_model()
@@ -265,27 +268,32 @@ class PipelineTests(TestCase):
 
     def setUp(self):
         self.cache = WordCacheManager()
-        self.cache.cache_word_clear_specific('en', self.WORD)
-        _, init = self.cache.cache_word_init('en', self.WORD, 'vi')
-        self.word = AIWord.objects.create(id=init['word']['id'], value=self.WORD, language_code='en', status='PROCESSING')
-        self.job = {'word_id': str(self.word.id), 'value': self.WORD, 'language_code': 'en', 'user_language_code': 'vi'}
         self.translate_calls = []
         self.metadata_calls = []
         self.refine_prompts = []
-        self.addCleanup(self.cache.cache_word_clear_specific, 'en', self.WORD)
+        self.prepare(self.WORD, 'en')
+
+    def prepare(self, word, lang):
+        """Giống lúc view vừa nhận việc tạo từ: cache PROCESSING + bản ghi AIWord + job trong hàng đợi."""
+        self.cache.cache_word_clear_specific(lang, word)
+        _, init = self.cache.cache_word_init(lang, word, 'vi')
+        self.word = AIWord.objects.create(id=init['word']['id'], value=word, language_code=lang, status='PROCESSING')
+        self.job = {'word_id': str(self.word.id), 'value': word, 'language_code': lang, 'user_language_code': 'vi'}
+        self.addCleanup(self.cache.cache_word_clear_specific, lang, word)
 
     async def fake_translate(self, props, translate_base_language=True):
         self.translate_calls.append(copy.deepcopy(props['missing_translate']))
+        src = props['language_code']
         jobs = {j['id']: j.get('contents', j) for j in props['missing_translate']}
         for sense in props['current_senses']:
             job, contents = jobs[sense['id']], sense['contents']
             if 'definition' in job:
-                contents['definition']['vi'] = {'value': 'vi: ' + contents['definition']['en']['value']}
-            if 'usage' in job and contents['usage']['en']['value']:
-                contents['usage']['vi'] = {'value': 'vi: ' + contents['usage']['en']['value']}
+                contents['definition']['vi'] = {'value': 'vi: ' + contents['definition'][src]['value']}
+            if 'usage' in job and contents['usage'][src]['value']:
+                contents['usage']['vi'] = {'value': 'vi: ' + contents['usage'][src]['value']}
             for i, example in enumerate(job.get('examples', []), 1):
                 target = contents['examples'][example.get('index', i) - 1]
-                target['vi'] = {'value': 'vi: ' + target['en']['value']}
+                target['vi'] = {'value': 'vi: ' + target[src]['value']}
             if job.get('translations') is not False:
                 contents['translations'] = {'vi': ['vi-word']}
         return props['current_senses']
@@ -421,6 +429,39 @@ class PipelineTests(TestCase):
         self.assertEqual(self.word.status, 'REJECTED')
         self.assertEqual(self.senses(), [])
 
+    def test_japanese_word_uses_same_flow_and_gets_ruby(self):
+        self.prepare('猫', 'ja')
+        result = self.run_pipeline(lambda m: stream_pieces(JA_DRAFT), self.refine_with(lambda ids: []))
+        self.assertTrue(result['is_valid'])
+
+        sense = self.senses()[0]
+        self.assertEqual((sense.pos, sense.level), ('noun', 'N5'))
+        self.assertEqual(sense.ipas[0]['roman'], 'neko')
+        definition = sense.contents['definition']['ja']
+        self.assertEqual(definition['roman'], 'chiisakute kawaii doubutsu.')
+        # Furigana do server sinh: bỏ markup đi phải ra đúng văn bản gốc
+        self.assertEqual(re.sub(r'\[([^|\]]+)\|[^\]]+\]', r'\1', definition['ruby']), definition['value'])
+        self.assertEqual(sense.contents['examples'][0]['ja']['ruby'], '[猫|ねこ]がいる。')
+        # Dịch và metadata chạy được vì nội dung nằm ở 'value' như tiếng Latin
+        self.assertEqual(sense.contents['definition']['vi']['value'], 'vi: ' + definition['value'])
+        self.assertIsNotNone(sense.metadata_id)
+        self.assertNotIn('[猫|', self.refine_prompts[0])  # refine không thấy markup furigana
+
+    def test_japanese_refine_regenerates_ruby_and_drops_stale_romaji(self):
+        self.prepare('猫', 'ja')
+
+        def builder(ids):
+            return [{'id': ids[0], 'action': 'fix', 'definition': '小さい動物。'}]
+
+        self.run_pipeline(lambda m: stream_pieces(JA_DRAFT), self.refine_with(builder))
+        sense = self.senses()[0]
+        definition = sense.contents['definition']['ja']
+        self.assertEqual(definition['value'], '小さい動物。')
+        self.assertIn('|', definition['ruby'])
+        self.assertNotIn('roman', definition)  # AI refine chỉ trả văn bản nên romaji cũ của đoạn đã đổi không còn đúng
+        example = sense.contents['examples'][0]['ja']
+        self.assertEqual((example['roman'], example['ruby']), ('neko ga iru.', '[猫|ねこ]がいる。'))
+
     def test_no_ai_response_marks_word_failed(self):
         result = self.run_pipeline(lambda m: [], AsyncMock())
         self.assertFalse(result['is_valid'])
@@ -430,6 +471,99 @@ class PipelineTests(TestCase):
 
 
 # ======================= API get-word =======================
+
+JA_DRAFT = {
+    "word": "猫",
+    "metadata": {"should_be_saved": True, "is_common": True, "language_confidence": 0.99},
+    "senses": [{
+        "pos": "noun",
+        "definition": {"value": "小さくてかわいい動物。", "roman": "chiisakute kawaii doubutsu."},
+        "usage": {"value": "", "roman": ""},
+        "examples": [{"value": "猫がいる。", "roman": "neko ga iru."}],
+        "is_offensive": False, "level": "N5", "register": ["neutral"],
+        "ipas": [{"value": "ねこ", "label": "READING", "roman": "neko"}],
+    }],
+}
+
+
+class JapaneseSchemaTests(TestCase):
+    def test_schema_is_flat_like_latin_plus_roman(self):
+        props = complex_schema["properties"]
+        self.assertNotIn("entries", props)
+        sense = props["senses"]["items"]["properties"]
+        self.assertEqual(sorted(sense["definition"]["properties"]), ["roman", "value"])
+        self.assertEqual(sorted(sense["examples"]["items"]["properties"]), ["roman", "value"])
+        self.assertIn("roman", sense["ipas"]["items"]["properties"])
+        self.assertIn("pos", sense)  # pos / level / ipas nằm ở nghĩa như tiếng Latin, không còn chui vào metadata
+
+    def test_latin_schema_is_not_modified(self):
+        from utils.ai.schema import word_schema
+        self.assertNotIn("roman", word_schema["properties"]["senses"]["items"]["properties"]["definition"]["properties"])
+
+    def test_add_ruby_skips_empty_and_other_languages(self):
+        contents = {'definition': {'ja': {'value': '猫'}, 'vi': {'value': 'mèo'}}, 'usage': {'ja': {'value': ''}}, 'examples': []}
+        add_ruby(contents, 'ja')
+        self.assertEqual(contents['definition']['ja']['ruby'], '[猫|ねこ]')
+        self.assertNotIn('ruby', contents['definition']['vi'])
+        self.assertNotIn('ruby', contents['usage']['ja'])
+
+
+class TranslateFlowTests(TestCase):
+    def test_merge_keeps_other_languages_and_source(self):
+        base = make_sense()['contents']
+        new = copy.deepcopy(base)
+        new['definition']['en'] = {'value': 'ghi đè gốc?'}
+        new['definition']['fr'] = {'value': 'fr def'}
+        new['translations'] = {'fr': ['banque']}
+        new['examples'][0]['fr'] = {'value': 'fr ex'}
+        merged = merge_translations(base, new, 'en')
+        self.assertEqual(merged['definition']['en']['value'], 'A financial institution.')
+        self.assertEqual(merged['definition']['vi']['value'], 'bản dịch cũ')
+        self.assertEqual(merged['definition']['fr']['value'], 'fr def')
+        self.assertEqual(merged['translations'], {'vi': ['ngân hàng'], 'fr': ['banque']})
+        self.assertEqual(merged['examples'][0]['fr']['value'], 'fr ex')
+
+    def test_merge_ignores_extra_examples(self):
+        base = make_sense()['contents']
+        new = copy.deepcopy(base)
+        new['examples'].append({'en': {'value': 'extra'}, 'fr': {'value': 'x'}})
+        self.assertEqual(len(merge_translations(base, new, 'en')['examples']), 1)
+
+    def _word_with_sense(self, word):
+        db_word = AIWord.objects.create(value=word, language_code='en', status='COMPLETED')
+        sense = make_sense(str(uuid7()))
+        sense.update(word_id=db_word.id, word_value=word)
+        row = AISense.objects.create(**sense)
+        return db_word, row, sense
+
+    def test_two_translation_jobs_do_not_overwrite_each_other(self):
+        _, row, sense = self._word_with_sense('zzmerge')  # DB đã có vi do job khác vừa lưu
+        stale = copy.deepcopy(sense['contents'])           # job dịch fr chụp contents trước khi vi được lưu
+        stale['definition'].pop('vi')
+        stale.pop('translations')
+        stale['examples'][0].pop('vi')
+        stale['definition']['fr'] = {'value': 'fr def'}
+        stale['translations'] = {'fr': ['banque']}
+
+        self.assertEqual(save_translated_contents([{'id': str(row.id), 'contents': stale}], 'en'), 1)
+        row.refresh_from_db()
+        self.assertEqual(row.contents['definition']['vi']['value'], 'bản dịch cũ')
+        self.assertEqual(row.contents['definition']['fr']['value'], 'fr def')
+        self.assertEqual(sorted(row.contents['translations']), ['fr', 'vi'])
+
+    def test_recache_after_translation_reflects_db(self):
+        cache = WordCacheManager()
+        db_word, row, sense = self._word_with_sense('zzrecache')
+        self.addCleanup(cache.cache_word_clear_specific, 'en', 'zzrecache')
+        cache.cache_word_clear_specific('en', 'zzrecache')
+
+        # Id lấy từ job (str), như worker nhận; trước đây danh sách id lấy từ sense.get('word_id') nên toàn None và không nạp gì
+        re_cache_word(str(db_word.id))
+        cached = cache.cache_word_get_data('en', 'zzrecache')
+        self.assertEqual(cached['status'], 'CACHED')
+        self.assertIn('vi', cached['languages'])
+        self.assertEqual(len(cached['senses']), 1)
+
 
 class FakeQueue:
     """Thay hàng đợi Redis thật: không đẩy job vào queue mà ai_worker của môi trường dev có thể đang đọc."""

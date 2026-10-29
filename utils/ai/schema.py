@@ -1,3 +1,5 @@
+import copy
+
 def render_translate_schema(word, word_lang, sense_object: dict, translate_lang:list):
     properties = {}
     required = []
@@ -383,148 +385,23 @@ nonlatin_schema = {
     "required": ["word", "entries"]
 }
 
-complex_schema = {
-    "type": "OBJECT",
-    "properties": {
-        "entries": {
-            "type": "ARRAY",
-            "items": {
-                "type": "OBJECT",
-                "properties": {
-                    "pos": {
-                        "type": "STRING",
-                        "description": "Part of speech (noun, verb, adjective, etc.)"
-                    },
+def _build_japanese_schema():
+    """
+    Schema tiếng Nhật = schema phẳng của word_schema + roman (romaji) cho từng đoạn nội dung.
+    Cùng cấu trúc với tiếng Latin nên dịch / metadata / chuẩn hoá dùng chung; ruby (furigana) do server sinh bằng
+    fugashi (utils/ai/japanese.py) chứ không nhờ AI.
+    """
+    schema = copy.deepcopy(word_schema)
+    sense_props = schema["properties"]["senses"]["items"]["properties"]
+    roman = {"type": "STRING", "description": "Hepburn romaji of exactly this text"}
 
-                    "senses": {
-                        "type": "ARRAY",
-                        "items": {
-                            "type": "OBJECT",
-                            "properties": {
-                                 "metadata":{
-                                     "type":"OBJECT",
-                                     "properties":{
-                                        "is_valid":{"type":"BOOLEAN","description": "Word or phrase is valid or not"},
-                                        "is_offensive":{"type":"BOOLEAN"},
-                                        "is_compound": {"type":"BOOLEAN"},
-                                        "should_be_saved": {"type":"BOOLEAN","description":"Only True if word is widely known in language and write in correct form"},
-                                        "is_correct_language": {"type":"BOOLEAN","description":"is the word in the correct language"},
-                                        "register":{"type":"STRING", "description": "formal, informal, slang, vulgar, technical, etc."},
-                                        "pos":{"type":"STRING"},
-                                        "ipas": {
-                                            "type": "ARRAY",
-                                            "items": {
-                                                "type": "OBJECT",
-                                                "properties": {
-                                                    "text": { "type": "STRING" },
-                                                    "label": {
-                                                        "type": "STRING",
-                                                        "description": "US, UK, ROMAN, etc."
-                                                    },
-                                                    "roman": { "type": "STRING" },
-                                                },
-                                                "required": ["text", "label"]
-                                            }
-                                        },
-                                        "synonyms": {
-                                            "type": "ARRAY",
-                                            "items": { "type": "STRING" }
-                                        },
+    for key in ("definition", "examples"):
+        node = sense_props[key] if key == "definition" else sense_props[key]["items"]
+        node["properties"]["roman"] = dict(roman)
+        node["required"].append("roman")
+    sense_props["usage"]["properties"]["roman"] = dict(roman)  # usage có thể rỗng nên không bắt buộc
+    sense_props["ipas"]["items"]["properties"]["roman"] = dict(roman)
+    return schema
 
-                                        "antonyms": {
-                                            "type": "ARRAY",
-                                            "items": { "type": "STRING" }
-                                        },
 
-                                        "relateds": {
-                                            "type": "ARRAY",
-                                            "items": { "type": "STRING" }
-                                        },
-
-                                        "forms": {
-                                            "type": "ARRAY",
-                                            "items": { "type": "STRING" },
-                                            "description": "Word forms (plural, past tense, etc.)"
-                                        },
-                                        "tags":{
-                                            "type":"ARRAY",
-                                            "items": {"type":"STRING"},
-                                            "description":"additional tags for the sense, for searching, grouping, etc."
-                                        },
-                                        "image_keywords": {
-                                            "type": "STRING",
-                                            "description": "1-5 keywords for stock image search"
-                                        },
-                                        "level": {
-                                            "type": "STRING",
-                                            "description": "A1–C2, N1–N5, TOPIC1, etc."
-                                        },
-                                    },
-                                    "required": ["should_be_saved","is_valid","ipas", "tags","image_keywords", "level", "pos"]
-                                },
-                                "translations": {
-                                            "type": "ARRAY",
-                                            "items": {
-                                                "type": "STRING"
-                                            }
-                                        },
-
-                                "definition": {
-                                    "type": "OBJECT",
-                                    "properties": {
-                                        "text": { "type": "STRING" },
-                                        "translate": { "type": "STRING", "description": "Definition in user language" },
-                                        "roman": { "type": "STRING" },
-                                    },
-                                    "required": ["text","translate", "roman"],
-                                },
-                                "usage": {
-                                    "type": "OBJECT",
-                                    "properties": {
-                                        "text": { 
-                                            "type": "STRING",
-                                            "description": "Technical usage: collocations, specific prepositions, grammatical patterns, or social register (formal/informal). Example: 'Often used with the particle NI' or 'Commonly used in business contexts'."
-                                        },
-                                        "translate": { "type": "STRING", "description": "Usage translated to user language" },
-                                        "roman": { "type": "STRING" },
-                                    },
-                                    "required": ["text", "translate", "roman"],
-                                },
-
-                                "examples": {
-                                    "type": "ARRAY",
-                                    "items": {
-                                        "type": "OBJECT",
-                                        "properties": {
-                                            "text": { "type": "STRING" },
-                                            "translate": {
-                                                "type": "STRING",
-                                                "description": "Example translated to user language in sense context"
-                                            },
-                                            "roman": { "type": "STRING" },
-                                        },
-                                        "required": ["text", "translate", "roman"],
-                                    },
-                                    "description": "1 Example only"
-                                },
-
-                            },
-
-                            "required": [
-                                "definition",
-                                "usage",
-                                "examples"
-                            ]
-                        }
-                    }
-                },
-
-                "required": ["pos", "senses"]
-            }
-        },
-        "word": { "type": "STRING"}
-    },
-
-    "required": ["word", "entries"]
-}
-
+complex_schema = _build_japanese_schema()

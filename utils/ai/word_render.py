@@ -37,6 +37,7 @@ from utils.ai.translate import ai_create_translate_sema
 from utils.ai.metadata import ai_create_metadata 
 from core.views.Collection import normalize
 from ai.queries import load_word
+from utils.ai.japanese import add_ruby
 from utils.ai.refine import render_refine_prompt, request_refinement, refine_word
 
 def get_schema(mode='latin'):
@@ -176,6 +177,8 @@ async def ai_create_new_word_sema(word_info):
                                         ],
                                     }
                                 }
+                                if language_code == 'ja':
+                                    add_ruby(processed_contents["contents"], language_code)
                                 sense_objs.append(processed_contents)
                                 cache.cache_word_add_sense(language_code, word_value, id, processed_contents)
 

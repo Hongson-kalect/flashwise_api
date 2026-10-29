@@ -18,6 +18,7 @@ from google import genai
 from google.genai import types
 
 from utils.ai.constain import language_map
+from utils.ai.japanese import add_ruby
 from utils.utils.socket import socket_message
 
 logger = logging.getLogger(__name__)
@@ -187,6 +188,8 @@ def _apply_fix(sense, item, language_code):
 
     if not fields:
         return None
+    if language_code == 'ja' and ({'definition', 'usage', 'examples'} & fields):
+        add_ruby(contents, language_code)
     return {'fields': fields, 'scope': scope, 'reason': _clean(item.get('reason'), 300)}
 
 

@@ -3,8 +3,13 @@ from utils.ai.constain import language_map
 def render_word_prompt(word, language_code):
     language_name = language_map.get(language_code, 'en')
 
-    # add rule for non latin
-    # add ruby for japanese 
+    extra_rules = ""
+    if language_code == 'ja':
+        extra_rules = (
+            "5. Japanese: level is JLPT (N5-N1). 'roman' is the Hepburn romaji of that exact text. "
+            "ipas has one item per reading: label READING, value = the full hiragana reading, roman = its romaji. "
+            "Never put furigana or brackets inside any text."
+        )
 
     return f"""
     # ROLE: Expert Lexicographer.
@@ -15,6 +20,7 @@ def render_word_prompt(word, language_code):
     2. Grouping: One entry per POS. Senses ordered by frequency.
     3. Level: Defs/Examples must match the word's level.
     4. Validation: 'should_be_saved' is FALSE for typos or random word strings.
+    {extra_rules}
 
     # OUTPUT:
     Strictly follow the Core JSON Schema.

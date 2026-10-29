@@ -24,7 +24,8 @@ from utils.redis.word_init import WordCacheManager
 from utils.ai.word_render import ai_create_new_word_sema
 from utils.ai.translate import ai_create_translate_sema
 from utils.celery.fetch_image import get_image_by_keyword
-from utils.utils.sense_handle import serialize_entries
+from utils.utils.sense_handle import merge_translations
+from ai.queries import load_word
 
 # --- CẤU HÌNH ---
 REDIS_URL = 'redis://redis:6379/0'
@@ -61,28 +62,21 @@ async def handle_task(job, sema, task_type):
         elif task_type == 'image':
             await get_image_by_keyword(job)
         elif task_type == 'translate':
-            # print('translate job', job)
-                # Hàm này nhận job (chứa id và contents cũ), gọi AI dịch và trả về contents đã update
-            updated_contents = await ai_create_translate_sema(job, False)
+            # Dịch phần còn thiếu cho 1 từ đã có (user chọn ngôn ngữ mới). Ghi thẳng DB rồi mới nạp lại cache: nếu đi qua
+            # buffer 3 giây thì cache bị nạp lại từ dữ liệu cũ và user vẫn thấy thiếu bản dịch.
+            word_id = job.get('word_id')
+            try:
+                updated_contents = await ai_create_translate_sema(job, False)
+                if updated_contents:
+                    await sync_to_async(save_translated_contents)(list(updated_contents), job.get('language_code'))
+                if word_id:
+                    await sync_to_async(re_cache_word)(word_id)
+            finally:
+                # Mở khoá để lần tra sau đẩy lại được nếu bản dịch chưa đủ
+                user_language = job.get('user_language_code')
+                if word_id and isinstance(user_language, str):
+                    await redis_client.delete(f"trans_lock:{word_id}:{user_language}")
 
-            payloads = []
-            word_id =[]
-
-            for contents in updated_contents:
-                payload = {
-                    "id": contents.get("id"),
-                    "contents": contents.get("contents"),
-                    "updated_at": timezone.now().isoformat()
-                }
-                payloads.append(json.dumps(payload))
-                word_id.append(contents.get("word_id"))
-
-            redis_key = "db_buffer:sense:update"
-            await redis_client.rpush(redis_key, *payloads)
-
-            if word_id:
-                await sync_to_async(re_cache_word)(word_id)     
-        
         elif task_type == 'collection_word':
             # Tạo word mới
             results = await ai_create_new_word_sema(job)
@@ -114,31 +108,43 @@ async def handle_task(job, sema, task_type):
         # CHÌA KHÓA VÀNG: Trả lại ghế trống cho consumer nhặt việc tiếp
         sema.release()
 
+def save_translated_contents(senses, source_language):
+    """
+    Ghi bản dịch vừa tạo vào AISense. Gộp vào contents đang có trong DB (khoá dòng) thay vì ghi đè,
+    để 2 job dịch 2 ngôn ngữ chạy gần nhau không làm mất bản dịch của nhau.
+    """
+    ids = [s['id'] for s in senses if s.get('contents')]
+    now = timezone.now()
+    with transaction.atomic():
+        rows = {str(row.id): row for row in AISense.objects.select_for_update().filter(id__in=ids)}
+        updated = []
+        for sense in senses:
+            row = rows.get(str(sense['id']))
+            if row is None or not sense.get('contents'):
+                continue
+            row.contents = merge_translations(row.contents, sense['contents'], source_language)
+            row.updated_at = now
+            updated.append(row)
+        if updated:
+            AISense.objects.bulk_update(updated, ['contents', 'updated_at'])
+    return len(updated)
+
+
 def re_cache_word(word_ids):
-    logger.info(f"Re-cache word: {word_ids}")
-    list = word_ids
+    """Nạp lại cache các từ từ DB (bản đầy đủ bản dịch mới nhất)."""
+    ids = [word_ids] if isinstance(word_ids, str) else list(word_ids)
+    logger.info(f"Re-cache word: {ids}")
     cache_manager = WordCacheManager()
-    sense_qs = AISense.objects.filter(is_official=True).select_related('metadata').order_by('is_official')
-    if isinstance(word_ids, str):
-        list = [word_ids]
 
-    # 4. Gộp vào query chính
-    word_instances = AIWord.objects.filter(id__in=list).prefetch_related(
-        Prefetch('senses', queryset=sense_qs, to_attr='prefetched_senses')
-    ).all()
-
-    for word_instance in word_instances:
-
-        senses_instance = word_instance.prefetched_senses
-        entries = serialize_entries(senses_instance)
-        word_instance.processed_entries = entries
-
+    for word_id in filter(None, ids):
+        word_instance = load_word(id=word_id)
+        if word_instance is None:
+            continue
         data = AIWordSerializer(word_instance).data
-
         cache_manager.cache_word(word_instance.language_code, word_instance.id, word_instance.value, data.get('senses'))
         logger.info(f"Re-cache word completed: {word_instance.value}")
 
-# --- TẦNG ĐIỀU PHỐI (CONSUMER VÀ FLUSHER) ---
+
 async def consume_queue(queue_name, sema, task_type):
     """Consumer thông minh: Chỉ bốc máy nhặt việc từ Redis khi thực sự CÒN GHẾ TRỐNG"""
     logger.info(f"[START] Khởi động hàng chờ Consumer: {queue_name}")

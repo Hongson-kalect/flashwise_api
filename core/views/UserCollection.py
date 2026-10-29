@@ -49,49 +49,14 @@ class UserCollectionViewSet(SoftDeleteViewSet):
     # @action(detail=True, methods=['post'], url_path='get-collection')
     # def get_user_collection_detail(self, request, pk=None):
         
-    # override create request
     def create(self, request, *args, **kwargs):
-        # params: name, description, image, tags, language_code, senses
+        # Bộ từ mới tạo qua /api/collections/ (từ nghĩa có sẵn) hoặc /api/collections/bulk-create/ (từ danh sách từ);
+        # cả hai đã tự tạo UserCollection cho người tạo, tải bộ có sẵn dùng download.
+        return Response(
+            {"message": "Use POST /api/collections/ or /api/collections/bulk-create/ to create a collection"},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
 
-        data = request.data
-        senses_data = data.pop('senses', []) # Giả sử nhận một list sense IDs
-        data.created_by = request.user
-
-        # Sử dụng atomic để đảm bảo tính toàn vẹn dữ liệu
-        with transaction.atomic():
-            # 1. Lưu Collection trước
-            serializer = self.get_serializer(data=data)
-            serializer.is_valid(raise_exception=True)
-            collection = serializer.save()
-
-            # 2. Chuẩn bị dữ liệu cho bảng phụ (CollectionItem)
-            items_to_create = []
-            for idx, sense_obj in enumerate(senses_data):
-                if not sense_obj["sense_id"] or not sense_obj["original_id"]:
-                    continue
-
-                items_to_create.append(
-                    CollectionItem(
-                        collection=collection,
-                        sense_id=sense_obj["sense_id"], # Truyền ID trực tiếp để tránh query thêm
-                        original_id = sense_obj["original_id"], 
-                        display_order=idx # Gán order theo thứ tự trong list gửi lên
-                    )
-                )
-
-            # 3. Dùng bulk_create để "bắn" toàn bộ item vào DB trong 1 câu Query
-            if items_to_create:
-                CollectionItem.objects.bulk_create(items_to_create)
-
-            UserCollection.objects.create(
-                user=request.user,
-                collection=collection,
-                created_by=request.user,
-            )
-
-            headers = self.get_success_headers(serializer.data)
-            return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
-        
     def list(self, request, *args, **kwargs):
         # Cần thêm: count số từ đã học
         # Collection có count số lượng sense từ bảng trung gian để có Tiến độ học
@@ -467,7 +432,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
         with transaction.atomic():
             # 1. Khóa dòng UserCollection và lấy Collection gốc
             user_collection = get_object_or_404(
-                self.get_queryset().select_related('collection').select_for_update(), 
+                self.get_queryset().select_related('collection').select_for_update(of=('self',)), 
                 id=user_collection_id
             )
             current_collection = user_collection.collection
@@ -513,9 +478,9 @@ class UserCollectionViewSet(SoftDeleteViewSet):
             last_meta = current_metadatas[-1] if current_metadatas else {}
             new_meta = {
                 "version": next_version,
-                "title": request.data.get('title') or last_meta.get('title') or current_collection.title,
+                "title": request.data.get('title') or last_meta.get('title') or current_collection.name,
                 "desc": request.data.get('desc') or last_meta.get('desc') or current_collection.description,
-                "image": request.data.get('image') or last_meta.get('image') or current_collection.image,
+                "image": request.data.get('image') or last_meta.get('image') or current_collection.image_url,
                 
                 # Lưu hẳn danh sách ID vào log luôn
                 "changelog": {
@@ -526,7 +491,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
                 "released_at": timezone.now().isoformat()
             }
 
-            next_metadatas = current_metadatas.append(new_meta)
+            next_metadatas = [*current_metadatas, new_meta]
 
             # === PHÂN NHÁNH LOGIC THEO QUYỀN SỞ HỮU (TÁC GIẢ VS USER KHÁC) ===
             
@@ -562,7 +527,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
                 new_collection_id = generate_uuid7()
                 
                 # 1. Thu thập "cây phả hệ" để quản lý vết tích như CivitAI
-                current_parent_id = list(current_collection.parent or [])
+                current_parent_id = list(current_collection.parents or [])
                 current_parent_id.append(current_collection.id)
 
                 # 2. Lấy toàn bộ các item hợp lệ hiện tại của User khác này (Gốc + Nháp của họ)
@@ -604,19 +569,20 @@ class UserCollectionViewSet(SoftDeleteViewSet):
                 # 5. Tạo thực thể Collection mới ghi nhận chủ quyền mới
                 Collection.objects.create(
                     id=new_collection_id,
-                    title=f"{current_collection.title} - Remixed by {current_user.username if current_user else 'Anonymous'}",
+                    name=f"{current_collection.name} - Remixed by {current_user.username if current_user else 'Anonymous'}",
                     description=current_collection.description,
                     created_by=current_user,
                     original_id=current_collection.original_id or current_collection.id,
-                    parent=current_parent_id,
-                    previous = current_collection.id,
+                    parents=current_parent_id,
+                    previous_id=current_collection.id,
 
                     metadatas = next_metadatas,
 
                     image=current_collection.image,
                     image_url=current_collection.image_url,
                     version=1, # Khởi tạo version 1
-                    items_count=len(new_items)
+                    item_count=len(new_items),
+                    language_code=current_collection.language_code
                 )
 
                 final_collection_id = new_collection_id

@@ -30,7 +30,8 @@ Django 4.2 + DRF + simplejwt, channels (websocket báo kết quả), Postgres 15
 Dùng skill `backend-verify` (check, makemigrations, test trong Docker, commit giữ đúng CRLF/LF).
 
 ## Còn dở
-- Tiếng Nhật (`complex_schema`) và `nonlatin_schema` trả `entries[].senses[]` lồng nhau, bộ đọc stream chỉ hiểu `senses[]` phẳng nên ja chưa ra nghĩa; zh/ko/... đang dùng schema phẳng (chưa có reading / ruby / roman).
+- Tiếng Nhật dùng schema phẳng như Latin + `roman` (AI) + `ruby` (fugashi, dạng `[漢字|かな]`); refine đổi văn bản thì `roman` của đoạn đó bị bỏ. zh/ko/... dùng schema phẳng thuần (chưa có reading / pinyin). `nonlatin_schema` cũ không còn dùng.
+- `user-collections`: `update-sense` và `delete-sense` chưa chạy được. Cơ chế bản nháp / đã phát hành tạo thêm dòng CollectionItem cho cùng một nghĩa nhưng `unique_together (collection, sense)` cấm; `update-sense` còn gán dict vào FK metadata và `list.append(...)` thành None. Cần quyết định thiết kế (nới ràng buộc hay đổi cách lưu phiên bản) rồi mới sửa; app đang local-first nên chưa gọi.
 - Code Celery cũ (`utils/celery/word.py`, `utils/utils/ai.py`, `ai_create_new_word` trong word_render.py, service `worker` trong compose) không còn được get-word dùng và đã hỏng (sai chữ ký `render_word_prompt`), có thể xoá.
 - Mỗi nghĩa vẫn gọi riêng 1 lần dịch + 1 lần metadata; có thể gom theo từ khi không cần hiện từng nghĩa ngay.
 - Chưa có sync API cho progress / review log / note (model + serializer đã có), chưa có thuật toán FSRS.

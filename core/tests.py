@@ -289,3 +289,74 @@ class NormalizeImportTests(TestCase):
         from utils.utils.normalize import normalize
         self.assertIs(old, normalize)
         self.assertEqual(normalize('  Hello,  World! '), 'hello, world')
+
+
+@override_settings(CACHES=LOCMEM_CACHE)
+class UserCollectionApiTests(APITestCase):
+    def setUp(self):
+        django_cache.clear()
+        self.alice = User.objects.create_user('alice')
+        self.bob = User.objects.create_user('bob')
+        self.client.force_authenticate(self.alice)
+
+    def item(self, collection, sense, **kwargs):
+        return CollectionItem.objects.create(collection=collection, sense=sense, original=sense, **kwargs)
+
+    def upload(self, user_collection, **body):
+        return self.client.post(f'/api/user-collections/{user_collection.id}/upload/', {'user_collection_id': str(user_collection.id), **body}, format='json')
+
+    def test_user_collections_are_private(self):
+        collection = Collection.objects.create(name='Shared', language_code='en', is_official=True)
+        theirs = UserCollection.objects.create(user=self.bob, collection=collection)
+        self.assertEqual(self.client.get('/api/user-collections/').data['count'], 0)
+        self.assertEqual(self.client.get(f'/api/user-collections/{theirs.id}/').status_code, 404)
+        self.assertEqual(self.upload(theirs).status_code, 404)
+
+    def test_create_points_to_collections_api(self):
+        res = self.client.post('/api/user-collections/', {'name': 'x'}, format='json')
+        self.assertEqual(res.status_code, 405)  # trước đây luôn 500: data.created_by = ... trên dict
+        self.assertIn('/api/collections/', res.data['message'])
+
+    def test_owner_upload_releases_drafts_as_next_version(self):
+        collection = Collection.objects.create(name='Mine', language_code='en', created_by=self.alice, version=1, description='d', metadatas=[{'version': 1}])
+        (_, one), (_, two) = make_word_with_sense('one'), make_word_with_sense('two')
+        self.item(collection, one, released=True, version=1, created_by=self.alice)
+        draft = self.item(collection, two, released=False, created_by=self.alice)
+        user_collection = UserCollection.objects.create(user=self.alice, collection=collection, version=1, created_by=self.alice)
+
+        res = self.upload(user_collection, title='v2')
+        self.assertEqual(res.status_code, 200)  # trước đây NotSupportedError (FOR UPDATE trên join nullable), rồi lỗi tên trường
+        self.assertEqual(res.data['current_version'], 2)
+
+        collection.refresh_from_db()
+        self.assertEqual(collection.version, 2)
+        self.assertEqual(collection.metadatas[-1]['changelog'], {'added': [str(two.id)], 'updated': [], 'deleted': []})
+        self.assertEqual(collection.metadatas[-1]['title'], 'v2')
+        draft.refresh_from_db()
+        self.assertEqual((draft.released, draft.version), (True, 2))
+        user_collection.refresh_from_db()
+        self.assertEqual(user_collection.version, 2)
+
+    def test_non_owner_upload_remixes_into_new_collection(self):
+        shared = Collection.objects.create(name='Shared', language_code='en', created_by=self.bob, released=True, version=1)
+        (_, one), (_, three) = make_word_with_sense('one'), make_word_with_sense('three')
+        self.item(shared, one, released=True, version=1, display_order=0)
+        draft = self.item(shared, three, released=False, created_by=self.alice, display_order=1)
+        user_collection = UserCollection.objects.create(user=self.alice, collection=shared, version=1, created_by=self.alice)
+
+        res = self.upload(user_collection)
+        self.assertEqual(res.status_code, 200)
+
+        remix = Collection.objects.get(id=res.data['collection_id'])
+        self.assertNotEqual(remix.id, shared.id)
+        self.assertEqual((remix.created_by_id, remix.name, remix.version, remix.item_count, remix.language_code), (self.alice.id, 'Shared - Remixed by alice', 1, 2, 'en'))
+        self.assertEqual([str(p) for p in remix.parents], [str(shared.id)])
+        self.assertEqual(str(remix.previous_id), str(shared.id))
+        self.assertEqual({str(i.sense_id) for i in remix.collectionitem_set.all()}, {str(one.id), str(three.id)})
+
+        # Bản nháp rời bộ gốc, bộ gốc của Bob không bị đụng tới
+        self.assertFalse(CollectionItem.objects.filter(id=draft.id).exists())
+        shared.refresh_from_db()
+        self.assertEqual((shared.version, shared.collectionitem_set.count()), (1, 1))
+        user_collection.refresh_from_db()
+        self.assertEqual((str(user_collection.collection_id), user_collection.version), (str(remix.id), 1))

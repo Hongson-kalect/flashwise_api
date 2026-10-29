@@ -17,11 +17,11 @@ class DayLearnLog(BaseModel):
     words_learned = models.PositiveIntegerField(default=0)
     words_relearned = models.PositiveIntegerField(default=0)
 
-    learn_time = models.PositiveIntegerField(default=0, help_text="Thời gian học (phút hoặc giây)")
-    app_time = models.PositiveIntegerField(default=0, help_text="Tổng thời gian mở app (phút hoặc giây)") #Mỗi lần đóng app thì gửi đếm lên server
+    learn_time = models.PositiveIntegerField(default=0, help_text="Thời gian học (giây)")
+    app_time = models.PositiveIntegerField(default=0, help_text="Tổng thời gian mở app (giây)") #Mỗi lần đóng app thì gửi đếm lên server
 
     xp_earned = models.PositiveIntegerField(default=0)
-    sessions =  models.PositiveIntegerField(default=0) # Nếu muốn lấy chi tiết thì query bảng LearnSession là ra
+    sessions_count = models.PositiveIntegerField(default=0) # Nếu muốn lấy chi tiết thì query bảng LearnSession là ra
 
     #  Những dữ liệu trên đều dễ lấy nếu query bảng LearnSession nhưng nếu làm dashboard thì sẽ phải xử lý 1 lúc => Cần các dữ liệu chính để dashboard
 
@@ -30,7 +30,7 @@ class DayLearnLog(BaseModel):
         ordering = ["-date"]
         unique_together = ("user", "date")
         indexes = [
-            models.Index(fields=["user"]),
+            # unique_together (user, date) đã phục vụ truy vấn theo user
             models.Index(fields=["date"]),
         ]
 

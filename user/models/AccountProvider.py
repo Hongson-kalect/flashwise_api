@@ -31,4 +31,4 @@ class AccountProvider(BaseModel):
         ]
 
     def __str__(self):
-        return f"{self.provider.get_provider_display()} -> {self.user.email}"
+        return f"{self.get_provider_display()} -> {self.user_id}"

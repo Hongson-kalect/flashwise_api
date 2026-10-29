@@ -7,7 +7,7 @@ class WordInfoSerializer(BaseModelSerializer):
     class Meta:
         model = WordInfo
         fields = "__all__"
-        read_only_fields = ['id', 'sub_id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
 class BasicWordInfoSerializer(BaseModelSerializer):
     class Meta:
@@ -16,4 +16,4 @@ class BasicWordInfoSerializer(BaseModelSerializer):
             'pos',
             'ipas',
         ]
-        read_only_fields = ['id', 'sub_id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']

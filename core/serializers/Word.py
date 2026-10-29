@@ -15,19 +15,14 @@ User = get_user_model()
 class WordSerializer(BaseModelSerializer):
     # language = LanguageSerializer(read_only=True)
     word_info = BasicWordInfoSerializer(read_only=True)
+    ruby = serializers.SerializerMethodField()
     # forms = BasicFormSerializer(many=True, read_only=True, source ="word_forms")
 
     class Meta:
         model = Word
         # fields = "__all__"
-        fields = ['value', 'language_code','word_info','ruby', 'translates', 'definations']
-        read_only_fields = ['id', 'sub_id', 'created_at', 'updated_at']
-
-    def get_image_url(self, obj):
-        request = self.context.get('request')
-        if obj.image and request:
-            return request.build_absolute_uri(obj.image.url)
-        return None
+        fields = ['id', 'value', 'reading', 'roman', 'language_code', 'word_info', 'ruby', 'synonyms', 'antonyms', 'relateds']
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
     # def get_audio_url(self, obj):
     #     request = self.context.get('request')

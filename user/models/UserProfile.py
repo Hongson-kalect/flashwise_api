@@ -32,10 +32,8 @@ class UserProfile(BaseModel):
     # Giờ vàng học tập được cá nhân hóa để đẩy Push Notification nhắc nhở
     fav_time = models.TimeField(null=True, blank=True) 
 
-    # --- HỆ THỐNG PHÂN HẠNG VÀ GAMIFICATION ---
-    level = models.IntegerField(default=1) # Cấp độ Gamification dựa trên tổng XP thu hoạch
     # --- HỆ THỐNG GAMIFICATION & THỐNG KÊ (HẤP THỤ TỪ STAT) ---
-    level = models.IntegerField(default=1, db_index=True)
+    level = models.IntegerField(default=1, db_index=True) # Cấp độ Gamification dựa trên tổng XP thu hoạch
     total_xp = models.PositiveIntegerField(default=0, db_index=True) # Index để xếp hạng tổng hành tinh
     current_streak = models.PositiveIntegerField(default=0, db_index=True) # Index để xếp hạng thánh cày cuốc
     max_streak = models.PositiveIntegerField(default=0)

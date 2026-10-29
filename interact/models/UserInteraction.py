@@ -20,7 +20,7 @@ class UserInteraction(BaseModel):
     user = models.ForeignKey('auth.User', on_delete=models.CASCADE, related_name="interactions")
     
     # Định danh loại tương tác (Mặc định là 'like')
-    target_type = models.CharField(max_length=20, choices=TARGET_TYPES, default='like')
+    target_type = models.CharField(max_length=20, choices=TARGET_TYPES)
     target_id = models.UUIDField(blank=True, null=True)
 
     # Định danh loại tương tác (Mặc định là 'like')
@@ -34,11 +34,11 @@ class UserInteraction(BaseModel):
         
         # Tối ưu hóa Index cho việc truy vấn kiểm tra trạng thái hoặc lấy danh sách đã thích
         indexes = [
-            models.Index(fields=['user', 'interaction_type', 'target_type', 'target_id']),
-            models.Index(fields=['user', 'interaction_type', 'interaction_type', 'status']),
+            # unique_together đã tạo index (user, interaction_type, target_type, target_id)
+            models.Index(fields=['user', 'interaction_type', 'status']),
             models.Index(fields=['target_type', 'target_id']), # Phục vụ đếm tổng số lượt Like trên Server
             models.Index(fields=['interaction_type', 'status']),
         ]
 
     def __str__(self):
-        return f"{self.user.username} - {self.interaction_type} - {self.content_type.model} ({self.object_id})"
+        return f"{self.user_id} - {self.interaction_type} - {self.target_type} ({self.target_id})"

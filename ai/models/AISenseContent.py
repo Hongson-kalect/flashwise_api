@@ -39,4 +39,4 @@ class AISenseContent(BaseModel):
         ]
 
     def __str__(self):
-        return f"{self.type} ({self.value[:50]}...)"
+        return f"{self.type} ({str(self.value)[:50]}...)"

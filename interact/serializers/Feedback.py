@@ -15,13 +15,13 @@ class FeedbackSerializer(BaseModelSerializer):
     class Meta:
         model = Feedback
         fields = [
-            'id', 'sub_id',
+            'id',
             'user', 'type', 'type_display',
             'result', 'accepted', 'notification',
             'message', 'target_id', 'status', 'status_display',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'sub_id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
     def get_type_display(self, obj):
         return dict(Feedback.TYPE_CHOICES).get(obj.type)

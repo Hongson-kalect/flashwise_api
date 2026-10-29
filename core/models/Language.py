@@ -32,15 +32,6 @@ class Language(models.Model):
     class Meta:
         db_table = "language"
         ordering = ["code"]
-        indexes=[
-            models.Index(fields=['code']),
-        ]
 
     def __str__(self):
         return f"{self.name} ({self.code})"
-    
-    def save(self, *args, **kwargs):
-        if not self.sub_id:
-            self.sub_id = self.id
-            # self.sub_id = str(uuid.uuid4())
-        super().save(*args, **kwargs)

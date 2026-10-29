@@ -12,11 +12,11 @@ class DayLearnLogSerializer(BaseModelSerializer):
     class Meta:
         model = DayLearnLog
         fields = [
-            'id', 'sub_id',
+            'id',
             'user', 'date',
             'words_learned', 'words_relearned',
             'learn_time', 'app_time',
-            'xp_earned', 'sessions',
+            'xp_earned', 'sessions_count',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'sub_id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']

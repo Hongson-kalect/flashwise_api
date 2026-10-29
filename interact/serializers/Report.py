@@ -15,7 +15,7 @@ class ReportSerializer(BaseModelSerializer):
     class Meta:
         model = Report
         fields = [
-            'id', 'sub_id',
+            'id',
             'user', 'target_id', 'target_type', 'target_type_display',
             'type', 'type_display',
             'status', 'status_display',
@@ -23,7 +23,7 @@ class ReportSerializer(BaseModelSerializer):
             'is_active',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'sub_id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
     def get_type_display(self, obj):
         return dict(Report.TYPE_CHOICES).get(obj.type)

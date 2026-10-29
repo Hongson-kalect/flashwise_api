@@ -1,6 +1,5 @@
 from rest_framework import serializers
 from config.serializers.BaseModel import BaseModelSerializer
-from core.models.Word import Word
 from ai.serializers.AISense import AISenseSerializer,AISenseSerializerBasic
 from core.models.Collection import Collection
 from utils.models.Tag import Tag
@@ -11,7 +10,7 @@ class CollectionListSerializer(BaseModelSerializer):
 
     class Meta:
         model = Collection
-        fields = ['id', 'sub_id', 'name', 'description', 'image_url', 'senses_count', 'is_official']
+        fields = ['id', 'name', 'description', 'image_url', 'senses_count', 'is_official', 'language_code', 'like_count', 'downloaded_count']
 
 # Dùng riêng cho hàm retrieve (Chi tiết kèm từ vựng)
 class CollectionBasicSerializer(BaseModelSerializer):
@@ -20,7 +19,7 @@ class CollectionBasicSerializer(BaseModelSerializer):
 
     class Meta:
         model = Collection
-        fields = ['id', 'name', 'description', 'image_url', 'is_official', "item_count",'image_url']
+        fields = ['id', 'name', 'description', 'image_url', 'is_official', 'item_count', 'language_code', 'version']
 
     # def get_items(self, obj):
     #     # Truy cập vào tập dữ liệu đã được prefetch tối ưu ở hàm retrieve
@@ -42,54 +41,29 @@ class CollectionDetailSerializer(BaseModelSerializer):
     #     return CollectionItemSerializer(obj.collectionitem_set.all(), many=True).data
 
 class CollectionSerializer(BaseModelSerializer):
-    tag = serializers.PrimaryKeyRelatedField(
+    tags = serializers.PrimaryKeyRelatedField(
         many=True, queryset=Tag.objects.all(), required=False
-    )
-    words = serializers.PrimaryKeyRelatedField(
-        many=True, queryset=Word.objects.all(), required=False
     )
     image_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Collection
         fields = [
-            'id', 'sub_id', 'name', 'description', 'image', 'image_url',
-            'words', 'tag', 'is_deleted', 'is_active',
-            'update_requests', 'update_logs',
+            'id', 'name', 'description', 'image', 'image_url', 'tags',
+            'language_code', 'item_count', 'score',
+            'like_count', 'view_count', 'downloaded_count',
+            'is_official', 'is_frozen', 'released', 'version',
+            'invalid_words', 'pending_words', 'original', 'previous', 'parents',
+            'is_deleted', 'is_active',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'sub_id', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id', 'item_count', 'score', 'like_count', 'view_count', 'downloaded_count',
+            'created_at', 'updated_at',
+        ]
 
     def get_image_url(self, obj):
         request = self.context.get('request')
         if obj.image and request:
             return request.build_absolute_uri(obj.image.url)
-        return None
-
-    def create(self, validated_data):
-        words = validated_data.pop('words', [])
-        tag_names = validated_data.pop('tags', [])
-        
-        collection = Collection.objects.create(**validated_data)
-
-        tags = [Tag.objects.get_or_create(name=name.strip())[0] for name in tag_names]
-
-        collection.tag.set(tags)
-        collection.words.set(words)
-        return collection
-
-    def update(self, instance, validated_data):
-        words = validated_data.pop('words', None)
-        tag_names = validated_data.pop('tags', [])
-        tags = [Tag.objects.get_or_create(name=name.strip())[0] for name in tag_names]
-
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        instance.save()
-
-        if words is not None:
-            instance.words.set(words)
-        if tags is not None:
-            instance.tags.set(tags)
-
-        return instance
+        return obj.image_url

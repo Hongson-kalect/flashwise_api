@@ -4,7 +4,7 @@ from django.db import models
 
 
 class Version(BaseModel):
-    user = models.ForeignKey('auth.User', on_delete=models.CASCADE, related_name="entity_tags")
+    user = models.ForeignKey('auth.User', on_delete=models.CASCADE, related_name="versions")
     entityId = models.UUIDField()
     entityType = models.CharField(max_length=30, choices=[
         ("word", "Word"),

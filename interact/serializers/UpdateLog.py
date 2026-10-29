@@ -13,14 +13,14 @@ class UpdateLogSerializer(BaseModelSerializer):
     class Meta:
         model = UpdateLog
         fields = [
-            'id', 'sub_id',
+            'id',
             'type', 'type_display',
             'target_id', 'value',
             'request_by',
             'change_from', 'change_to',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'sub_id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
     def get_type_display(self, obj):
         return dict(UpdateLog._meta.get_field('type').choices).get(obj.type)

@@ -11,14 +11,14 @@ class QuizSerializer(BaseModelSerializer):
     class Meta:
         model = Quiz
         fields = [
-            'id', 'sub_id', 'level', 'level_display',
+            'id', 'level', 'level_display',
             'question_type', 'question_type_display',
             'question', 'options', 'answer',
             'answer_type', 'answer_type_display',
-            'explanation', 'word',
+            'explanation', 'sense', 'type', 'score',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'sub_id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
     def get_level_display(self, obj):
         return dict(Quiz.LEVEL_CHOICES).get(obj.level)

@@ -13,12 +13,12 @@ class VersionSerializer(BaseModelSerializer):
     class Meta:
         model = Version
         fields = [
-            'id', 'sub_id',
+            'id',
             'user', 'entityId', 'entityType', 'entity_type_display',
             'version', 'is_active',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'sub_id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
     def get_entity_type_display(self, obj):
         return dict(Version._meta.get_field('entityType').choices).get(obj.entityType)

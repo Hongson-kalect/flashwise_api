@@ -16,5 +16,7 @@ class NotificationSerializer(BaseModelSerializer):
             'title',
             'content',
             'is_read',
+            'data',
+            'created_at',
         ]
         read_only_fields = BaseModelSerializer.Meta.read_only_fields

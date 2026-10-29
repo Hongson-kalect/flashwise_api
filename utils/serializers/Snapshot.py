@@ -6,8 +6,8 @@ class SnapShotSerializer(BaseModelSerializer):
     class Meta:
         model = SnapShot
         fields = [
-            'id', 'sub_id',
+            'id',
             'type', 'target_id', 'snap',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'sub_id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']

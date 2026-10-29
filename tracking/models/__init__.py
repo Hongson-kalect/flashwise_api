@@ -1,4 +1,5 @@
 from .AdminLog import AdminLog
 from .DayLearnLog import DayLearnLog
-from .LearnLog import LearnLog
+from .ReviewLog import ReviewLog
+from .UserSenseProgress import UserSenseProgress
 from .WordTranslation import WordTranslation

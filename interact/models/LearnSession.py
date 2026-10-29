@@ -19,5 +19,12 @@ class LearnSession(BaseModel):
     time = models.PositiveIntegerField(default=0)  # tổng thời gian (giây)
     type = models.CharField(max_length=20, choices=TYPE_CHOICES, default="learn")
 
+    class Meta:
+        db_table = "learn_session"
+        ordering = ["-start_at"]
+        indexes = [
+            models.Index(fields=["user", "-start_at"], name="idx_session_user_time"),
+        ]
+
     def __str__(self):
         return f"LearnSession({self.user_id}, {self.type}, {self.start_at:%Y-%m-%d})"

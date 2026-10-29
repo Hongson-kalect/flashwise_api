@@ -13,13 +13,13 @@ class AdminLogSerializer(BaseModelSerializer):
     class Meta:
         model = AdminLog
         fields = [
-            'id', 'sub_id',
+            'id',
             'admin', 'action', 'action_display',
             'target_id', 'target_type',
             'reason', 'meta', 'is_success',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'sub_id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
     def get_action_display(self, obj):
         return dict(AdminLog.ACTION_CHOICES).get(obj.action)

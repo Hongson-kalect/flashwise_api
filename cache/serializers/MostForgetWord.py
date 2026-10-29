@@ -1,17 +1,17 @@
 from rest_framework import serializers
-from cache.models.MostForgetWord import MostForgetWords  # hoặc đường dẫn đúng với project của bạn
-from core.models import Language, Word  # nếu bạn có model Language và Word
+from cache.models.MostForgetWord import MostForgetWord
+from core.models import Language
+from ai.models import AISense
 
 class MostForgetWordSerializer(serializers.ModelSerializer):
     language = serializers.PrimaryKeyRelatedField(queryset=Language.objects.all())
-    word = serializers.PrimaryKeyRelatedField(queryset=Word.objects.all())
+    sense = serializers.PrimaryKeyRelatedField(queryset=AISense.objects.all())
 
     class Meta:
-        model = MostForgetWords
+        model = MostForgetWord
         fields = [
             'language',
-            'word',
-            'word_sub_id',
+            'sense',
             'forgot_count',
             'total_count',
             'cached_at',

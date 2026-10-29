@@ -7,4 +7,4 @@ class AISenseMetadataSerializer(BaseModelSerializer):
     class Meta:
         model = AISenseMetadata
         fields = "__all__"
-        read_only_fields = ['id', 'sub_id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']

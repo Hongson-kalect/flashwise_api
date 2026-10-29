@@ -11,11 +11,11 @@ class EntityTagSerializer(BaseModelSerializer):
     class Meta:
         model = EntityTag
         fields = [
-            'id', 'sub_id',
+            'id',
             'tag', 'entityId', 'entityType', 'entity_type_display',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'sub_id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
     def get_entity_type_display(self, obj):
         return dict(EntityTag._meta.get_field('entityType').choices).get(obj.entityType)

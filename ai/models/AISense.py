@@ -22,12 +22,24 @@ class AISense(BaseModel):
 
     pos = models.CharField(max_length=20, blank=True, null=True)
     level = models.CharField(max_length=20, blank=True, null=True)
-    register = ArrayField(default=list, base_field=models.CharField(max_length=50))
+    register = ArrayField(default=list, base_field=models.CharField(max_length=50), blank=True)
     ipas = models.JSONField(default=list) # {label, audio, value, reading, roman, ruby}
+
+    # --- Nguồn gốc nội dung AI (pipeline sinh 2 lần: draft -> refine rồi mới ghi db) ---
+    QUALITY_CHOICES = [
+        ('draft', 'Draft'),       # Mới qua lần 1
+        ('refined', 'Refined'),   # Đã qua lần 2 (AI tự kiểm tra, sửa)
+        ('verified', 'Verified'), # Admin / cộng đồng xác nhận đúng
+        ('flagged', 'Flagged'),   # Bị report hoặc vote xấu, cần xem lại
+    ]
+    quality_status = models.CharField(max_length=20, choices=QUALITY_CHOICES, default='draft', db_index=True)
+    ai_pass = models.SmallIntegerField(default=1) # Số lần AI đã xử lý nội dung này
+    ai_model = models.CharField(max_length=100, blank=True, null=True) # Model của lần xử lý cuối, vd: gemini-2.5-flash
+    ai_review = models.JSONField(default=dict, blank=True) # Lần 2 trả về: các chỗ đã sửa, lý do, điểm tự đánh giá
+    source_refs = models.JSONField(default=list, blank=True) # Dữ liệu đối chiếu đã đưa vào prompt, vd: [{"source": "wiktionary", "id": "..."}]
 
     voted = models.IntegerField(default=0)
     devoted = models.IntegerField(default=0)
-    likes = models.IntegerField(default=0)
     views = models.IntegerField(default=0)
 
 

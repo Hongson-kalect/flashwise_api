@@ -11,7 +11,6 @@ class MostLikeCollectionSerializer(serializers.ModelSerializer):
         fields = [
             'language',
             'collection',
-            'collection_sub_id',
             'like_count',
             'total',
             'cached_at',

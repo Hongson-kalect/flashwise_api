@@ -5,7 +5,15 @@ class AIWord(BaseModel):
     # Bỏ db_index=True ở đây vì đã có trong phần indexes bên dưới
     value = models.CharField(max_length=255) 
     language_code = models.CharField(max_length=10, default="en") # Nên có default rõ ràng
-    status = models.CharField(max_length=50, default='PENDING') # Luồng chuẩn: PENDING -> PROCESSING -> COMPLETED
+    # Luồng chuẩn: PENDING -> PROCESSING -> COMPLETED, lỗi thì FAILED, từ không hợp lệ thì REJECTED
+    STATUS_CHOICES = [
+        ('PENDING', 'Pending'),
+        ('PROCESSING', 'Processing'),
+        ('COMPLETED', 'Completed'),
+        ('FAILED', 'Failed'),
+        ('REJECTED', 'Rejected'),
+    ]
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='PENDING')
     description = models.TextField(null=True, blank=True)
 
     class Meta:

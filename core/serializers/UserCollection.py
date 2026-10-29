@@ -14,5 +14,5 @@ class UserCollectionSerializer(BaseModelSerializer):
 
     class Meta:
         model = UserCollection
-        fields = ['id', 'sub_id','collection', 'created_at', 'updated_at', 'items','learned_count']
-        read_only_fields = ['id', 'sub_id','collection', 'created_at', 'updated_at', 'items']
+        fields = ['id', 'collection', 'created_at', 'updated_at', 'items','learned_count']
+        read_only_fields = ['id', 'collection', 'created_at', 'updated_at', 'items']

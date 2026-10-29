@@ -15,9 +15,11 @@ class Collection(BaseModel):
     released = models.BooleanField(default=False)
     metadatas = ArrayField(base_field=models.JSONField(), blank=True, default=list) # title, description, image, change log,...
     
-    total_likes = models.IntegerField(default=0)
-    total_views = models.IntegerField(default=0)
-    total_downloads = models.IntegerField(default=0)
+    # Tên giống bảng collection phía app
+    like_count = models.IntegerField(default=0)
+    view_count = models.IntegerField(default=0)
+    downloaded_count = models.IntegerField(default=0)
+    is_frozen = models.BooleanField(default=False) # Đóng băng không cho sửa cấu trúc (app đã có cột này)
 
     is_uploaded = models.BooleanField(default=False)
     language_code = models.CharField(max_length=10, blank=True, null=True)

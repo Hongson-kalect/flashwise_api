@@ -15,6 +15,8 @@ class DeviceSerializer(BaseModelSerializer):
             'device_id',
             'os',
             'app_version',
+            'push_token',
+            'device_name',
             'last_seen_at',
         ]
         read_only_fields = BaseModelSerializer.Meta.read_only_fields + ['last_seen_at']

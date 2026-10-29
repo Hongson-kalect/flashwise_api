@@ -12,7 +12,6 @@ class RecommendCollectionSerializer(serializers.ModelSerializer):
         fields = [
             'language',
             'collection',
-            'collection_sub_id',
             'strategy',
             'strategy_display',
             'generated_at',

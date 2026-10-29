@@ -48,6 +48,17 @@ def extract_json_fragment(full_text: str, keyword: str, last_pos: int = 0, start
     
     return None, last_pos
 
+def extract_json_object(full_text: str, keyword: str):
+    """
+    Lấy object JSON đứng ngay sau key (vd "metadata": {...}), None nếu chưa có hoặc chưa stream xong.
+    Khác extract_json_fragment: hàm đó lấy phần tử đầu của MẢNG đứng sau key nên với "metadata" sẽ trả nhầm nghĩa đầu tiên.
+    """
+    match = re.search(f'"{re.escape(keyword)}"\s*:\s*\{{', full_text)
+    if not match:
+        return None
+    return _extract_balanced_structure(full_text, match.end() - 1, "{", "}")
+
+
 def _extract_balanced_structure(text, start_idx, open_char, close_char):
     count = 0
     is_in_string = False

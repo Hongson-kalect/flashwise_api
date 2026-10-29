@@ -228,12 +228,22 @@ def get_user_lang_sense(language_code, user_language_code, contents, sense_id = 
 
     return res, missing
 
+def _has_text(node):
+    if isinstance(node, dict):
+        return bool(node.get('value'))
+    return bool(node)
+
+
 def get_object_lang(obj, language_code, user_language_code):
     # Trả về obj với 2 code value, is_have_translate
     lang_content = obj.get(language_code)
     user_lang_content = obj.get(user_language_code)
 
     if lang_content:
+        if not _has_text(lang_content):
+            # Nội dung gốc rỗng (vd usage không có gì để nói): bước dịch bỏ qua chuỗi rỗng nên không có gì để bù,
+            # coi là đủ, nếu không từ này sẽ trả 206 mãi mãi và không bao giờ được cache
+            return {language_code: lang_content}, True
         if user_lang_content:
             return {
                 language_code: lang_content,

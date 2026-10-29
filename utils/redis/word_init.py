@@ -1,14 +1,55 @@
-import redis
+import time
+
 from redis.commands.json.path import Path
+from utils.redis.client import get_cache_client
 from utils.utils.uuidv7 import generate_uuid7
-from flashcardApi import settings
 
 TTL = 300  # 5 phút
 
+
+def _has_value(node):
+    if isinstance(node, dict):
+        return bool(node.get('value'))
+    return bool(node)
+
+
+def compute_languages(senses, language_code):
+    """
+    Các ngôn ngữ mà MỌI nghĩa đều đã có đủ nội dung (definition, usage, translations, từng example).
+    Lưu cùng cache để get-word biết user_lang đã đủ bản dịch mà không phải duyệt lại toàn bộ nội dung.
+    Nội dung gốc rỗng thì không cần dịch nên không bị tính là thiếu.
+    """
+    final = None
+
+    def intersect(langs):
+        nonlocal final
+        final = set(langs) if final is None else final & set(langs)
+
+    for sense in senses:
+        contents = sense.get('contents') or {}
+        if isinstance(contents, str):
+            import json
+            contents = json.loads(contents)
+
+        for key in ('definition', 'translations'):  # bắt buộc phải có ở mọi nghĩa
+            node = contents.get(key)
+            intersect(node.keys() if isinstance(node, dict) else ())
+
+        usage = contents.get('usage')
+        if isinstance(usage, dict) and _has_value(usage.get(language_code)):
+            intersect(usage.keys())
+
+        for example in contents.get('examples') or []:
+            if isinstance(example, dict) and _has_value(example.get(language_code)):
+                intersect(example.keys())
+
+    return sorted((final or set()) | {language_code})
+
+
 class WordCacheManager:
     def __init__(self):
-        # Đảm bảo cài đặt decode_responses=True để nhận string/dict sạch từ RedisJSON
-        self.r = redis.Redis(host='redis', port=6379, db=1, decode_responses=True)
+        # Client dùng chung của process (decode_responses=True để nhận string/dict sạch từ RedisJSON)
+        self.r = get_cache_client()
 
     def _key(self, language_code, word_val):
         return f"word:{language_code}:{word_val.lower().strip()}"
@@ -29,7 +70,8 @@ class WordCacheManager:
             },
             "senses": {},      # Lưu dạng { sense_id: { image: "...", contents: "...", metadata: "..." ,... } }
             "langs": [user_language_code],
-            "status": "PROCESSING"
+            "status": "PROCESSING",
+            "started_at": time.time(),  # get-word dùng để phát hiện job chết (key bị đọc liên tục nên TTL trượt không tự hết hạn)
         }
 
         try:
@@ -69,36 +111,7 @@ class WordCacheManager:
             # Phòng trường hợp data lỗi không phải list/dict
             senses_dict = {}
 
-        # 3. Lấy list các sense object ra để xử lý tiếp
-        senses = senses_dict.values()
-        print('aaaaaaaaaaaa', data, senses)
-        final_lang_set = None
-
-        for sense in senses:
-            # 1. Lấy contents, phòng thủ nếu contents là string JSON hoặc dict
-            contents = sense.get('contents', {})
-            if isinstance(contents, str):
-                import json
-                contents = json.loads(contents) # Chỉ load nếu là chuỗi string
-                
-            if not contents:
-                continue
-
-            # 2. Quét qua các type (definition, usage, example...) bên trong contents
-            for content_type, lang_dict in contents.items():
-                if not isinstance(lang_dict, dict):
-                    continue
-                    
-                # Lấy ra danh sách ngôn ngữ đang có của type này (ví dụ: {'en', 'vi'})
-                current_type_langs = set(lang_dict.keys())
-
-                # 3. Tiến hành giao tập hợp (Intersection)
-                if final_lang_set is None:
-                    # Lượt đầu tiên: Khởi tạo set gốc
-                    final_lang_set = current_type_langs
-                else:
-                    # Các lượt sau: Chỉ giữ lại ngôn ngữ nào ĐỀU CÓ ở mọi nơi
-                    final_lang_set.intersection_update(current_type_langs)
+        languages = compute_languages(senses_dict.values(), language_code)
 
         redis_data = {
             "word": {
@@ -107,6 +120,7 @@ class WordCacheManager:
                 "language_code": language_code
             },
             "senses": senses_dict,
+            "languages": languages, # user_lang nằm trong đây thì get-word trả luôn, không cần dò thiếu bản dịch
             "status": "CACHED",
         }
 
@@ -144,6 +158,14 @@ class WordCacheManager:
         pipe.json().set(key, Path(f".senses.{sense_id}"), sense_node_data)
         self._pipe_expire(pipe, key)
         pipe.execute()
+
+    def cache_word_remove_sense(self, language_code, word_val, sense_id):
+        """Bỏ 1 nghĩa khỏi cache (bước chuẩn hoá loại nghĩa trùng / sai). Key hết hạn rồi thì bỏ qua."""
+        key = self._key(language_code, word_val)
+        try:
+            self.r.json().delete(key, Path(f".senses.{sense_id}"))
+        except Exception as e:
+            print(f"Redis Remove Sense Error: {e}")
 
     def cache_word_add_metadata(self, language_code, word_val, sense_id, metadata):
         """

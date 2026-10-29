@@ -6,7 +6,12 @@ Backend Django cho Flashwise: app học từ vựng bằng flashcard, cặp ngô
 Django 4.2 + DRF + simplejwt, channels (websocket báo kết quả), Postgres 15 (cần extension pg_trgm), redis-stack (RedisJSON), google-genai. Chạy bằng `docker-compose.yml` (db, redis, web, worker, ai_worker), secret trong `.env` (mẫu: `.env.example`).
 
 ## Luồng chính
-`GET /api/ai-words/get-word/?value&lang&user_lang` (`ai/views/AIWord.py`): Redis cache → Postgres → chưa có thì tạo `AIWord` PROCESSING và đẩy job vào list Redis `redis_word` (thiếu bản dịch thì `redis_trans`). `utils/celery/worker.py` (asyncio, không phải Celery) đọc queue, gọi Gemini (`utils/ai/word_render.py`, `translate.py`, `prompt.py`, `schema.py`), ghi DB theo mẻ qua `db_buffer:*`.
+`GET /api/ai-words/get-word/?value&lang&user_lang` (`ai/views/AIWord.py`): Redis cache (đủ `languages` thì trả luôn) → Postgres (`ai/queries.py`, 2 query) → chưa có thì tạo `AIWord` PROCESSING và đẩy job vào list Redis `redis_word` (thiếu bản dịch thì `redis_trans`, khoá 120s/từ/ngôn ngữ để không đẩy trùng). Từ `REJECTED` trả 404, `FAILED`/PROCESSING quá `WORD_PROCESSING_STALE_SECONDS` được tạo lại trên cùng bản ghi. `utils/celery/worker.py` (asyncio, không phải Celery) đọc queue và chạy `ai_create_new_word_sema` (`utils/ai/word_render.py`).
+
+### Tạo từ 2 bước AI
+1. **Draft** (`GEMINI_API_MODEL`, model rẻ): stream từng nghĩa → socket `PARTIAL_SENSE` + cache ngay cho người tra đầu tiên, song song dịch (`translate.py`) và sinh metadata (`metadata.py`) cho nghĩa đó. Draft không bao giờ vào DB.
+2. **Refine** (`utils/ai/refine.py`, `GEMINI_REFINE_MODELS`, model mạnh hơn): gửi cả bản draft (chỉ ngôn ngữ gốc) để kiểm tra / chuẩn hoá pos, level, register, IPA, ví dụ, bỏ nghĩa trùng; chạy song song với việc dịch của bước 1. Phần bị sửa thì bỏ bản dịch cũ và dịch lại, đổi nghĩa / loại từ thì sinh lại metadata. Sau đó mới ghi DB (`quality_status=refined`, `ai_pass=2`, `ai_model`, `ai_review`). Refine lỗi / tắt (`AI_REFINE_ENABLED=False`) thì lưu draft (`quality_status=draft`).
+- Socket: `PARTIAL_SENSE` (gộp theo id, lần sau cho cùng id là bản chuẩn hoá), `PARTIAL_TRANSLATE`, `PARTIAL_METADATA`, `SENSE_REMOVED` (id nghĩa bị loại), `FULL_SENSE` (chốt, dữ liệu cuối), `REJECTED` / `ERROR` (kết thúc không có nghĩa). Cache Redis `status`: PROCESSING → CACHED / NOT_FOUND / ERROR.
 
 ## App Django
 - `ai`: AIWord, AISense (nội dung đa ngôn ngữ trong JSON `contents`, versioning original/previous, `quality_status`/`ai_pass` cho pipeline sinh 2 lần), AISenseMetadata, TranslateLog
@@ -25,6 +30,7 @@ Django 4.2 + DRF + simplejwt, channels (websocket báo kết quả), Postgres 15
 Dùng skill `backend-verify` (check, makemigrations, test trong Docker, commit giữ đúng CRLF/LF).
 
 ## Còn dở
-- Chưa có sync API cho progress / review log / note (model + serializer đã có).
-- Chưa có pipeline sinh 2 lần (mới có trường), chưa có thuật toán FSRS.
-- `AIWord.get_word` còn đoạn code chết sau các `return`.
+- Tiếng Nhật (`complex_schema`) và `nonlatin_schema` trả `entries[].senses[]` lồng nhau, bộ đọc stream chỉ hiểu `senses[]` phẳng nên ja chưa ra nghĩa; zh/ko/... đang dùng schema phẳng (chưa có reading / ruby / roman).
+- Code Celery cũ (`utils/celery/word.py`, `utils/utils/ai.py`, `ai_create_new_word` trong word_render.py, service `worker` trong compose) không còn được get-word dùng và đã hỏng (sai chữ ký `render_word_prompt`), có thể xoá.
+- Mỗi nghĩa vẫn gọi riêng 1 lần dịch + 1 lần metadata; có thể gom theo từ khi không cần hiện từng nghĩa ngay.
+- Chưa có sync API cho progress / review log / note (model + serializer đã có), chưa có thuật toán FSRS.

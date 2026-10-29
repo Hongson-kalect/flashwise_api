@@ -1,39 +1,33 @@
-from datetime import datetime
-from operator import ne
+import logging
+import time
 from urllib.parse import unquote
-import asyncio
-from importlib import metadata
-import threading
-from asgiref.sync import async_to_sync, sync_to_async
-from rest_framework import viewsets, status
-from rest_framework.response import Response
+
+from django.conf import settings
+from django.utils import timezone
+from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAdminUser
-from utils.utils.permissions import IsAdminOrReadOnly, WordGenerateThrottle, get_request_user
+from rest_framework.response import Response
+
 from ai.models.AISense import AISense
 from ai.models.AISenseContent import AISenseContent
 from ai.models.AISenseMetadata import AISenseMetadata
-from ai.models.TranslateLog import TranslateLog
-from core.models import ImageLibrary, ImageContext, ImageLibraryContext
 from ai.models.AIWord import AIWord
-from django.db.models import Prefetch, Window, F, Q
-from django.db.models.functions import RowNumber
+from ai.models.TranslateLog import TranslateLog
+from ai.queries import load_word
 from ai.serializers.AIWord import AIWordSerializer
-from core.models import Language, Collection, CollectionItem
-from utils.celery.word import ai_create_new_word_task
-from utils.utils import uuidv7
-from utils.utils.ai import ai_create_new_word, render_translate
-from utils.utils.background_task import background_task
-from utils.utils.flatten_id import flatten_ids_by_langs
-from utils.utils.limit_prefetch import limit_prefetch
-from utils.utils.sense_handle import serialize_entries, serialize_senses, get_user_lang_content, get_word_lang_content
-from utils.utils.socket import get_safe_room_id, run_async_task, socket_close
-from utils.utils.soft_delete_viewset import SoftDeleteViewSet
-from django.contrib.auth.models import User
+from core.models import Collection, CollectionItem, ImageContext, ImageLibrary, ImageLibraryContext
+from utils.redis.client import acquire_lock, push_job
 from utils.redis.word_init import WordCacheManager
-from utils.ai.translate import ai_create_translate_sema
-import json
-import redis
+from utils.utils.permissions import IsAdminOrReadOnly, WordGenerateThrottle, get_request_user
+from utils.utils.sense_handle import get_user_lang_content
+from utils.utils.soft_delete_viewset import SoftDeleteViewSet
+
+logger = logging.getLogger(__name__)
+
+# Một lần dịch bổ sung cho (từ, ngôn ngữ) chỉ được đẩy vào hàng đợi 1 lần trong khoảng này
+TRANSLATE_LOCK_SECONDS = 120
+
 
 def detect_missing_content(senses, language_code, user_language_code):
     # Kết quả trả về: { "sense_id": { "definition": "...", "examples": [...] } }
@@ -58,13 +52,13 @@ def detect_missing_content(senses, language_code, user_language_code):
         for c_type, j in c_json.items():
             if c_type in ['translations', 'collocations', 'idioms', 'metadata']:
                 continue
-            
+
             # Xử lý Dictionary (definition, usage, pronunciation...)
             if isinstance(j, dict):
                 orig_val = j.get(language_code)
                 if orig_val and not j.get(user_language_code):
                     sense_missing.setdefault(c_type,{})[language_code] = orig_val
-            
+
             # Xử lý List (examples)
             elif isinstance(j, list) and c_type == 'examples':
                 ex_missing = []
@@ -72,7 +66,7 @@ def detect_missing_content(senses, language_code, user_language_code):
                     ex_orig = ex.get(language_code)
                     if ex_orig and not ex.get(user_language_code):
                         ex_missing.append({'index': index, language_code:{'value': ex_orig}})
-                
+
                 if ex_missing:
                     sense_missing['examples'] = ex_missing
 
@@ -82,6 +76,138 @@ def detect_missing_content(senses, language_code, user_language_code):
 
     return missing_data
 
+
+def _word_response(detail, http_status, data=None):
+    return Response({'detail': detail, 'status': str(http_status), 'data': data}, status=http_status)
+
+
+def _queue_translation(word_id, language_code, user_language_code, missing, current_senses):
+    """Đẩy việc dịch phần còn thiếu cho worker, tối đa 1 lần / (từ, ngôn ngữ) trong TRANSLATE_LOCK_SECONDS."""
+    try:
+        if not acquire_lock(f"trans_lock:{word_id}:{user_language_code}", TRANSLATE_LOCK_SECONDS):
+            return
+        push_job("redis_trans", {
+            "word_id": str(word_id),
+            "language_code": language_code,
+            "user_language_code": user_language_code,
+            "missing_translate": missing,
+            "current_senses": current_senses,
+        })
+    except Exception:
+        logger.exception("Không đẩy được job dịch cho word %s", word_id)
+
+
+def _is_stale(started_at, max_age=None):
+    """Job tạo từ chạy quá lâu mà vẫn PROCESSING: worker nhiều khả năng đã chết."""
+    if not started_at:
+        return False
+    return time.time() - started_at > (max_age or settings.WORD_PROCESSING_STALE_SECONDS)
+
+
+def _respond_from_cache(cache_manager, cached, word, language_code, user_language_code):
+    state = cached.get('status')
+    cached_word = cached.get('word') or {}
+    senses = cached.get('senses') or {}
+
+    if state == 'CACHED':
+        data = {**cached_word, "senses": senses}
+
+        # Đường nhanh: mọi nghĩa đã có đủ bản dịch cho ngôn ngữ này -> không cần dò thiếu nội dung
+        if user_language_code in (cached.get('languages') or []):
+            return _word_response('CACHED', 200, data)
+
+        _, missing, current_senses = get_user_lang_content(
+            language_code, user_language_code, {**cached_word, "senses": list(senses.values())}
+        )
+        if missing:
+            _queue_translation(cached_word.get('id'), language_code, user_language_code, missing, current_senses)
+            return _word_response('CACHED', 206, data)
+        return _word_response('CACHED', 200, data)
+
+    if state == 'ERROR':
+        return _word_response('ERROR', 500, cached)
+
+    if state == 'NOT_FOUND':
+        return _word_response('NOT_FOUND', 404, cached)
+
+    # PROCESSING (và các trạng thái trung gian): người tra sau vào chờ chung, nhớ đăng ký ngôn ngữ của họ để job đang chạy dịch luôn
+    if user_language_code not in (cached.get('langs') or []):
+        cache_manager.cache_word_add_translate(language_code, word, user_language_code)
+    return _word_response('PROCESSING', 202, cached)
+
+
+def _respond_completed(cache_manager, word_instance, word, language_code, user_language_code):
+    data = AIWordSerializer(word_instance).data
+    senses, missing, current_senses = get_user_lang_content(language_code, user_language_code, data)
+    senses_by_id = {sense.get('id'): sense for sense in senses}
+    body = {**data, "senses": senses_by_id}
+
+    if missing:
+        # Trả phần đã có ngay, phần thiếu dịch xong sẽ về qua socket
+        _queue_translation(word_instance.id, language_code, user_language_code, missing, current_senses)
+        return _word_response('Word incomplete.', 206, body)
+
+    cache_manager.cache_word(language_code, word_instance.id, word, senses_by_id)
+    return _word_response('DATABASE_DATA', 200, body)
+
+
+def _join_processing(cache_manager, word_instance, word, language_code, user_language_code):
+    """DB nói đang tạo nhưng cache đã hết hạn: dựng lại cache (đúng id trong DB) để người tra này chờ qua socket."""
+    created, init_data = cache_manager.cache_word_init(language_code, word, user_language_code)
+    if created:
+        init_data['word']['id'] = str(word_instance.id)
+        cache_manager.cache_word_set_word(language_code, word, init_data['word'])
+    elif user_language_code not in (init_data.get('langs') or []):
+        cache_manager.cache_word_add_translate(language_code, word, user_language_code)
+    return _word_response('PROCESSING', 202, init_data)
+
+
+def _start_generation(request, cache_manager, word, language_code, user_language_code, existing):
+    """Từ chưa có (hoặc lần tạo trước lỗi / treo): đẩy job tạo từ cho worker. existing là bản ghi AIWord cũ nếu có."""
+    created, init_data = cache_manager.cache_word_init(language_code, word, user_language_code)
+    cached_word = init_data.get('word')
+
+    # Có người khởi tạo trước, vào chờ chung
+    if not created:
+        if user_language_code not in (init_data.get('langs') or []):
+            cache_manager.cache_word_add_translate(language_code, word, user_language_code)
+        return _word_response('PROCESSING', 202, init_data)
+
+    # Mỗi từ mới là 2 lần gọi AI (draft + refine) cộng dịch / metadata, nên giới hạn theo người dùng / IP
+    if not WordGenerateThrottle().allow_request(request, None):
+        cache_manager.cache_word_clear_specific(language_code, word)
+        return Response(
+            {'detail': 'Too many new words, try again later', 'errorCode': 'word_generate_throttled'},
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+
+    try:
+        if existing is None:
+            word_instance = AIWord.objects.create(**cached_word, created_by=get_request_user(request), status="PROCESSING")
+        else:
+            # Dùng lại bản ghi cũ: tạo mới sẽ vi phạm unique (value, language_code)
+            existing.status = "PROCESSING"
+            existing.save(update_fields=['status', 'updated_at'])
+            word_instance = existing
+            cached_word['id'] = str(existing.id)
+            cache_manager.cache_word_set_word(language_code, word, cached_word)
+
+        push_job("redis_word", {
+            "user_id": str(get_request_user(request).id),
+            "word_id": str(word_instance.id),
+            "value": word,
+            "language_code": language_code,
+            "user_language_code": user_language_code,
+        })
+    except Exception:
+        logger.exception("Không khởi tạo được việc tạo từ %s", word)
+        cache_manager.cache_word_clear_specific(language_code, word)
+        AIWord.objects.filter(value=word, language_code=language_code).exclude(status='COMPLETED').update(status='FAILED')
+        return Response({'detail': 'Service unavailable, try again later'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    return _word_response('PROCESSING', 201, {**cached_word, "senses": init_data.get('senses')})
+
+
 class AIWordViewSet(SoftDeleteViewSet):
     queryset = AIWord.objects.all()
     serializer_class = AIWordSerializer
@@ -89,14 +215,14 @@ class AIWordViewSet(SoftDeleteViewSet):
     permission_classes = [IsAdminOrReadOnly]
 
     @action(detail=False, methods=['get'], url_path='get-word')
-    def get_word(self, request, pk=None, *args, **kwargs):
-        start_time = datetime.now()
-        cache_manager = WordCacheManager()
+    def get_word(self, request, *args, **kwargs):
+        """
+        params: value, lang, user_lang. App kết nối socket theo md5(word)+lang để nhận nghĩa khi đang tạo.
 
-
-        # params: value, lang, user_lang
-        # client create socket connect with word(md5)+language+user_language
-        user = get_request_user(request)
+        Thứ tự: cache Redis -> DB -> tạo mới bằng AI (draft rồi refine, xem utils/ai/word_render.py).
+        200 đủ dữ liệu, 206 thiếu bản dịch (đang dịch bù), 201 vừa nhận việc tạo từ, 202 đang tạo,
+        404 từ không hợp lệ, 429 tạo từ mới quá nhiều, 500 lần tạo lỗi.
+        """
         raw_word = request.GET.get('value')
         language_code = request.GET.get('lang')
         user_language_code = request.GET.get('user_lang')
@@ -106,305 +232,33 @@ class AIWordViewSet(SoftDeleteViewSet):
         word = unquote(raw_word).strip().lower()
         if not word or len(word) > 100 or len(language_code) > 10 or len(user_language_code) > 10:
             return Response({'detail': 'Invalid word or language code'}, status=status.HTTP_400_BAD_REQUEST)
-        socket_room = get_safe_room_id(word, language_code) 
-        # socket_room = 'test'
 
-        # Lấy dữ liệu trong redis
+        cache_manager = WordCacheManager()
         cached = cache_manager.cache_word_get_data(language_code, word)
 
+        if cached and cached.get('status') == 'PROCESSING' and _is_stale(cached.get('started_at')):
+            # Key bị đọc liên tục nên TTL không tự hết; job chết thì bỏ key để đi tiếp xuống DB và tạo lại
+            cache_manager.cache_word_clear_specific(language_code, word)
+            cached = None
+
         if cached:
-            # Nếu full thì trực tiếp lấy dữ liệu và return
-            if cached.get('status') == 'CACHED':
-                cached_senses = cached.get('senses')
-                cached_word = cached.get('word')
+            return _respond_from_cache(cache_manager, cached, word, language_code, user_language_code)
 
-                # Cân nhắc lưu 1 array nơi các ngôn ngữ đã có đủ bản dịch bên trong senses, 
-                # Ưu điểm: khi này thì sẽ không cần detect missing nữa.
-                # Nhược: khi lưu vào cache, admin edit sẽ phải kiểm tra hết 1 lượt, không cache custom sense
-                # khi custom sense thì
-                # languages = cached.get('languages')
+        word_instance = load_word(value=word, language_code=language_code)
 
-                # if user_language_code not in languages:
-                #     word_lang_content, missing_contents = get_word_lang_content(language_code, cached_word)
-                #     asyncio.create_task(ai_create_translate_sema({
-                #         "word_value": word,
-                #         "language_code": language_code,
-                #         "user_language_code": user_language_code,
-                #         "sense_info": missing_contents
-                #     }, False))
-                #     # return language_code val, run translate and send from socket
-                #     return Response({'detail': 'CACHED, NEW TRANSLATED', 'status': '201', 'data':word_lang_content}, status=status.HTTP_201_CREATED)
-                cached_senses_list = list(cached_senses.values())
-                
-                senses, missing_contents, current_senses = get_user_lang_content(language_code, user_language_code, {**cached_word, "senses": cached_senses_list})
+        if word_instance is not None:
+            state = word_instance.status
+            if state == 'REJECTED':
+                return _word_response('NOT_FOUND', 404, {'value': word, 'language_code': language_code})
+            if state == 'COMPLETED':
+                return _respond_completed(cache_manager, word_instance, word, language_code, user_language_code)
+            if state != 'FAILED':
+                updated_at = word_instance.updated_at or word_instance.created_at
+                stale = updated_at is None or (timezone.now() - updated_at).total_seconds() > settings.WORD_PROCESSING_STALE_SECONDS
+                if not stale:
+                    return _join_processing(cache_manager, word_instance, word, language_code, user_language_code)
 
-                if missing_contents:
-                    # Unique (word, user_language_code with 1 status PROCESSING allowed)
-                    try:
-                        r_queue = redis.Redis(host='redis', port=6379, db=0)
-
-                        # Đẩy vào queue "redis_word"
-                        r_queue.rpush("redis_trans", json.dumps({
-                            "word_id": str(cached_word.get('id')),
-                            "language_code": language_code,
-                            "user_language_code": user_language_code,
-                            "missing_translate": missing_contents,
-                            "current_senses": current_senses
-                        }))
-                        # translate_instance = TranslateLog.objects.create(word=word_instance, language_code=user_language_code, status="PROCESSING")
-                        # background_task(render_translate(user, translate_instance, word, senses_instance, missing_contents , need_translation, language_code, user_language_code, socket_room))
-                    except Exception as e:
-                        print("Error", e)
-                    return Response({'detail': 'CACHED', 'status': '200', "data":{**cached_word, "senses": cached_senses}}, status=status.HTTP_206_PARTIAL_CONTENT)
-
-                return Response({'detail': 'CACHED', 'status': '200', "data":{**cached_word, "senses": cached_senses}}, status=status.HTTP_200_OK)
-                # return language_code val, run translate and send from socket
-                return Response({'detail': 'CACHED, NEW TRANSLATED', 'status': '201', 'data':word_lang_content}, status=status.HTTP_201_CREATED)
-            # Nếu có dữ liệu nhưng không full thì duy trì socket và trả về init
-            elif cached.get('status') == 'PROCESSING':
-                return Response({'detail': 'PROCESSING', 'status': '202', 'data':cached}, status=status.HTTP_202_ACCEPTED)
-            
-            elif cached.get('status') == 'ERROR':
-                return Response({'detail': 'ERROR', 'status': '500', 'data':cached}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            
-            elif cached.get('status') == 'NOT_FOUND':
-                return Response({'detail': 'NOT_FOUND', 'status': '404', 'data':cached}, status=status.HTTP_404_NOT_FOUND)
-            
-        else:
-            # Nếu chưa có dữ liệu thì lấy lấy dữ liệu từ db
-            sense_filter = Q(is_official=True)
-            # sense_filter = Q(is_official=True) | Q(created_by=user) | Q(updated_by=user)
-
-            # 2. Prefetch Logs - Chỉ lấy cái mới nhất đang PROCESSING
-            # Thay vì Window function, ta dùng order_by thông thường
-            log_qs = TranslateLog.objects.filter(
-                language_code=user_language_code, 
-                status="PROCESSING"
-            ).order_by('-created_at')
-
-            # 3. Prefetch Senses
-            sense_qs = AISense.objects.filter(is_official=True).select_related('metadata').order_by('is_official')
-
-            # 4. Gộp vào query chính
-            word_instance = AIWord.objects.filter(value=word, language_code=language_code).prefetch_related(
-                Prefetch('senses', queryset=sense_qs, to_attr='prefetched_senses')
-            ).first()
-
-            # Nếu từ này chưa được khởi tạo ở db
-            if not word_instance or word_instance.status == 'FAILED':
-                # Sắp gọi AI tạo từ mới -> giới hạn theo user / IP
-                throttle = WordGenerateThrottle()
-                if not throttle.allow_request(request, self):
-                    return Response({'detail': 'Too many new words, try again later', 'errorCode': 'word_generate_throttled'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
-
-                created, init_data = cache_manager.cache_word_init(language_code, word, user_language_code)
-                cached_word = init_data.get('word')
-                cached_senses = init_data.get('senses')
-
-                # Nếu có người khác khởi tạo trước, trả về và chờ
-                if not created:
-                    print("Word is processing")
-                    cache_manager.cache_word_add_translate(language_code, word, user_language_code)
-                    return Response({'detail': 'PROCESSING', 'status': '202', 'data':{**cached_word, "senses": cached_senses}}, status=status.HTTP_202_ACCEPTED)
-
-                word_instance = AIWord.objects.create(
-                **init_data.get('word'),
-                created_by=user,
-                status= "PROCESSING"
-                )
-                
-                # Kết nối tới DB 0 (Làn đường xử lý)
-                r_queue = redis.Redis(host='redis', port=6379, db=0)
-
-                # Đẩy vào queue "redis_word"
-                r_queue.rpush("redis_word", json.dumps({
-                    "user_id": str(user.id),
-                    "word_id": str(word_instance.id),
-                    "value": word,
-                    "language_code": language_code,
-                    "user_language_code": user_language_code
-                }))
-                # r_queue.rpush("redis_word", json.dumps(raw_word))
-                
-                print(f"[QUEUE] Pushed word '{word}' to redis_word queue")
-                # ---------------------------------------------
-                # GỌI CELERY: Bọc phát mất hút ở đây
-                # ai_create_new_word_task.delay(
-                #     user.id, 
-                #     word_instance.id, 
-                #     language_code, 
-                #     user_language_code, 
-                #     socket_room
-                # )
-                # ai_create_new_word(user.id, word_instance.id, language_code, user_language_code, socket_room)
-                return Response({'detail': 'PROCESSING', 'status': '202', 'data': {**cached_word, "senses": cached_senses}}, status=status.HTTP_201_CREATED)
-           
-            # Đây là nếu từ đã tồn tại trong db
-            else:
-                # pass
-                senses_instance = word_instance.prefetched_senses
-                # entries = serialize_entries(senses_instance)
-                # word_instance.processed_entries = entries
-
-                data = AIWordSerializer(word_instance).data
-
-                senses, missing_contents, current_senses = get_user_lang_content(language_code, user_language_code, data)
-
-                # Content missing. Return current, generate new and send via socket
-                if missing_contents:
-                    # Unique (word, user_language_code with 1 status PROCESSING allowed)
-                    try:
-                        print(missing_contents)
-                        # Kết nối tới DB 0 (Làn đường xử lý)
-                        r_queue = redis.Redis(host='redis', port=6379, db=0)
-
-                        # Đẩy vào queue "redis_word"
-                        r_queue.rpush("redis_trans", json.dumps({
-                            "word_id": str(word_instance.id),
-                            "language_code": language_code,
-                            "user_language_code": user_language_code,
-                            "missing_translate": missing_contents,
-                            "current_senses": current_senses
-                        }))
-                        # translate_instance = TranslateLog.objects.create(word=word_instance, language_code=user_language_code, status="PROCESSING")
-                        # background_task(render_translate(user, translate_instance, word, senses_instance, missing_contents , need_translation, language_code, user_language_code, socket_room))
-                    except Exception as e:
-                        print("Error", e)
-                        pass
-
-                    # Keep connect with socket to get result
-                    return Response({'detail': 'Word incomplete.', 'status': '206', 'data': {**data, "senses": {sense.get('id'):sense for sense in senses}}}, status=status.HTTP_206_PARTIAL_CONTENT)
-
-                cache_manager.cache_word(language_code, word_instance.id, word, {sense.get('id'):sense for sense in senses})
-
-                # Word ok, return data, close socket
-                return Response({'detail':"DATABASE_DATA","data":{**data, "senses": {sense.get('id'):sense for sense in senses}}}, status=status.HTTP_200_OK)
-
-                # Get original senses
-                # Tiến hành merge, kiểm tra đủ bản dịch hay chưa, delay translate
-                # Lưu vào redis
-                # Trả dữ liệu về 
-                
-
-
-            # 5. Sử dụng sau đó (Cực nhanh vì là list Python)
-            if word_instance:
-                translating = word_instance.active_logs[0] if word_instance.active_logs else None
-
-        if not created:
-                print("Word is processing")
-                cache_manager.cache_word_add_translate(language_code, word, user_language_code)
-                return Response({'detail': 'PROCESSING', 'status': '202', 'data':init_data}, status=status.HTTP_202_ACCEPTED)
-        # Nếu có thì lưu vào redis và trả về full, detect thiếu bản dịch thì duy trì socket, delay dịch
-        # Nếu chưa có thì tạo bản ghi mới trong redis, nếu sucess thì tạo bản ghi vào word, delay tạo
-        # #
-
-        # 1. Định nghĩa bộ lọc Sense
-        sense_filter = Q(is_official=True) | Q(created_by=user) | Q(updated_by=user)
-
-        # 2. Prefetch Logs - Chỉ lấy cái mới nhất đang PROCESSING
-        # Thay vì Window function, ta dùng order_by thông thường
-        log_qs = TranslateLog.objects.filter(
-            language_code=user_language_code, 
-            status="PROCESSING"
-        ).order_by('-created_at')
-
-        # 3. Prefetch Senses
-        sense_qs = AISense.objects.filter(sense_filter).select_related('metadata', 'previous').order_by('-updated_at')
-
-        # 4. Gộp vào query chính
-        word_instance = AIWord.objects.filter(value=word, language_code=language_code).prefetch_related(
-            Prefetch('translate_logs', queryset=log_qs, to_attr='active_logs'),
-            Prefetch('senses', queryset=sense_qs, to_attr='prefetched_senses')
-        ).first()
-
-        # 5. Sử dụng sau đó (Cực nhanh vì là list Python)
-        if word_instance:
-            senses_instance = word_instance.prefetched_senses # Thay vì .senses.all()
-            translating = word_instance.active_logs[0] if word_instance.active_logs else None
-
-        # Word not found: Generate new word, return not found. send data via socket when finish
-        if not word_instance or word_instance.status == 'FAILED':
-
-            created, init_data = cache_manager.cache_word_init(language_code, word, user_language_code)
-
-            if init_data.get('status') == 'REDIS-CACHED':
-                return Response({'detail': 'REDIS-CACHED', 'status': '200', 'data':init_data}, status=status.HTTP_200_OK)
-
-            if not created:
-                print("Word is processing")
-                cache_manager.cache_word_add_translate(language_code, word, user_language_code)
-                return Response({'detail': 'PROCESSING', 'status': '202', 'data':init_data}, status=status.HTTP_202_ACCEPTED)
-
-            word_instance = AIWord.objects.create(
-            **init_data.get('word'),
-            created_by=user,
-            status= "PROCESSING"
-            )
-
-            # GỌI CELERY: Bọc phát mất hút ở đây
-            # sửa lại, bỏ content, lưu toàn bộ ở bảng sense, dùng cơ chế origin-delta
-            ai_create_new_word_task.delay(
-                user.id, 
-                word_instance.id, 
-                language_code, 
-                user_language_code, 
-                socket_room
-            )
-            # ai_create_new_word(user.id, word_instance.id, language_code, user_language_code, socket_room)
-            return Response({'detail': 'PROCESSING', 'status': '202', 'data': init_data}, status=status.HTTP_202_ACCEPTED)
-           
-
-        # Word is processing, return not found. send data via socket when finish
-        if word_instance.status == 'PROCESSING':
-            # Keep connect with socket to get result
-            return Response({'detail': 'PROCESSING', 'status': '202'}, status=status.HTTP_202_ACCEPTED)
-        
-        if word_instance.status == 'REJECTED':
-            # kill socket connect
-            return Response({'detail': 'Rejected', 'status': '400'}, status=status.HTTP_400_BAD_REQUEST)
-
-        target_langs = [language_code, user_language_code]
-
-        content_ids = set()
-        for sense in senses_instance:
-            if sense.contents:
-                # Chỉ nhặt ID của en và vi, bỏ qua tất cả các ngôn ngữ khác trong JSON
-                content_ids.update(flatten_ids_by_langs(sense.contents, target_langs))
-
-
-        translating = word_instance.translate_logs.first()
-
-        contents = AISenseContent.objects.filter(id__in=content_ids)
-        # senses = serialize_senses(senses_instance, contents, language_code, user_language_code)
-        # entries = serialize_entries(senses)
-        # word_instance.processed_entries = entries
-
-
-        data = AIWordSerializer(word_instance).data
-
-        if translating and translating.status == 'PROCESSING':
-            return Response({"data":data,'detail': 'Word incomplete.', 'status': '206', 'data': data}, status=status.HTTP_206_PARTIAL_CONTENT)
-
-        else:
-            [missing_contents,need_translation] = detect_missing_content(senses_instance, contents, language_code, user_language_code)
-
-
-            # Content missing. Return current, generate new and send via socket
-            if missing_contents or need_translation:
-                # Unique (word, user_language_code with 1 status PROCESSING allowed)
-                try:
-                    translate_instance = TranslateLog.objects.create(word=word_instance, language_code=user_language_code, status="PROCESSING")
-                    background_task(render_translate(user, translate_instance, word, senses_instance, missing_contents , need_translation, language_code, user_language_code, socket_room))
-                except:
-                    pass
-
-                # Keep connect with socket to get result
-                return Response({"data":data,'detail': 'Word incomplete.', 'status': '206', 'data': data, 'missing_contents': missing_contents}, status=status.HTTP_206_PARTIAL_CONTENT)
-
-            # Word ok, return data, close socket
-            return Response({"data":data}, status=status.HTTP_200_OK)
-            # client close socket
+        return _start_generation(request, cache_manager, word, language_code, user_language_code, word_instance)
 
     @action(detail=False, methods=['delete'], url_path='clear', permission_classes=[IsAdminUser])
     def clear(self, request):
@@ -427,25 +281,15 @@ class AIWordViewSet(SoftDeleteViewSet):
             cache.cache_word_clear_all()
 
             return Response(
-                {"message": "Đã xoá sạch dữ liệu trên các bảng được chỉ định!"}, 
+                {"message": "Đã xoá sạch dữ liệu trên các bảng được chỉ định!"},
                 status=status.HTTP_200_OK
             )
         except Exception as e:
             return Response(
-                {"error": str(e)}, 
+                {"error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
     def get_queryset(self):
-        # Nếu muốn lọc theo người dùng hoặc trạng thái
-        queryset = super().get_queryset()
-        user = self.request.user if self.request.user.is_authenticated else None
-
-        # Ví dụ: chỉ lấy các Word đang hoạt động
-        queryset = queryset.filter(is_active=True)
-
-        # Nếu muốn lọc theo người tạo (nếu có trường user), bạn có thể thêm:
-        # if user:
-        #     queryset = queryset.filter(user=user)
-
-        return queryset
+        # Chỉ lấy các Word đang hoạt động
+        return super().get_queryset().filter(is_active=True)

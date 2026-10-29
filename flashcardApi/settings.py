@@ -125,6 +125,17 @@ CHANNEL_LAYERS = {
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 GEMINI_API_MODEL = ["gemini-2.5-flash-lite","gemini-3.1-flash-lite","gemini-2.5-flash-lite","gemini-3.1-flash-lite"]
 
+# --- Tạo từ bằng AI theo 2 bước: draft (model rẻ, stream cho người tra đầu tiên) -> refine (model mạnh hơn kiểm tra / chuẩn hoá, rồi mới ghi DB) ---
+AI_REFINE_ENABLED = os.getenv('AI_REFINE_ENABLED', 'True').lower() in ('1', 'true', 'yes')
+GEMINI_REFINE_MODELS = [m.strip() for m in os.getenv('GEMINI_REFINE_MODELS', 'gemini-2.5-flash,gemini-2.5-flash-lite').split(',') if m.strip()]
+AI_REFINE_THINKING_BUDGET = int(os.getenv('AI_REFINE_THINKING_BUDGET', '1024'))
+AI_REFINE_TIMEOUT = int(os.getenv('AI_REFINE_TIMEOUT', '60')) # giây cho mỗi model, quá hạn thì thử model kế tiếp rồi giữ bản draft
+# Từ ở trạng thái PROCESSING quá lâu mà không có cache (worker chết) thì coi như lỗi và tạo lại
+WORD_PROCESSING_STALE_SECONDS = int(os.getenv('WORD_PROCESSING_STALE_SECONDS', '600'))
+
+REDIS_HOST = os.getenv('REDIS_HOST', 'redis')
+REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))
+
 ROOT_URLCONF = 'flashcardApi.urls'
 
 TEMPLATES = [

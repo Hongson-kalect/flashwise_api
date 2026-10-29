@@ -7,6 +7,7 @@ class UserNote(BaseModel):
 
     content = models.TextField() # Nội dung ghi chú của user
     version = models.IntegerField(default=0)
+    client_updated_at = models.DateTimeField(null=True, blank=True) # Giờ sửa theo máy client, dùng để chọn bản mới hơn khi sync (updated_at do server gán nên không so được)
 
     class Meta:
         db_table = "user_note"

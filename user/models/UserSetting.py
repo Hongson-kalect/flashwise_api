@@ -9,6 +9,7 @@ class UserSetting(BaseModel):
     
     # 🛠️ LINH HOẠT: Lưu value dưới dạng JSONField để chứa được cả chuỗi, số, boolean hoặc object phức tạp
     value = models.JSONField(null=True, blank=True)
+    client_updated_at = models.DateTimeField(null=True, blank=True) # Giờ sửa theo máy client, dùng để chọn bản mới hơn khi sync (updated_at do server gán nên không so được)
 
     class Meta:
         db_table = "user_setting"

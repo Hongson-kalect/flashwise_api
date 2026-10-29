@@ -10,6 +10,7 @@ class ProfileSerializer(BaseModelSerializer):
 
     gender_display = serializers.CharField(source='get_gender_display', read_only=True)
     tier_display = serializers.CharField(source='get_tier_display', read_only=True)
+    is_active = serializers.BooleanField(read_only=True) # Không để client tự mở khoá tài khoản bị chặn
 
 
     class Meta(BaseModelSerializer.Meta):

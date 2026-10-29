@@ -3,7 +3,7 @@ import uuid
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Count, Max, Q
+from django.db.models import Count, F, Max, Q
 from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -14,6 +14,7 @@ from ai.models import AISense, AIWord
 from ai.validators import is_lang, is_uuid
 from core.models import Collection, CollectionItem, UserCollection
 from core.queries import visible_collections
+from interact.models import UserInteraction
 from core.serializers.Collection import (
     CollectionBasicSerializer, CollectionDetailSerializer, CollectionListSerializer, CollectionSerializer,
 )
@@ -151,6 +152,23 @@ class CollectionViewSet(SoftDeleteViewSet):
             CollectionItem.objects.bulk_create(make_items(collection.id, [senses[sense_id] for sense_id in sense_ids], 0, user))
 
         return Response({"user_collection": user_collection.id, **serializer.data}, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post', 'delete'], permission_classes=[IsAuthenticated])
+    def like(self, request, pk=None):
+        """POST: thích bộ từ, DELETE: bỏ thích. Gọi lại nhiều lần không đếm trùng. Trả {liked, like_count}."""
+        collection = self.get_object()
+        want = request.method == 'POST'
+        with transaction.atomic():
+            interaction, _ = UserInteraction.objects.select_for_update().get_or_create(
+                user=request.user, interaction_type='like', target_type='collection', target_id=collection.pk,
+                defaults={'status': False},
+            )
+            if bool(interaction.status) != want:
+                interaction.status = want
+                interaction.save(update_fields=['status', 'updated_at'])
+                Collection.objects.filter(pk=collection.pk).update(like_count=F('like_count') + (1 if want else -1))
+        collection.refresh_from_db(fields=['like_count'])
+        return Response({'liked': want, 'like_count': max(collection.like_count, 0)})
 
     @action(detail=False, methods=['post'], url_path='bulk-create', permission_classes=[IsAuthenticated])
     def create_bulk(self, request, *args, **kwargs):

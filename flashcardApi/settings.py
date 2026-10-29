@@ -190,6 +190,7 @@ REST_FRAMEWORK = {
         'anon': os.getenv('THROTTLE_ANON', '60/minute'),
         'user': os.getenv('THROTTLE_USER', '300/minute'),
         'word_generate': os.getenv('THROTTLE_WORD_GENERATE', '60/hour'),
+        'feedback': os.getenv('THROTTLE_FEEDBACK', '20/day'),
     },
 }
 
@@ -260,3 +261,7 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Phiên bản app: dưới APP_MIN_VERSION thì app buộc người dùng cập nhật (GET /api/app-config/)
+APP_MIN_VERSION = int(os.getenv('APP_MIN_VERSION', '1'))
+APP_LATEST_VERSION = int(os.getenv('APP_LATEST_VERSION', '1'))

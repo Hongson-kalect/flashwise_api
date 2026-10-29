@@ -47,6 +47,7 @@ class UserSenseProgress(UUIDModel):
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True) # Mốc so sánh khi sync 2 chiều
+    client_updated_at = models.DateTimeField(null=True, blank=True) # Giờ sửa theo máy client, dùng để chọn bản mới hơn khi sync (updated_at do server gán nên không so được)
 
     class Meta:
         db_table = "user_sense_progress"

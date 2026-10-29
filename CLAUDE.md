@@ -13,6 +13,11 @@ Django 4.2 + DRF + simplejwt, channels (websocket báo kết quả), Postgres 15
 2. **Refine** (`utils/ai/refine.py`, `GEMINI_REFINE_MODELS`, model mạnh hơn): gửi cả bản draft (chỉ ngôn ngữ gốc) để kiểm tra / chuẩn hoá pos, level, register, IPA, ví dụ, bỏ nghĩa trùng; chạy song song với việc dịch của bước 1. Phần bị sửa thì bỏ bản dịch cũ và dịch lại, đổi nghĩa / loại từ thì sinh lại metadata. Sau đó mới ghi DB (`quality_status=refined`, `ai_pass=2`, `ai_model`, `ai_review`). Refine lỗi / tắt (`AI_REFINE_ENABLED=False`) thì lưu draft (`quality_status=draft`).
 - Socket: `PARTIAL_SENSE` (gộp theo id, lần sau cho cùng id là bản chuẩn hoá), `PARTIAL_TRANSLATE`, `PARTIAL_METADATA`, `SENSE_REMOVED` (id nghĩa bị loại), `FULL_SENSE` (chốt, dữ liệu cuối), `REJECTED` / `ERROR` (kết thúc không có nghĩa). Cache Redis `status`: PROCESSING → CACHED / NOT_FOUND / ERROR.
 
+## API cho app (ngoài get-word và collections)
+- `POST /api/sync/push/` `{changes: {bảng: [dòng]}}` và `GET /api/sync/pull/?tables&limit&cursors={bảng: con trỏ}` (`tracking/sync.py`, `tracking/views/sync.py`). Bảng: user_sense_progress, review_log, day_learn_log, learn_session, user_note, user_settings, user_profile (chỉ push). Luật gộp: progress/note/setting bản `client_updated_at` mới hơn thắng (progress còn xét `last_reviewed_at`), review_log chỉ thêm, day_learn_log lấy max từng bộ đếm, session ghi đè. Push idempotent, dòng sai bị từ chối riêng; pull có tombstone `is_deleted`, con trỏ `thời điểm|id`. Push day_learn_log thì tính lại total_xp / streak của profile (`refresh_stats`, theo múi giờ user).
+- `GET/PATCH /api/me/` (chỉ đổi thông tin cá nhân + ngôn ngữ, `clean_profile`), `GET /api/app-config/` (min_version, public).
+- `POST/DELETE /api/collections/{id}/like/`, `POST /api/reports/`, `POST /api/feedback/` (throttle `feedback` 20/ngày).
+
 ## App Django
 - `ai`: AIWord, AISense (nội dung đa ngôn ngữ trong JSON `contents`, versioning original/previous, `quality_status`/`ai_pass` cho pipeline sinh 2 lần), AISenseMetadata, TranslateLog
 - `core`: Collection, CollectionItem (`display_order`), UserCollection, Language, Quiz, ImageLibrary
@@ -34,4 +39,4 @@ Dùng skill `backend-verify` (check, makemigrations, test trong Docker, commit g
 - `user-collections`: `update-sense` và `delete-sense` chưa chạy được. Cơ chế bản nháp / đã phát hành tạo thêm dòng CollectionItem cho cùng một nghĩa nhưng `unique_together (collection, sense)` cấm; `update-sense` còn gán dict vào FK metadata và `list.append(...)` thành None. Cần quyết định thiết kế (nới ràng buộc hay đổi cách lưu phiên bản) rồi mới sửa; app đang local-first nên chưa gọi.
 - Code Celery cũ (`utils/celery/word.py`, `utils/utils/ai.py`, `ai_create_new_word` trong word_render.py, service `worker` trong compose) không còn được get-word dùng và đã hỏng (sai chữ ký `render_word_prompt`), có thể xoá.
 - Mỗi nghĩa vẫn gọi riêng 1 lần dịch + 1 lần metadata; có thể gom theo từ khi không cần hiện từng nghĩa ngay.
-- Chưa có sync API cho progress / review log / note (model + serializer đã có), chưa có thuật toán FSRS.
+- Chưa có thuật toán FSRS phía server (app tự tính khi chấm thẻ, server chỉ lưu). Chưa sync `user_collection` (tiến độ bộ từ) và `collection_items` của bộ cá nhân.

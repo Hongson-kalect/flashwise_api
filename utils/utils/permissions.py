@@ -82,3 +82,8 @@ class WordGenerateThrottle(SimpleRateThrottle):
         else:
             ident = self.get_ident(request)
         return self.cache_format % {"scope": self.scope, "ident": ident}
+
+
+class FeedbackThrottle(WordGenerateThrottle):
+    """Giới hạn gửi báo cáo / góp ý (chặn spam). Rate: DEFAULT_THROTTLE_RATES['feedback']."""
+    scope = "feedback"

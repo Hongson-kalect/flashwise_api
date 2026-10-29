@@ -12,7 +12,7 @@ class CollectionItem(models.Model):
     original = models.ForeignKey(AISense, on_delete=models.CASCADE, related_name='original_items', null=True) # Khóa UUIDv7 của gốc, không cho sửa thủ công
     sense = models.ForeignKey(AISense, on_delete=models.CASCADE, related_name='sense_items')
     
-    order = models.FloatField(null=True, default=0.0)
+    display_order = models.FloatField(null=True, default=0.0) # Số thực để kéo thả reorder, tên giống cột phía app
     status = models.CharField(max_length=10, null=True, blank=True) # loading, error, invalid, ok
     is_active = models.BooleanField(null=True) # is_active = null : default, True: active, False: deleted
     is_base = models.BooleanField(default=True, null=True)
@@ -32,7 +32,7 @@ class CollectionItem(models.Model):
 
         # Tối ưu hóa Index cho việc truy vấn danh sách từ của 1 bộ
         indexes = [
-            models.Index(fields=['collection','order']),
+            models.Index(fields=['collection','display_order']),
             models.Index(fields=['sense', 'collection'])
         ]
-        ordering = ['order', 'created_at']
+        ordering = ['display_order', 'created_at']

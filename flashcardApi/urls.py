@@ -18,18 +18,11 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
-from utils.utils.get_token import add_bonus_word, add_kanji, add_word, dev_token, fix_data, read_word
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('get-token/', dev_token),
-    path('add-word/', add_word),
-    path('add-bonus-word/', add_bonus_word),
-    path('read-word/', read_word),
-    path('fix-data/', fix_data),
-    path('add-kanji/', add_kanji),
-    
-    # path('api/', include(('core.urls', 'flashcards.urls', 'ai.urls'))),
+
+    path('api/', include('user.urls')),
     path('api/', include('core.urls')),
     path('api/', include('ai.urls')),
 ]

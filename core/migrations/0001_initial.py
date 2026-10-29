@@ -3,6 +3,7 @@
 from django.conf import settings
 import django.contrib.postgres.fields
 import django.contrib.postgres.indexes
+from django.contrib.postgres.operations import TrigramExtension
 import django.core.files.storage
 from django.db import migrations, models
 import django.db.models.deletion
@@ -21,6 +22,8 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        # Bắt buộc cho GinIndex gin_trgm_ops (collection_name_trgm), DB đã bật extension thì bỏ qua
+        TrigramExtension(),
         migrations.CreateModel(
             name='Collection',
             fields=[

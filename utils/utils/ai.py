@@ -14,7 +14,6 @@ from ai import models
 from ai.serializers.AISenseMetadata import AISenseMetadataSerializer
 from ai.serializers.AIWord import AIWordSerializer
 from core.models.Language import Language
-from core.models.Word import Word
 from flashcardApi import settings
 from django.db import transaction
 

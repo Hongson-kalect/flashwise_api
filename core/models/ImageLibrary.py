@@ -1,5 +1,4 @@
 
-from venv import create
 from django.db import models
 from django.db.models import JSONField
 from django.core.files.storage import FileSystemStorage
@@ -8,12 +7,12 @@ import os
 
 from utils.utils import uuidv7
 
-temp_storage = FileSystemStorage(location=os.path.join(settings.MEDIA_ROOT, 'images'))
+from core.storages import image_storage
 
 class ImageLibrary(models.Model):
     id = models.UUIDField(primary_key=True, default=uuidv7.generate_uuid7, editable=False)
 
-    file = models.ImageField(storage=temp_storage, upload_to='v1/', null=True, blank=True)
+    file = models.ImageField(storage=image_storage, upload_to='v1/', null=True, blank=True)
     url = models.URLField(max_length=1000, null=True, db_index=True) # Tăng max_length đề phòng CDN link dài
     thumbnail_url = models.URLField(max_length=1000, null=True, blank=True)
     version = models.IntegerField(default=1)

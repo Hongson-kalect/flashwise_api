@@ -22,6 +22,7 @@ class Image(BaseModel):
     ]
 
     url = models.URLField(max_length=1024)
+    type = models.CharField(max_length=20, choices=TYPE_CHOICES, default="other")
 
     # associated_type = models.CharField(max_length=50, choices=TYPE_CHOICES, default="other")
     # associated_id = models.CharField(max_length=255, null=True, blank=True)

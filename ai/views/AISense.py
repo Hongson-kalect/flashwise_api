@@ -10,7 +10,8 @@ import django.utils.timezone as timezone
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
-from rest_framework.permissions import IsAuthenticatedOrReadOnly, AllowAny
+from rest_framework.permissions import IsAuthenticated
+from utils.utils.permissions import IsAdminOrReadOnly
 from ai.models.AISense import AISense
 from ai.models.AISenseContent import AISenseContent
 from ai.models.AISenseMetadata import AISenseMetadata
@@ -80,8 +81,8 @@ class AISenseViewSet(SoftDeleteViewSet):
 
     
     serializer_class = AISenseSerializer
-    # permission_classes = [IsAuthenticatedOrReadOnly]
-    permission_classes = [AllowAny] # testing
+    # CRUD trực tiếp lên sense hệ thống chỉ admin, user tạo / sửa sense custom qua create-sense / update-sense
+    permission_classes = [IsAdminOrReadOnly]
 
     def retrieve(self, request, *args, **kwargs):
         sense = self.get_object()  # lấy object theo id
@@ -111,12 +112,11 @@ class AISenseViewSet(SoftDeleteViewSet):
 
         # return Response({'detail': 'Sense updated.', 'status': '200', 'data': data}, status=status.HTTP_200_OK)
 
-    @action(detail=False, methods=['post'], url_path='create-sense')
+    @action(detail=False, methods=['post'], url_path='create-sense', permission_classes=[IsAuthenticated])
     def create_sense(self, request, pk=None, *args, **kwargs):
         # params: word_id, user_lang, contents{definition{value, translate}, usage{}, examples[{}], translations[]}, metadata
 
-        # user = request.user
-        user = User.objects.get_or_create(username='admin', password='admin', email='admin@gmail.com', is_superuser=True)[0]
+        user = request.user
         word_id = request.data.get('word_id')
         user_language_code = request.data.get('user_lang')
         contents = request.data.get('contents')
@@ -207,14 +207,14 @@ class AISenseViewSet(SoftDeleteViewSet):
 
         return Response(status=status.HTTP_400_BAD_REQUEST, data={'message': 'Bad request'})
     
-    @action(detail=False, methods=['put'], url_path='update-sense')
+    @action(detail=False, methods=['put'], url_path='update-sense', permission_classes=[IsAuthenticated])
     def update_sense(self, request, *args, **kwargs):
         sense_id = request.data.get('sense_id')
         contents = request.data.get('contents', {})  # [{id, value}]
         delta = request.data.get('delta', {})  # object
         metadata = request.data.get('metadata', None)
         user_language_code = request.data.get('user_lang')
-        user = request.user if request.user.is_authenticated else User.objects.first()
+        user = request.user
 
         changes=[]
 

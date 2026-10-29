@@ -35,11 +35,6 @@ class Migration(migrations.Migration):
             name='quality_status',
             field=models.CharField(choices=[('draft', 'Draft'), ('refined', 'Refined'), ('verified', 'Verified'), ('flagged', 'Flagged')], db_index=True, default='draft', max_length=20),
         ),
-        migrations.AddField(
-            model_name='aisense',
-            name='source_refs',
-            field=models.JSONField(blank=True, default=list),
-        ),
         migrations.AlterField(
             model_name='aisense',
             name='register',

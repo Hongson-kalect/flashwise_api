@@ -8,12 +8,13 @@ from asgiref.sync import async_to_sync, sync_to_async
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
-from rest_framework.permissions import IsAuthenticatedOrReadOnly, AllowAny
+from rest_framework.permissions import IsAdminUser
+from utils.utils.permissions import IsAdminOrReadOnly, WordGenerateThrottle, get_request_user
 from ai.models.AISense import AISense
 from ai.models.AISenseContent import AISenseContent
 from ai.models.AISenseMetadata import AISenseMetadata
 from ai.models.TranslateLog import TranslateLog
-from core.models import WordForm, ImageLibrary, ImageContext, ImageLibraryContext
+from core.models import ImageLibrary, ImageContext, ImageLibraryContext
 from ai.models.AIWord import AIWord
 from django.db.models import Prefetch, Window, F, Q
 from django.db.models.functions import RowNumber
@@ -84,8 +85,8 @@ def detect_missing_content(senses, language_code, user_language_code):
 class AIWordViewSet(SoftDeleteViewSet):
     queryset = AIWord.objects.all()
     serializer_class = AIWordSerializer
-    # permission_classes = [IsAuthenticatedOrReadOnly]
-    permission_classes = [AllowAny]
+    # Tra từ không cần đăng nhập (có throttle), sửa / xoá dữ liệu từ điển chỉ admin
+    permission_classes = [IsAdminOrReadOnly]
 
     @action(detail=False, methods=['get'], url_path='get-word')
     def get_word(self, request, pk=None, *args, **kwargs):
@@ -95,12 +96,16 @@ class AIWordViewSet(SoftDeleteViewSet):
 
         # params: value, lang, user_lang
         # client create socket connect with word(md5)+language+user_language
-        # user = User.objects.first()  # Thay thế bằng cách lấy user thực tế
-        user = User.objects.get_or_create(username='admin', password='admin', email='admin@gmail.com', is_superuser=True)[0]
+        user = get_request_user(request)
         raw_word = request.GET.get('value')
-        word = unquote(raw_word).strip().lower()
         language_code = request.GET.get('lang')
         user_language_code = request.GET.get('user_lang')
+        if not raw_word or not language_code or not user_language_code:
+            return Response({'detail': 'value, lang, user_lang are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        word = unquote(raw_word).strip().lower()
+        if not word or len(word) > 100 or len(language_code) > 10 or len(user_language_code) > 10:
+            return Response({'detail': 'Invalid word or language code'}, status=status.HTTP_400_BAD_REQUEST)
         socket_room = get_safe_room_id(word, language_code) 
         # socket_room = 'test'
 
@@ -140,7 +145,7 @@ class AIWordViewSet(SoftDeleteViewSet):
 
                         # Đẩy vào queue "redis_word"
                         r_queue.rpush("redis_trans", json.dumps({
-                            "word_id": str(word_instance.id),
+                            "word_id": str(cached_word.get('id')),
                             "language_code": language_code,
                             "user_language_code": user_language_code,
                             "missing_translate": missing_contents,
@@ -148,8 +153,8 @@ class AIWordViewSet(SoftDeleteViewSet):
                         }))
                         # translate_instance = TranslateLog.objects.create(word=word_instance, language_code=user_language_code, status="PROCESSING")
                         # background_task(render_translate(user, translate_instance, word, senses_instance, missing_contents , need_translation, language_code, user_language_code, socket_room))
-                    except:
-                        pass
+                    except Exception as e:
+                        print("Error", e)
                     return Response({'detail': 'CACHED', 'status': '200', "data":{**cached_word, "senses": cached_senses}}, status=status.HTTP_206_PARTIAL_CONTENT)
 
                 return Response({'detail': 'CACHED', 'status': '200', "data":{**cached_word, "senses": cached_senses}}, status=status.HTTP_200_OK)
@@ -187,6 +192,11 @@ class AIWordViewSet(SoftDeleteViewSet):
 
             # Nếu từ này chưa được khởi tạo ở db
             if not word_instance or word_instance.status == 'FAILED':
+                # Sắp gọi AI tạo từ mới -> giới hạn theo user / IP
+                throttle = WordGenerateThrottle()
+                if not throttle.allow_request(request, self):
+                    return Response({'detail': 'Too many new words, try again later', 'errorCode': 'word_generate_throttled'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
                 created, init_data = cache_manager.cache_word_init(language_code, word, user_language_code)
                 cached_word = init_data.get('word')
                 cached_senses = init_data.get('senses')
@@ -396,14 +406,7 @@ class AIWordViewSet(SoftDeleteViewSet):
             return Response({"data":data}, status=status.HTTP_200_OK)
             # client close socket
 
-    @action(detail=False, methods=['get'], url_path='get-word')
-    def search_word(self, request, pk=None, *args, **kwargs):
-        queryset = self.get_queryset()
-        value = request.query_params.get('value')
-        lang = request.query_params.get('lang')
-        user_lang = request.query_params.get('user_lang')
-
-    @action(detail=False, methods=['delete'], url_path='clear')
+    @action(detail=False, methods=['delete'], url_path='clear', permission_classes=[IsAdminUser])
     def clear(self, request):
         try:
             # Xoá toàn bộ dữ liệu trên các bảng chỉ định

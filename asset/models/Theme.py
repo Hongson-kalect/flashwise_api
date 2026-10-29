@@ -32,6 +32,11 @@ class Theme(BaseModel):
     is_auto_active = models.BooleanField(default=False)
     is_default = models.BooleanField(default=False)
 
+    # Giống bảng theme phía app: app lấy theme chưa hết hạn có priority cao nhất
+    priority = models.FloatField(default=1.0, db_index=True)
+    expired_at = models.DateTimeField(null=True, blank=True) # Theme theo dịp (Tết, Halloween...)
+    is_delete_on_expired = models.BooleanField(default=False)
+
     # Client chủ động lấy active sense khi sync dựa vào updated_at, nếu auto_active thì hỏi user để active, đến dịp thì chạy clon_job để đầu ngày cập nhật là sẽ có theme chủ đề cho user
 
     class Meta:

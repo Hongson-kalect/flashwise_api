@@ -13,7 +13,7 @@ class CollectionItemSerializer(BaseModelSerializer):
 
     class Meta:
         model = CollectionItem
-        fields = ['id', 'original_id', 'sense', 'order']
+        fields = ['id', 'original_id', 'sense', 'display_order']
 
 class CollectionItemBasicSerializer(BaseModelSerializer):
 
@@ -21,4 +21,4 @@ class CollectionItemBasicSerializer(BaseModelSerializer):
 
     class Meta:
         model = CollectionItem
-        fields = ['id', 'original_id', 'sense', 'order']
+        fields = ['id', 'original_id', 'sense', 'display_order']

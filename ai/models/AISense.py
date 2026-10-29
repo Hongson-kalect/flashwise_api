@@ -36,7 +36,6 @@ class AISense(BaseModel):
     ai_pass = models.SmallIntegerField(default=1) # Số lần AI đã xử lý nội dung này
     ai_model = models.CharField(max_length=100, blank=True, null=True) # Model của lần xử lý cuối, vd: gemini-2.5-flash
     ai_review = models.JSONField(default=dict, blank=True) # Lần 2 trả về: các chỗ đã sửa, lý do, điểm tự đánh giá
-    source_refs = models.JSONField(default=list, blank=True) # Dữ liệu đối chiếu đã đưa vào prompt, vd: [{"source": "wiktionary", "id": "..."}]
 
     voted = models.IntegerField(default=0)
     devoted = models.IntegerField(default=0)

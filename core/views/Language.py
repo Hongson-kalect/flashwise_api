@@ -1,6 +1,6 @@
 from rest_framework import viewsets, status
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticatedOrReadOnly
+from utils.utils.permissions import IsAdminOrReadOnly
 from core.models.Collection import Collection
 from core.models.Language import Language
 from core.serializers.Collection import CollectionSerializer
@@ -10,7 +10,7 @@ from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 class LanguageViewSet(SoftDeleteViewSet):
     queryset = Language.objects.all()
     serializer_class = LanguageSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly] # Danh sách ngôn ngữ do admin quản lý
 
     def get_queryset(self):
         # Nếu muốn lọc theo người dùng hoặc trạng thái

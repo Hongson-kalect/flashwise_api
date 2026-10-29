@@ -1,6 +1,5 @@
 from .UserCollection import UserCollectionViewSet
 from .Collection import CollectionViewSet
-from .Word import WordViewSet
 from .Language import LanguageViewSet
 # from CommonPhrase import CommonPhraseViewSet
 # from UserCollection import DownloadedCollectionViewSet

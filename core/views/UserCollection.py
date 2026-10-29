@@ -3,7 +3,7 @@ from django.db.models import Prefetch, Q, Max
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets, status
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticatedOrReadOnly, AllowAny
+from rest_framework.permissions import IsAuthenticated
 from ai.models import AISense, AIWord, AISenseMetadata
 from core.serializers import CollectionDetailSerializer
 from core.models import Collection,CollectionItem, UserCollection
@@ -20,20 +20,25 @@ from django.db.models import Prefetch, Case, When, F, Value, Func, ExpressionWra
 class UserCollectionViewSet(SoftDeleteViewSet):
     queryset = UserCollection.objects.all()
     serializer_class = UserCollectionSerializer
-    # permission_classes = [IsAuthenticatedOrReadOnly]
-    permission_classes = [AllowAny]
+    # Bộ từ cá nhân: bắt buộc đăng nhập, chỉ thấy / sửa được của chính mình
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return super().get_queryset().filter(user=self.request.user)
 
     # Giả sử nằm trong CollectionViewSet
     @action(detail=True, methods=['post'], url_path='download')
     def download(self, request, pk=None):
-        collection = self.get_object() # Lấy collection theo ID trên URL
+        # pk ở URL là id của Collection gốc (không phải UserCollection)
+        collection = get_object_or_404(Collection, pk=pk, is_active=True, is_deleted=False)
         
         # Tạo hoặc cập nhật trạng thái sở hữu
         user_col, created = UserCollection.objects.get_or_create(
             user=request.user,
-            source_collection=collection,
-            defaults={'is_owner': False}
-    )
+            collection=collection,
+            is_deleted=False,
+            defaults={'name': collection.name, 'description': collection.description, 'created_by': request.user},
+        )
         
         if not created:
             return Response({"detail": "Bạn đã sở hữu bộ sưu tập này rồi."}, status=200)
@@ -69,7 +74,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
                         collection=collection,
                         sense_id=sense_obj["sense_id"], # Truyền ID trực tiếp để tránh query thêm
                         original_id = sense_obj["original_id"], 
-                        order=idx # Gán order theo thứ tự trong list gửi lên
+                        display_order=idx # Gán order theo thứ tự trong list gửi lên
                     )
                 )
 
@@ -105,7 +110,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
 
         # 1. Lấy thông tin UserCollection cùng với bộ sưu tập gốc
         user_col = get_object_or_404(
-            UserCollection.objects.select_related('collection'), 
+            self.get_queryset().select_related('collection'), 
             id=user_collection_id
         )
         collection = user_col.collection
@@ -131,7 +136,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
         # Sau đó sắp xếp lại danh sách cuối cùng theo trục 'order' (float) để hiển thị lên UI cho đúng thứ tự kéo thả
         final_items = sorted(
             [item for item in raw_items if not item.is_deleted],
-            key=lambda x: x.order
+            key=lambda x: x.display_order
         )
 
         # Gán danh sách item sạch sẽ vào thuộc tính tạm để Serializer đóng gói trả về cho Client
@@ -153,7 +158,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
         current_user = request.user if request.user.is_authenticated else None
 
         with transaction.atomic():
-            user_collection = get_object_or_404(UserCollection.objects.select_for_update(), id=user_collection_id)
+            user_collection = get_object_or_404(self.get_queryset().select_for_update(), id=user_collection_id)
             
             # Kéo luôn cả tầng sense cũ ra để chuẩn bị nhân bản
             current_item = get_object_or_404(
@@ -197,7 +202,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
                     sense_id=new_sense_id,
                     # Điểm cốt lõi: Giữ nguyên original_id ở tầng Item để phục vụ distinct ở hàm retrieve
                     original_id=current_item.original_id or current_item.id, 
-                    order=current_item.order,
+                    display_order=current_item.display_order,
                     released=False, # Trạng thái nháp
                     parent = list(current_item.parent or []).append(current_item.id),
                     is_deleted=False,
@@ -231,7 +236,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
         with transaction.atomic():
             # 1. Khóa dòng UserCollection an toàn
             user_collection = get_object_or_404(
-                UserCollection.objects.select_for_update(), 
+                self.get_queryset().select_for_update(), 
                 id=user_collection_id
             )
             
@@ -260,7 +265,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
             # 3. TÍNH TOÁN ORDER FLOAT (Xếp vào cuối danh sách)
             max_order_dict = CollectionItem.objects.filter(
                 collection_id=user_collection.collection_id
-            ).aggregate(max_order=Max('order'))
+            ).aggregate(max_order=Max('display_order'))
             
             current_max_order = max_order_dict.get('max_order') or 0.0
             new_order = float(current_max_order) + 1.0
@@ -272,7 +277,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
                 collection_id=user_collection.collection_id,
                 sense_id=target_sense.id,
                 original_id=target_original_id, # Đảm bảo neo giữ ID cốt lõi
-                order=new_order,
+                display_order=new_order,
                 
                 # Cấu hình trạng thái nháp
                 released=False,                  # Hàng mới thêm luôn ở dạng nháp chờ Upload
@@ -307,7 +312,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
         with transaction.atomic():
             # 1. Khóa dòng UserCollection an toàn
             user_collection = get_object_or_404(
-                UserCollection.objects.select_for_update(), 
+                self.get_queryset().select_for_update(), 
                 id=user_collection_id
             )
             
@@ -331,7 +336,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
                     sense_id=target_item.sense_id,
                     # Điểm cốt lõi: Giữ nguyên original_id để hàm retrieve distinct biết khái niệm nào bị xóa
                     original_id=target_item.original_id or target_item.id,
-                    order=target_item.order,
+                    display_order=target_item.display_order,
                     
                     # Cấu hình trạng thái xóa nháp
                     released=False,      # Vẫn nằm ở trạng thái nháp chờ Upload
@@ -363,7 +368,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
                         "collection_id": original_item.collection_id,
                         "sense_id": original_item.sense_id,
                         "original_id": original_item.original_id,
-                        "order": original_item.order,
+                        "display_order": original_item.display_order,
                         "released": True,
                         "is_deleted": original_item.is_deleted,
                         "sense": {
@@ -421,7 +426,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
         with transaction.atomic():
             # 1. Lấy thông tin UserCollection để biết chính xác collection_id mục tiêu
             user_collection = get_object_or_404(
-                UserCollection.objects.select_for_update(), 
+                self.get_queryset().select_for_update(), 
                 id=user_collection_id
             )
 
@@ -461,7 +466,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
         with transaction.atomic():
             # 1. Khóa dòng UserCollection và lấy Collection gốc
             user_collection = get_object_or_404(
-                UserCollection.objects.select_related('collection').select_for_update(), 
+                self.get_queryset().select_related('collection').select_for_update(), 
                 id=user_collection_id
             )
             current_collection = user_collection.collection
@@ -578,7 +583,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
                         collection_id=new_collection_id,
                         sense_id=item.sense_id,
                         original_id=item.original_id or item.id,
-                        order=item.order,
+                        display_order=item.display_order,
                         released=True,         # Đóng gói chính thức ở nhà mới
                         version=1,             # Reset về v1 của nhánh mới
                         is_deleted=False,

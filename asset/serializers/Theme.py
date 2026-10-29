@@ -10,5 +10,9 @@ class ThemeSerializer(BaseModelSerializer):
             'color_palette',
             'font',
             'is_default',
+            'priority',
+            'expired_at',
+            'is_delete_on_expired',
+            'updated_at',
         ]
         read_only_fields = BaseModelSerializer.Meta.read_only_fields

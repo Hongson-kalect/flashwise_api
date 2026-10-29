@@ -1,4 +1,6 @@
+from django.utils import timezone
 from rest_framework.decorators import action
+from rest_framework.permissions import AllowAny, IsAdminUser
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 
@@ -17,7 +19,7 @@ class SoftDeleteViewSet(viewsets.ModelViewSet):
             instance.is_deleted = True
 
             if hasattr(instance, 'deleted_at'):
-                instance.deleted_at = instance.updated_at
+                instance.deleted_at = timezone.now()
                 
             instance.save()
             return Response(status=status.HTTP_204_NO_CONTENT)
@@ -26,7 +28,6 @@ class SoftDeleteViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         user = self.request.user if self.request.user.is_authenticated else None
 
-        print('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', user)
         if hasattr(serializer.Meta.model, 'created_by') and user:
             serializer.save(created_by=user, updated_by=user)
         else:
@@ -56,7 +57,7 @@ class SoftDeleteViewSet(viewsets.ModelViewSet):
             # Cập nhật trực tiếp nếu không có versioning
             serializer.save(updated_by=user)
     
-    @action(detail=False, methods=['delete'], url_path='bulk-delete')
+    @action(detail=False, methods=['delete'], url_path='bulk-delete', permission_classes=[IsAdminUser])
     def bulk_delete(self, request):
         ids = request.data.get('ids', [])
         if not isinstance(ids, list):
@@ -67,6 +68,6 @@ class SoftDeleteViewSet(viewsets.ModelViewSet):
 
         return Response({'deleted': count}, status=status.HTTP_200_OK)
     
-    @action(detail=False, methods=['get'], url_path='test-connect')
+    @action(detail=False, methods=['get'], url_path='test-connect', permission_classes=[AllowAny])
     def test_connet(self, request):
         return Response({'detail': 'ok'}, status=status.HTTP_200_OK)

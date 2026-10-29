@@ -1,7 +1,7 @@
 from django.db.models import Prefetch, Count
 from rest_framework import viewsets, status
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticatedOrReadOnly, AllowAny
+from utils.utils.permissions import IsOwnerOrAdmin
 from rest_framework.decorators import action
 from core.models import Collection, UserCollection,CollectionItem
 from ai.models import AISense, AIWord
@@ -18,8 +18,8 @@ import redis
 class CollectionViewSet(SoftDeleteViewSet):
     queryset = Collection.objects.all()
     serializer_class = CollectionSerializer
-    # permission_classes = [IsAuthenticatedOrReadOnly]
-    permission_classes = [AllowAny] # testing
+    # Xem: ai cũng được. Tạo: phải đăng nhập. Sửa / xoá: người tạo hoặc admin
+    permission_classes = [IsOwnerOrAdmin]
 
     # override create request
     # hàm này create dựa vào các sense_id có sẵn
@@ -82,7 +82,7 @@ class CollectionViewSet(SoftDeleteViewSet):
 
     def create(self, request, *args, **kwargs):
         # params: name, description, image, tags, language_code, senses
-        user = User.objects.get_or_create(username='admin', password='admin', email='admin@gmail.com', is_superuser=True)[0]
+        user = request.user
         collection_id = generate_uuid7()
 
         data = request.data
@@ -100,7 +100,7 @@ class CollectionViewSet(SoftDeleteViewSet):
                     collection_id=collection_id,
                     sense_id=sense_obj.get('id'), # Truyền ID trực tiếp để tránh query thêm
                     original_id=sense_obj.get('o_id'), # Truyền ID trực tiếp để tránh query thêm
-                    order=idx # Gán order theo thứ tự trong list gửi
+                    display_order=idx # Gán order theo thứ tự trong list gửi
                 )
             )
 
@@ -132,7 +132,7 @@ class CollectionViewSet(SoftDeleteViewSet):
         # Kết nối tới DB 0 (Làn đường xử lý)
         r_queue = redis.Redis(host='redis', port=6379, db=0)
 
-        user = User.objects.get_or_create(username='admin', password='admin', email='admin@gmail.com', is_superuser=True)[0]
+        user = request.user
         data = request.data
         word_values = [normalize(word) for word in data.pop('words', [])] # Giả sử nhận một list sense IDs {id, o_id}
         name = data['name']
@@ -249,7 +249,7 @@ class CollectionViewSet(SoftDeleteViewSet):
             return base_queryset.prefetch_related(
                 Prefetch(
                     'collectionitem_set',
-                    queryset=CollectionItem.objects.select_related('sense').order_by('order')
+                    queryset=CollectionItem.objects.select_related('sense').order_by('display_order')
                 )
             )
 

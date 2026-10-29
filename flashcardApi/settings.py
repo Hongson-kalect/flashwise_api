@@ -56,12 +56,17 @@ CACHES = {
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-w6_%s0#68-eh#gqr2(uqmg04!yvwekvsc3#i*+1$x(i#8448hb'
-
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv('DJANGO_DEBUG', 'False').lower() in ('1', 'true', 'yes')
 
-ALLOWED_HOSTS = ['192.168.1.100','localhost', "192.168.34.140","192.168.50.64",'flashwise.loca.lt','celebs-baths-adjacent-purpose.trycloudflare.com']
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY')
+if not SECRET_KEY:
+    if not DEBUG:
+        raise RuntimeError('DJANGO_SECRET_KEY chưa được đặt (bắt buộc khi DEBUG=False)')
+    SECRET_KEY = 'dev-only-insecure-key'
+
+# Danh sách cách nhau bởi dấu phẩy, vd: localhost,127.0.0.1,192.168.1.111
+ALLOWED_HOSTS = [h.strip() for h in os.getenv('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',') if h.strip()]
 
 CORS_ALLOWED_HEADERS = [
     'Content-Type',
@@ -94,6 +99,7 @@ INSTALLED_APPS = [
     'cache',
     'utils',
     'ai',
+    'asset',
 ]
 
 MIDDLEWARE = [
@@ -160,13 +166,20 @@ REST_FRAMEWORK = {
 # ),
     'TEST_REQUEST_DEFAULT_FORMAT': 'json','DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 50,  # mặc định 50 item/trang
+    # Chặn spam (mỗi lần tra từ mới là 1 lần gọi AI tốn tiền)
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': os.getenv('THROTTLE_ANON', '30/minute'),
+        'user': os.getenv('THROTTLE_USER', '120/minute'),
+        'word_generate': os.getenv('THROTTLE_WORD_GENERATE', '60/hour'),
+    },
 }
 
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(days=30),#(minutes=15),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=30),
-    "ROTATE_REFRESH_TOKENS": False,
-    "BLACKLIST_AFTER_ROTATION": True,
+    # App tự gọi /refresh-token khi nhận 401 -> access token ngắn hạn, refresh dài hạn và xoay vòng (UserSession.refresh_token_jti)
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=int(os.getenv('JWT_ACCESS_MINUTES', '60'))),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=int(os.getenv('JWT_REFRESH_DAYS', '60'))),
+    "ROTATE_REFRESH_TOKENS": False, # Xoay vòng tự làm trong user/views/auth.py
+    "BLACKLIST_AFTER_ROTATION": False,
     "ALGORITHM": "HS256",
     "SIGNING_KEY": SECRET_KEY,
     "AUTH_HEADER_TYPES": ("Bearer",),
@@ -176,16 +189,14 @@ SIMPLE_JWT = {
     "USER_ID_CLAIM": "user_id",
 }
 
-SECRET_KEY = "Em_là_búp_măng_non_em_lớn..."
-
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'flashwise',
-        'USER': 'postgres',
-        'PASSWORD': 'hongson01',
-        'HOST': 'db',
-        'PORT': '5432',
+        'NAME': os.getenv('POSTGRES_DB', 'flashwise'),
+        'USER': os.getenv('POSTGRES_USER', 'postgres'),
+        'PASSWORD': os.getenv('POSTGRES_PASSWORD', ''),
+        'HOST': os.getenv('POSTGRES_HOST', 'db'),
+        'PORT': os.getenv('POSTGRES_PORT', '5432'),
     }
 }
 

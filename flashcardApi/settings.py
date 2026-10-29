@@ -133,6 +133,10 @@ AI_REFINE_TIMEOUT = int(os.getenv('AI_REFINE_TIMEOUT', '60')) # giây cho mỗi 
 # Từ ở trạng thái PROCESSING quá lâu mà không có cache (worker chết) thì coi như lỗi và tạo lại
 WORD_PROCESSING_STALE_SECONDS = int(os.getenv('WORD_PROCESSING_STALE_SECONDS', '600'))
 
+# Tạo bộ từ hàng loạt: mỗi từ chưa có sẽ tốn nhiều lần gọi AI
+BULK_MAX_WORDS_PER_REQUEST = int(os.getenv('BULK_MAX_WORDS_PER_REQUEST', '200'))
+BULK_WORDS_PER_DAY = int(os.getenv('BULK_WORDS_PER_DAY', '500')) # số từ mới / người dùng / ngày
+
 REDIS_HOST = os.getenv('REDIS_HOST', 'redis')
 REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))
 

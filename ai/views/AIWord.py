@@ -14,11 +14,11 @@ from ai.models.AISenseContent import AISenseContent
 from ai.models.AISenseMetadata import AISenseMetadata
 from ai.models.AIWord import AIWord
 from ai.models.TranslateLog import TranslateLog
+from ai.generation import GenerationError, start_word_generation
 from ai.jobs import queue_translation
 from ai.queries import load_word
 from ai.serializers.AIWord import AIWordSerializer
 from core.models import Collection, CollectionItem, ImageContext, ImageLibrary, ImageLibraryContext
-from utils.redis.client import push_job
 from utils.redis.word_init import WordCacheManager
 from utils.utils.permissions import IsAdminOrReadOnly, WordGenerateThrottle, get_request_user
 from utils.utils.sense_handle import get_user_lang_content
@@ -145,48 +145,23 @@ def _join_processing(cache_manager, word_instance, word, language_code, user_lan
 
 def _start_generation(request, cache_manager, word, language_code, user_language_code, existing):
     """Từ chưa có (hoặc lần tạo trước lỗi / treo): đẩy job tạo từ cho worker. existing là bản ghi AIWord cũ nếu có."""
-    created, init_data = cache_manager.cache_word_init(language_code, word, user_language_code)
-    cached_word = init_data.get('word')
+    try:
+        # Mỗi từ mới là 2 lần gọi AI (draft + refine) cộng dịch / metadata, nên giới hạn theo người dùng / IP
+        state, init_data = start_word_generation(
+            cache_manager, word, language_code, user_language_code, lambda: get_request_user(request), existing,
+            allow=lambda: WordGenerateThrottle().allow_request(request, None),
+        )
+    except GenerationError:
+        return Response({'detail': 'Service unavailable, try again later'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-    # Có người khởi tạo trước, vào chờ chung
-    if not created:
-        if user_language_code not in (init_data.get('langs') or []):
-            cache_manager.cache_word_add_translate(language_code, word, user_language_code)
+    if state == 'joined':  # có người khởi tạo trước, vào chờ chung
         return _word_response('PROCESSING', 202, init_data)
-
-    # Mỗi từ mới là 2 lần gọi AI (draft + refine) cộng dịch / metadata, nên giới hạn theo người dùng / IP
-    if not WordGenerateThrottle().allow_request(request, None):
-        cache_manager.cache_word_clear_specific(language_code, word)
+    if state == 'throttled':
         return Response(
             {'detail': 'Too many new words, try again later', 'errorCode': 'word_generate_throttled'},
             status=status.HTTP_429_TOO_MANY_REQUESTS,
         )
-
-    try:
-        if existing is None:
-            word_instance = AIWord.objects.create(**cached_word, created_by=get_request_user(request), status="PROCESSING")
-        else:
-            # Dùng lại bản ghi cũ: tạo mới sẽ vi phạm unique (value, language_code)
-            existing.status = "PROCESSING"
-            existing.save(update_fields=['status', 'updated_at'])
-            word_instance = existing
-            cached_word['id'] = str(existing.id)
-            cache_manager.cache_word_set_word(language_code, word, cached_word)
-
-        push_job("redis_word", {
-            "user_id": str(get_request_user(request).id),
-            "word_id": str(word_instance.id),
-            "value": word,
-            "language_code": language_code,
-            "user_language_code": user_language_code,
-        })
-    except Exception:
-        logger.exception("Không khởi tạo được việc tạo từ %s", word)
-        cache_manager.cache_word_clear_specific(language_code, word)
-        AIWord.objects.filter(value=word, language_code=language_code).exclude(status='COMPLETED').update(status='FAILED')
-        return Response({'detail': 'Service unavailable, try again later'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-
-    return _word_response('PROCESSING', 201, {**cached_word, "senses": init_data.get('senses')})
+    return _word_response('PROCESSING', 201, {**init_data['word'], "senses": init_data.get('senses')})
 
 
 class AIWordViewSet(SoftDeleteViewSet):

@@ -593,7 +593,7 @@ class GetWordApiTests(APITestCase):
         django_cache.clear()
         self.cache = WordCacheManager()
         self.queue = FakeQueue()
-        for target in ('ai.views.AIWord.push_job', 'ai.jobs.push_job', 'ai.jobs.acquire_lock'):
+        for target in ('ai.generation.push_job', 'ai.jobs.push_job', 'ai.jobs.acquire_lock'):
             patcher = mock.patch(target, getattr(self.queue, target.rsplit('.', 1)[1]))
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -718,7 +718,7 @@ class GetWordApiTests(APITestCase):
         def boom(queue, payload):
             raise ConnectionError('redis down')
 
-        with mock.patch('ai.views.AIWord.push_job', boom):
+        with mock.patch('ai.generation.push_job', boom):
             res = self.get('zzdown')
         self.assertEqual(res.status_code, 503)
         self.assertEqual(AIWord.objects.get(value='zzdown').status, 'FAILED')

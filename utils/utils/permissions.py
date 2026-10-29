@@ -1,4 +1,6 @@
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
+from django.utils import timezone
 from rest_framework.permissions import BasePermission, SAFE_METHODS
 from rest_framework.throttling import SimpleRateThrottle
 
@@ -22,6 +24,20 @@ def get_request_user(request):
     if request.user and request.user.is_authenticated:
         return request.user
     return get_system_user()
+
+
+def consume_daily_quota(user, scope, amount, limit):
+    """
+    Cộng amount vào bộ đếm theo ngày của user, False (không cộng) nếu vượt limit.
+    Dùng cho việc tốn tiền theo số lượng như tạo hàng loạt từ mới bằng AI.
+    """
+    key = f"quota:{scope}:{user.pk}:{timezone.now():%Y%m%d}"
+    cache.add(key, 0, 172800)
+    used = cache.incr(key, amount)
+    if used > limit:
+        cache.decr(key, amount)
+        return False
+    return True
 
 
 class IsAdminOrReadOnly(BasePermission):

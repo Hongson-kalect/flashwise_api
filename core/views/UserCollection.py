@@ -7,6 +7,7 @@ from rest_framework.permissions import IsAuthenticated
 from ai.models import AISense, AIWord, AISenseMetadata
 from core.serializers import CollectionDetailSerializer
 from core.models import Collection,CollectionItem, UserCollection
+from core.queries import visible_collections
 from core.serializers.UserCollection import UserCollectionSerializer
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 from utils.utils.sense_handle import deep_merge
@@ -30,7 +31,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
     @action(detail=True, methods=['post'], url_path='download')
     def download(self, request, pk=None):
         # pk ở URL là id của Collection gốc (không phải UserCollection)
-        collection = get_object_or_404(Collection, pk=pk, is_active=True, is_deleted=False)
+        collection = get_object_or_404(visible_collections(request.user), pk=pk)
         
         # Tạo hoặc cập nhật trạng thái sở hữu
         user_col, created = UserCollection.objects.get_or_create(

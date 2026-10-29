@@ -2,7 +2,7 @@ import json
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 import asyncio
-from core.views.Collection import normalize 
+from utils.utils.normalize import normalize
 
 import hashlib
 import re

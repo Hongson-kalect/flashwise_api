@@ -124,12 +124,15 @@ class PermissionTests(APITestCase):
 
     def test_download_collection(self):
         _, auth = self.guest("carol")
-        collection = Collection.objects.create(name="IELTS", language_code="en")
+        collection = Collection.objects.create(name="IELTS", language_code="en", is_official=True)
+        private = Collection.objects.create(name="Của người khác", language_code="en")
 
         first = self.client.post(f"/api/user-collections/{collection.id}/download/", **auth)
         again = self.client.post(f"/api/user-collections/{collection.id}/download/", **auth)
         self.assertEqual(first.status_code, 201)
         self.assertEqual(again.status_code, 200)
+        # Bộ cá nhân của người khác không tải được
+        self.assertEqual(self.client.post(f"/api/user-collections/{private.id}/download/", **auth).status_code, 404)
 
     def test_other_user_cannot_delete_collection(self):
         owner, _ = self.guest("owner")
@@ -137,7 +140,7 @@ class PermissionTests(APITestCase):
         collection = Collection.objects.create(name="Của owner", language_code="en", created_by=owner)
 
         res = self.client.delete(f"/api/collections/{collection.id}/", **other_auth)
-        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.status_code, 404)  # bộ cá nhân của người khác không hiện ra (bộ công khai thì 403, xem core/tests.py)
 
     def test_language_write_is_admin_only(self):
         _, auth = self.guest("dave")

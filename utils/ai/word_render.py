@@ -35,7 +35,7 @@ from utils.ai.prompt import render_word_prompt
 from utils.celery.fetch_image import get_image_by_keyword 
 from utils.ai.translate import ai_create_translate_sema 
 from utils.ai.metadata import ai_create_metadata 
-from core.views.Collection import normalize
+from utils.utils.normalize import normalize
 from ai.queries import load_word
 from utils.ai.japanese import add_ruby
 from utils.ai.refine import render_refine_prompt, request_refinement, refine_word

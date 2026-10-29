@@ -14,20 +14,17 @@ from ai.models.AISenseContent import AISenseContent
 from ai.models.AISenseMetadata import AISenseMetadata
 from ai.models.AIWord import AIWord
 from ai.models.TranslateLog import TranslateLog
+from ai.jobs import queue_translation
 from ai.queries import load_word
 from ai.serializers.AIWord import AIWordSerializer
 from core.models import Collection, CollectionItem, ImageContext, ImageLibrary, ImageLibraryContext
-from utils.redis.client import acquire_lock, push_job
+from utils.redis.client import push_job
 from utils.redis.word_init import WordCacheManager
 from utils.utils.permissions import IsAdminOrReadOnly, WordGenerateThrottle, get_request_user
 from utils.utils.sense_handle import get_user_lang_content
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 
 logger = logging.getLogger(__name__)
-
-# Một lần dịch bổ sung cho (từ, ngôn ngữ) chỉ được đẩy vào hàng đợi 1 lần trong khoảng này
-TRANSLATE_LOCK_SECONDS = 120
-
 
 def detect_missing_content(senses, language_code, user_language_code):
     # Kết quả trả về: { "sense_id": { "definition": "...", "examples": [...] } }
@@ -81,22 +78,6 @@ def _word_response(detail, http_status, data=None):
     return Response({'detail': detail, 'status': str(http_status), 'data': data}, status=http_status)
 
 
-def _queue_translation(word_id, language_code, user_language_code, missing, current_senses):
-    """Đẩy việc dịch phần còn thiếu cho worker, tối đa 1 lần / (từ, ngôn ngữ) trong TRANSLATE_LOCK_SECONDS."""
-    try:
-        if not acquire_lock(f"trans_lock:{word_id}:{user_language_code}", TRANSLATE_LOCK_SECONDS):
-            return
-        push_job("redis_trans", {
-            "word_id": str(word_id),
-            "language_code": language_code,
-            "user_language_code": user_language_code,
-            "missing_translate": missing,
-            "current_senses": current_senses,
-        })
-    except Exception:
-        logger.exception("Không đẩy được job dịch cho word %s", word_id)
-
-
 def _is_stale(started_at, max_age=None):
     """Job tạo từ chạy quá lâu mà vẫn PROCESSING: worker nhiều khả năng đã chết."""
     if not started_at:
@@ -120,7 +101,7 @@ def _respond_from_cache(cache_manager, cached, word, language_code, user_languag
             language_code, user_language_code, {**cached_word, "senses": list(senses.values())}
         )
         if missing:
-            _queue_translation(cached_word.get('id'), language_code, user_language_code, missing, current_senses)
+            queue_translation(cached_word.get('id'), language_code, user_language_code, missing, current_senses)
             return _word_response('CACHED', 206, data)
         return _word_response('CACHED', 200, data)
 
@@ -144,7 +125,7 @@ def _respond_completed(cache_manager, word_instance, word, language_code, user_l
 
     if missing:
         # Trả phần đã có ngay, phần thiếu dịch xong sẽ về qua socket
-        _queue_translation(word_instance.id, language_code, user_language_code, missing, current_senses)
+        queue_translation(word_instance.id, language_code, user_language_code, missing, current_senses)
         return _word_response('Word incomplete.', 206, body)
 
     cache_manager.cache_word(language_code, word_instance.id, word, senses_by_id)

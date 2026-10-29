@@ -1,291 +1,158 @@
-import copy
 import json
-import redis
-from django.db import transaction, models
-from urllib.parse import unquote
-import asyncio
-from importlib import metadata
-import threading
-import django.utils.timezone as timezone
-from rest_framework import viewsets, status
-from rest_framework.response import Response
+import logging
+
+from django.db import transaction
+from django.db.models import Q
+from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
-from utils.utils.permissions import IsAdminOrReadOnly
+from rest_framework.response import Response
+
+from ai.jobs import queue_translation
 from ai.models.AISense import AISense
-from ai.models.AISenseContent import AISenseContent
 from ai.models.AISenseMetadata import AISenseMetadata
-from ai.models.TranslateLog import TranslateLog
-from ai.serializers.AISense import AISenseSerializer
-from ai.serializers.AISenseContent import AISenseContentSerializer
-from ai.views.AIWord import detect_missing_content
 from ai.models.AIWord import AIWord
-from utils.utils import uuidv7
-from utils.utils.ai import ai_create_new_word, render_translate
-from utils.utils.background_task import background_task
-from utils.utils.flatten_id import flatten_ids_by_langs
-from utils.utils.limit_prefetch import limit_prefetch
-from utils.utils.sense_content_tree import patch_and_clone_contents
-from utils.utils.sense_handle import serialize_entries, serialize_senses, deep_merge
-from utils.utils.socket import get_safe_room_id, run_async_task, socket_close
-from ai.serializers.AISenseMetadata import AISenseMetadataSerializer
+from ai.serializers.AISense import AISenseSerializer
+from ai.validators import MAX_DELTA_CHARS, METADATA_FIELDS, clean_contents, clean_metadata, is_lang, is_uuid
+from utils.utils.permissions import IsAdminOrReadOnly
+from utils.utils.sense_handle import deep_merge, get_user_lang_sense
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
-from django.contrib.auth.models import User
-from utils.utils.sense_handle import get_user_lang_sense
 
-from django.db.models import F, ExpressionWrapper, FloatField, Func
-from django.db.models.functions import Cast, Now
+logger = logging.getLogger(__name__)
 
 
-def save_value(type, content, bulk, content_json, language, user_language, user):
-    obj = {}
-    id =uuidv7.generate_uuid7()
-    try:
-        value = content['value']
-        translate = content.get('translate',None)
-        if value:
-            obj[language] = str(id)
-            bulk.append(AISenseContent(value=value, id=id, type=type, created_by=user, language_code=language))
+def _bad_request(message):
+    return Response({"message": message}, status=status.HTTP_400_BAD_REQUEST)
 
-            if translate:
-                t_id = uuidv7.generate_uuid7()
-                obj[user_language] = str(t_id)
-                bulk.append(AISenseContent(value=translate, id=t_id, created_by=user, language_code=user_language))
-            
-            if type == 'examples':
-                content_json.setdefault(type, []).append(obj)
-            else:
-                content_json[type] = obj
-    except Exception as e:
-        return Response(status=status.HTTP_400_BAD_REQUEST, data={'message': 'Bad request content'})
-        
-
-def save_contents(contents, language, user_language, user):
-    bulk=[]
-    content_json={}
-
-    for type, content in contents.items():
-        if type =='definition' or type == 'usage':
-            save_value(type, content, bulk, content_json,  language, user_language, user)
-        elif type == 'translations':
-            save_value(type, {"value": content, "translate": None}, bulk, content_json, language, user_language, user)
-        elif type == 'examples':
-            for item in content:
-                save_value('examples', item, bulk, content_json, language, user_language, user)
-
-    return [bulk, content_json]
 
 class AISenseViewSet(SoftDeleteViewSet):
-    queryset = AISense.objects.select_related('metadata', 'original').all()
-    
-
-    
+    queryset = AISense.objects.select_related('metadata', 'original')
     serializer_class = AISenseSerializer
     # CRUD trực tiếp lên sense hệ thống chỉ admin, user tạo / sửa sense custom qua create-sense / update-sense
     permission_classes = [IsAdminOrReadOnly]
 
-    def retrieve(self, request, *args, **kwargs):
-        sense = self.get_object()  # lấy object theo id
-        user_language_code = request.query_params.get('user_lang', 'en')
+    def get_queryset(self):
+        """Người dùng chỉ thấy nghĩa chính thức và nghĩa tuỳ chỉnh do chính mình tạo (admin thấy hết)."""
+        queryset = super().get_queryset()
+        user = self.request.user
+        if user.is_authenticated and user.is_staff:
+            return queryset
+        visible = Q(is_official=True)
+        if user.is_authenticated:
+            visible |= Q(created_by=user)
+        return queryset.filter(visible)
 
-        sense.contents, missing = get_user_lang_sense(sense.language_code, user_language_code, sense.contents or sense.original.contents, sense.id)
-
+    def _user_contents(self, sense, user_language_code):
+        """
+        Nội dung nghĩa theo ngôn ngữ của user; thiếu bản dịch thì đẩy job dịch bù cho worker.
+        Nghĩa tuỳ chỉnh dạng delta không có contents riêng mà dùng contents của nghĩa gốc, nên bản dịch bù
+        cũng phải ghi vào nghĩa gốc (job trỏ tới nghĩa gốc).
+        """
+        target = sense if sense.contents else sense.original
+        if target is None:
+            return {}
+        contents, missing = get_user_lang_sense(sense.language_code, user_language_code, target.contents, str(target.id))
         if missing:
-            try:
-                r_queue = redis.Redis(host='redis', port=6379, db=0)
+            queue_translation(sense.word_id, sense.language_code, user_language_code, [missing], [AISenseSerializer(target).data])
+        return contents
 
-                # Đẩy vào queue "redis_word"
-                r_queue.rpush("redis_trans", json.dumps({
-                    "word_id": str(sense.word_id),
-                    "language_code": sense.language_code,
-                    "user_language_code": user_language_code,
-                    "missing_translate": [missing],
-                    'current_senses':[sense]
-                }))
-            except:
-                pass
+    def retrieve(self, request, *args, **kwargs):
+        sense = self.get_object()
+        user_language_code = request.query_params.get('user_lang', 'en')
+        if not is_lang(user_language_code):
+            return _bad_request("Invalid user_lang")
 
-        serializer = self.get_serializer(sense)
-        return Response(serializer.data)
-
-        # data = AISenseSerializer(sense).data
-
-        # return Response({'detail': 'Sense updated.', 'status': '200', 'data': data}, status=status.HTTP_200_OK)
+        data = AISenseSerializer(sense).data
+        data['contents'] = self._user_contents(sense, user_language_code)
+        return Response(data)
 
     @action(detail=False, methods=['post'], url_path='create-sense', permission_classes=[IsAuthenticated])
-    def create_sense(self, request, pk=None, *args, **kwargs):
-        # params: word_id, user_lang, contents{definition{value, translate}, usage{}, examples[{}], translations[]}, metadata
-
+    def create_sense(self, request, *args, **kwargs):
+        # params: word_id, user_lang, contents{definition{<lang>{value}}, usage{}, examples[{}], translations{}}, metadata
         user = request.user
         word_id = request.data.get('word_id')
         user_language_code = request.data.get('user_lang')
-        contents = request.data.get('contents')
-        metadata = request.data.get('metadata')
+        raw_metadata = request.data.get('metadata')
 
-        if not word_id or not user_language_code or not contents or not metadata:
-            return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "Missing required parameters"})
-        
-        # check lượt, quyền hạn của user
-        # flow: get word
-        word_instance = AIWord.objects.filter(id=word_id).first()
+        if not word_id or not user_language_code or not request.data.get('contents') or not isinstance(raw_metadata, dict):
+            return _bad_request("Missing required parameters")
+        if not is_uuid(word_id) or not is_lang(user_language_code):
+            return _bad_request("Invalid word_id or user_lang")
+
+        word_instance = AIWord.objects.filter(id=word_id).exclude(is_deleted=True).first()
         if not word_instance:
-            return Response(status=status.HTTP_404_NOT_FOUND, data={"message": "Word not found"})
-        
-        if not contents.get('definition',{}).get(word_instance.language_code,{}).get('value'):
-            return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "Missing definition"})
+            return Response({"message": "Word not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        # socket_room = get_safe_room_id(word_instance.value, user_language_code, user_language_code)+str(user.id)
-        # socket_room = get_safe_room_id(word_instance.value, word_instance.language_code) 
+        contents = clean_contents(request.data.get('contents'))
+        if not contents.get('definition', {}).get(word_instance.language_code):
+            return _bad_request("Missing definition")
 
         with transaction.atomic():
-            # save contents
+            metadata = AISenseMetadata.objects.create(**clean_metadata(raw_metadata), created_by=user)
+            sense_instance = AISense.objects.create(
+                word=word_instance, word_value=word_instance.value, metadata=metadata,
+                is_frozen=None, contents=contents, created_by=user,
+                language_code=word_instance.language_code, is_official=False, is_ai_created=False,
+            )
 
-            # [content_bulk, sense_content] = save_contents(contents, word_instance.language_code, user_language_code, user)
+        data = AISenseSerializer(sense_instance).data
+        _, missing = get_user_lang_sense(word_instance.language_code, user_language_code, contents, str(sense_instance.id))
+        if missing:
+            # Phần còn lại dịch xong sẽ về qua socket / lần tra sau
+            queue_translation(word_instance.id, word_instance.language_code, user_language_code, [missing], [data])
+            return Response({'detail': 'Word incomplete.', 'status': '206', 'data': data}, status=status.HTTP_206_PARTIAL_CONTENT)
 
-            # contents = AISenseContent.objects.bulk_create(content_bulk)
+        return Response({'detail': 'Sense created.', 'status': '201', 'data': data}, status=status.HTTP_201_CREATED)
 
-            # save metadata
-            metadata = AISenseMetadata(**metadata)
-            metadata.save()
-
-            # save sense
-            sense_instance = AISense(word=word_instance, word_value = word_instance.value, metadata=metadata, is_frozen=None, contents=contents, created_by=user, language_code=word_instance.language_code, is_official=False, is_ai_created=False)
-            sense_instance.save()
-
-            sense = {
-            'id': str(sense_instance.id),
-            "contents": sense_instance.contents,
-            'metadata': AISenseMetadataSerializer(sense_instance.metadata).data if sense_instance.metadata else None,
-            "preview": sense_instance.preview
-        }
-
-            # [sense_json] = serialize_senses([sense], contents, word_instance.language_code, user_language_code)
-            print(word_instance.language_code, user_language_code, sense['contents'], sense['id'])
-            sense['contents'], missing_contents = get_user_lang_sense(word_instance.language_code, user_language_code, sense['contents'], sense['id'])
-
-            data = AISenseSerializer(sense_instance).data
-            if missing_contents:
-                    # Unique (word, user_language_code with 1 status PROCESSING allowed)
-                try:
-                    r_queue = redis.Redis(host='redis', port=6379, db=0)
-                    r_queue.rpush("redis_trans", json.dumps({
-                        "word_id": str(word_id),
-                        "language_code": word_instance.language_code,
-                        "user_language_code": user_language_code,
-                        "missing_translate":[missing_contents],
-                        'current_senses':[sense]
-                    }))
-                except:
-                    pass
-
-                # Keep connect with socket to get result
-                return Response({'detail': 'Word incomplete.', 'status': '206', 'data': data}, status=status.HTTP_206_PARTIAL_CONTENT)
-
-            return Response({'detail': 'Sense created.', 'status': '201', 'data': data}, status=status.HTTP_201_CREATED)
-
-            
-            # data = AISenseSerializer(sense_json).data
-
-            # [missing_contents, have_translated] = detect_missing_content([sense], contents, word_instance.language_code, user_language_code)
-
-
-            # save info to return to client to get id to make modify funtion asap
-            
-            # client create socket connect with word(md5)+language+user_language
-            if missing_contents:
-                # --background task--
-                # -> check translate 
-                # -> get translate and metadata
-                # -> bulk create contents + metadata
-                # -> return data via socket
-                translate_instance = TranslateLog.objects.create(word=word_instance, language_code=user_language_code, status="PROCESSING", type="CREATE NEW SENSE")
-                background_task(render_translate(user, translate_instance, word_instance.value, [sense], missing_contents , have_translated, word_instance.language_code, user_language_code, socket_room))
-
-                return Response({'detail': 'PROCESSING', 'status': '206', 'data': data}, status=status.HTTP_206_PARTIAL_CONTENT)
-            else:
-                return Response({'detail': 'PROCESSING', 'status': '200', 'data': data}, status=status.HTTP_200_OK)
-
-        return Response(status=status.HTTP_400_BAD_REQUEST, data={'message': 'Bad request'})
-    
     @action(detail=False, methods=['put'], url_path='update-sense', permission_classes=[IsAuthenticated])
     def update_sense(self, request, *args, **kwargs):
-        sense_id = request.data.get('sense_id')
-        contents = request.data.get('contents', {})  # [{id, value}]
-        delta = request.data.get('delta', {})  # object
-        metadata = request.data.get('metadata', None)
-        user_language_code = request.data.get('user_lang')
+        """
+        Sửa nghĩa bằng delta. Nghĩa chính thức, nghĩa đã đóng băng hoặc nghĩa của người khác không bị sửa tại chỗ
+        mà tách ra thành một bản tuỳ chỉnh mới của user; chỉ nghĩa tuỳ chỉnh của chính user (chưa đóng băng) mới sửa tại chỗ.
+        """
         user = request.user
+        sense_id = request.data.get('sense_id')
+        user_language_code = request.data.get('user_lang')
+        delta = request.data.get('delta') or {}
+        raw_metadata = request.data.get('metadata')
 
-        changes=[]
+        if not is_uuid(sense_id) or not is_lang(user_language_code):
+            return _bad_request("Invalid sense_id or user_lang")
+        if not isinstance(delta, dict) or len(json.dumps(delta)) > MAX_DELTA_CHARS:
+            return _bad_request("Invalid delta")
+        image = request.data.get('image')
+        if image is not None and (not isinstance(image, str) or len(image) > 1000):
+            return _bad_request("Invalid image")
 
-        # 1. Lấy sense
-
-        sense = AISense.objects.filter(id=sense_id).select_related('original','metadata').first()
-
+        sense = self.get_queryset().filter(id=sense_id).first()
         if not sense:
-            return Response(status=status.HTTP_404_NOT_FOUND, data={"message": "Sense not found"})
+            return Response({"message": "Sense not found"}, status=status.HTTP_404_NOT_FOUND)
+        if image is None:
+            image = sense.image_preview
 
-        metadata_instance = sense.metadata
-        image = request.data.get('image', sense.image_preview)
+        in_place = not sense.is_official and not sense.is_frozen and (user.is_staff or sense.created_by_id == user.id)
 
-        if metadata:
+        with transaction.atomic():
+            metadata_instance = sense.metadata
+            if isinstance(raw_metadata, dict) and raw_metadata:
+                # Metadata là dữ liệu dùng chung nên không sửa tại chỗ: tạo bản mới từ bản cũ cộng phần user gửi
+                base = {f: getattr(sense.metadata, f) for f in METADATA_FIELDS} if sense.metadata else {}
+                metadata_instance = AISenseMetadata.objects.create(**{**base, **clean_metadata(raw_metadata)}, created_by=user)
 
-            # Chuyển thành dict và xử lý
-            new_data = sense.metadata.__dict__.copy()
-            new_data.pop('_state')  # Bắt buộc phải xóa
-            new_data.pop('id')      # Xóa để tạo record mới hoàn toàn
-            new_data.pop('created_at')      # Xóa để tạo record mới hoàn toàn
-            new_data.pop('created_by_id')      # Xóa để tạo record mới hoàn toàn
-            new_data.pop('updated_at')      # Xóa để tạo record mới hoàn toàn
-            new_data.pop('updated_by_id')      # Xóa để tạo record mới hoàn toàn
-
-            # Cập nhật các trường muốn thay đổi
-            new_data.update({
-                **metadata
-            })
-
-            # Tạo instance mới
-            metadata_instance = AISenseMetadata.objects.create(**new_data)
-
-        if sense.is_official:
-            sense = AISense.objects.create(
-                word=sense.word, 
-                word_value=sense.word_value, 
-                delta=delta, 
-                image_preview=image,
-                metadata = metadata_instance,
-                created_by=user, 
-                language_code=sense.language_code, 
-                is_official=False, 
-                original=sense.original or sense,
-                is_frozen =False,
-                is_ai_created=False)
-
-        elif sense.is_frozen:
-            # update của update, Đây là trường hợp ko biết content có gì, phải merge 2 delta
-            # delta = deep_merge(delta, sense.delta)
-            # Thực tế thì user có thể gửi full delta thay vì semi-delta. Khi user update thì sẽ trực tiếp update value của delta hiện tại
-            sense =AISense.objects.create(
-                word=sense.word, 
-                word_value=sense.word_value, 
-                delta=delta, 
-                image_preview=image, 
-                metadata = metadata_instance,
-                created_by=user, 
-                language_code=sense.language_code, 
-                is_official=False, 
-                is_frozen =False,
-                is_ai_created=False)
-
-        else:
-            delta = deep_merge(delta, sense.delta)
-            sense.delta = delta
-            sense.image_preview = image
-            sense.metadata = metadata_instance
-            sense.save()
-
-        sense.contents = get_user_lang_sense(sense.language_code, user_language_code, sense.contents or sense.original.contents, sense.id)
+            if in_place:
+                sense.delta = deep_merge(delta, sense.delta)
+                sense.image_preview = image
+                sense.metadata = metadata_instance
+                sense.updated_by = user
+                sense.save()
+            else:
+                sense = AISense.objects.create(
+                    word_id=sense.word_id, word_value=sense.word_value, delta=delta, image_preview=image,
+                    metadata=metadata_instance, created_by=user, language_code=sense.language_code,
+                    is_official=False, is_frozen=False, is_ai_created=False,
+                    original=sense.original or sense, previous=None if sense.is_official else sense,
+                )
 
         data = AISenseSerializer(sense).data
-
+        data['contents'] = self._user_contents(sense, user_language_code)
         return Response(data, status=status.HTTP_200_OK)

@@ -593,8 +593,8 @@ class GetWordApiTests(APITestCase):
         django_cache.clear()
         self.cache = WordCacheManager()
         self.queue = FakeQueue()
-        for target in ('push_job', 'acquire_lock'):
-            patcher = mock.patch(f'ai.views.AIWord.{target}', getattr(self.queue, target))
+        for target in ('ai.views.AIWord.push_job', 'ai.jobs.push_job', 'ai.jobs.acquire_lock'):
+            patcher = mock.patch(target, getattr(self.queue, target.rsplit('.', 1)[1]))
             patcher.start()
             self.addCleanup(patcher.stop)
         self.words = set()

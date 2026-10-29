@@ -39,4 +39,4 @@ def acquire_lock(name, ttl):
 
 def push_job(queue, payload):
     """Đẩy 1 job (dict) vào hàng đợi, worker (utils/celery/worker.py) sẽ lấy ra xử lý."""
-    get_queue_client().rpush(queue, json.dumps(payload))
+    get_queue_client().rpush(queue, json.dumps(payload, default=str))

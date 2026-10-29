@@ -177,10 +177,14 @@ REST_FRAMEWORK = {
 # ),
     'TEST_REQUEST_DEFAULT_FORMAT': 'json','DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 50,  # mặc định 50 item/trang
-    # Chặn spam (mỗi lần tra từ mới là 1 lần gọi AI tốn tiền)
+    # Chặn spam (mỗi lần tra từ mới là 1 lần gọi AI tốn tiền). Mức mặc định đủ rộng cho app poll get-word khi đang tạo từ
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
     'DEFAULT_THROTTLE_RATES': {
-        'anon': os.getenv('THROTTLE_ANON', '30/minute'),
-        'user': os.getenv('THROTTLE_USER', '120/minute'),
+        'anon': os.getenv('THROTTLE_ANON', '60/minute'),
+        'user': os.getenv('THROTTLE_USER', '300/minute'),
         'word_generate': os.getenv('THROTTLE_WORD_GENERATE', '60/hour'),
     },
 }

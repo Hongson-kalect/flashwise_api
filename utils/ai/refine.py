@@ -8,9 +8,11 @@ Bước 2 gửi toàn bộ draft cho model mạnh hơn để kiểm tra và chu�
 Phần thuần (prompt, apply_refinement, build_translate_jobs) không gọi mạng nên test được trực tiếp.
 """
 import asyncio
+import copy
 import json
 import logging
 import re
+import unicodedata
 from datetime import datetime, timezone as dt_timezone
 
 from django.conf import settings
@@ -19,6 +21,7 @@ from google.genai import types
 
 from utils.ai.constain import language_map
 from utils.ai.japanese import add_ruby
+from utils.utils.best_effort import best_effort
 from utils.utils.socket import socket_message
 
 logger = logging.getLogger(__name__)
@@ -75,6 +78,12 @@ def _text(node):
     return node.strip() if isinstance(node, str) else ''
 
 
+def _same(a, b):
+    """Hai chuỗi coi như một nếu chỉ khác dạng chữ Unicode (full / half width...) hoặc khoảng trắng: không bắt dịch lại vì sửa vặt."""
+    norm = lambda t: ' '.join(unicodedata.normalize('NFKC', t).split())
+    return norm(a) == norm(b)
+
+
 def _clean(value, max_len):
     return value.strip()[:max_len] if isinstance(value, str) else ''
 
@@ -109,7 +118,7 @@ def render_refine_prompt(word, language_code, senses):
 
     # CHECKS:
     1. Correctness: the definition is accurate for the given pos and is a real meaning of the word; IPA matches the word and its label (US/UK/...).
-    2. Standard form: pos is a lowercase English term (noun, verb, adjective, adverb, ...); level is CEFR A1-C2 (or N1-N5 for Japanese, TOPIK1-6 for Korean); register uses only the allowed values; definition is one clear sentence in {language_name}; usage only describes grammar patterns, prepositions or context.
+    2. Standard form: pos is a lowercase English term (noun, verb, adjective, adverb, ...); level is CEFR A1-C2 (or N1-N5 for Japanese, TOPIK1-6 for Korean); register uses only the allowed values; definition is one clear sentence in {language_name}; usage is ONLY a short note on grammar patterns, prepositions or register, never example sentences: rewrite it as such a note, or set usage to an empty string if there is nothing useful to say.
     3. Examples: natural, grammatical, at most 2, and each MUST contain '{word}' (or an inflected form).
     4. Senses: remove a sense that duplicates another sense (same meaning and pos) or is not a real meaning. Keep the most frequent meaning first. NEVER add new senses.
 
@@ -134,7 +143,7 @@ def _apply_fix(sense, item, language_code):
         fields.add('pos')
 
     definition = _clean(item.get('definition'), 1000)
-    if definition and definition != _text((contents.get('definition') or {}).get(language_code)):
+    if definition and not _same(definition, _text((contents.get('definition') or {}).get(language_code))):
         # Bản dịch cũ gắn với nghĩa cũ -> bỏ, dịch lại từ nghĩa mới
         contents['definition'] = {language_code: {'value': definition}}
         contents.pop('translations', None)
@@ -142,7 +151,11 @@ def _apply_fix(sense, item, language_code):
         scope['definition'] = True
 
     usage = _clean(item.get('usage'), 1000)
-    if usage and usage != _text((contents.get('usage') or {}).get(language_code)):
+    if not usage and isinstance(item.get('usage'), str) and _text((contents.get('usage') or {}).get(language_code)):
+        # Model chủ động trả chuỗi rỗng: usage cũ không phải ghi chú ngữ pháp (thường là câu ví dụ) -> bỏ luôn, kể cả bản dịch của nó
+        contents.pop('usage', None)
+        fields.add('usage')
+    elif usage and not _same(usage, _text((contents.get('usage') or {}).get(language_code))):
         contents['usage'] = {language_code: {'value': usage}}
         fields.add('usage')
         scope['usage'] = True
@@ -151,10 +164,10 @@ def _apply_fix(sense, item, language_code):
         new_texts = [t for t in (_clean(x, 500) for x in item['examples']) if t][:2]
         old_nodes = contents.get('examples') or []
         old_texts = [_text(ex.get(language_code)) if isinstance(ex, dict) else '' for ex in old_nodes]
-        if new_texts and new_texts != old_texts:
+        if new_texts and not (len(new_texts) == len(old_texts) and all(_same(n, o) for n, o in zip(new_texts, old_texts))):
             nodes = []
             for i, text in enumerate(new_texts):
-                if i < len(old_nodes) and old_texts[i] == text:
+                if i < len(old_nodes) and _same(old_texts[i], text):
                     nodes.append(old_nodes[i])  # câu không đổi giữ nguyên bản dịch
                 else:
                     nodes.append({language_code: {'value': text}})
@@ -324,12 +337,20 @@ async def refine_word(word_value, language_code, senses, refinement, *, draft_mo
     from utils.ai.metadata import ai_create_metadata
     from utils.ai.translate import ai_create_translate_sema
 
+    pristine = copy.deepcopy(senses)  # apply_refinement sửa tại chỗ; lỗi giữa chừng thì phải quay về đúng bản draft, không để nửa refined nửa draft
+
+    async def notify(payload):
+        try:
+            await socket_message(socket_room, payload)
+        except Exception as e:
+            logger.warning('Gửi socket %s lỗi, bỏ qua: %s', payload.get('type'), e)
+
     def keep_draft():
-        for sense in senses:
+        for sense in pristine:
             sense['quality_status'] = 'draft'
             sense['ai_pass'] = 1
             sense['ai_model'] = draft_model
-        return senses
+        return pristine
 
     if not refinement:
         return keep_draft()
@@ -341,9 +362,9 @@ async def refine_word(word_value, language_code, senses, refinement, *, draft_mo
 
         if cache:
             for removed in report['removed']:
-                cache.cache_word_remove_sense(language_code, word_value, removed['id'])
+                best_effort(cache.cache_word_remove_sense, language_code, word_value, removed['id'])
         if socket_room and report['removed']:
-            await socket_message(socket_room, {"type": "SENSE_REMOVED", "payload": [r['id'] for r in report['removed']]})
+            await notify({"type": "SENSE_REMOVED", "payload": [r['id'] for r in report['removed']]})
 
         if report['changed']:
             payload = {}
@@ -351,13 +372,13 @@ async def refine_word(word_value, language_code, senses, refinement, *, draft_mo
                 sense = by_id[change['id']]
                 payload[sense['id']] = {k: sense.get(k) for k in ('id', 'pos', 'level', 'register', 'ipas', 'is_offensive', 'contents')}
                 if cache:
-                    cache.cache_word_add_sense(language_code, word_value, sense['id'], public_sense(sense))
+                    best_effort(cache.cache_word_add_sense, language_code, word_value, sense['id'], public_sense(sense))
             if socket_room:
                 # App gộp theo id nên nghĩa đã gửi ở bước 1 sẽ được thay bằng bản chuẩn hoá
-                await socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": payload})
+                await notify({"type": "PARTIAL_SENSE", "payload": payload})
 
             jobs = build_translate_jobs(survivors, report, language_code)
-            langs = ((cache.cache_word_get_data(language_code, word_value) if cache else None) or {}).get('langs') or [language_code]
+            langs = ((best_effort(cache.cache_word_get_data, language_code, word_value) if cache else None) or {}).get('langs') or [language_code]
             tasks = []
             if jobs:
                 tasks.append(ai_create_translate_sema({

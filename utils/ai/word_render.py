@@ -36,6 +36,7 @@ from utils.celery.fetch_image import get_image_by_keyword
 from utils.ai.translate import ai_create_translate_sema 
 from utils.ai.metadata import ai_create_metadata 
 from utils.utils.normalize import normalize
+from utils.utils.best_effort import best_effort
 from ai.queries import load_word
 from utils.ai.japanese import add_ruby
 from utils.ai.refine import render_refine_prompt, request_refinement, refine_word
@@ -180,7 +181,7 @@ async def ai_create_new_word_sema(word_info):
                                 if language_code == 'ja':
                                     add_ruby(processed_contents["contents"], language_code)
                                 sense_objs.append(processed_contents)
-                                cache.cache_word_add_sense(language_code, word_value, id, processed_contents)
+                                best_effort(cache.cache_word_add_sense, language_code, word_value, id, processed_contents)  # cache hỏng không được làm mất dịch / metadata của nghĩa
 
                                 # 1. Gửi socket PARTIAL ngầm: người tra đầu tiên thấy nghĩa ngay
                                 s_task = asyncio.create_task(socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": {id: processed_contents}}))
@@ -188,7 +189,7 @@ async def ai_create_new_word_sema(word_info):
                                 s_task.add_done_callback(background_tasks.discard)
 
                                 # Ngôn ngữ cần dịch lấy từ cache (người tra sau vào thêm ngôn ngữ của họ)
-                                word_data_tmp = cache.cache_word_get_data(language_code, word_value) or {}
+                                word_data_tmp = best_effort(cache.cache_word_get_data, language_code, word_value, default={}) or {}
                                 redis_user_language_code = word_data_tmp.get('langs', [language_code])
 
                                 # 2. Dịch + metadata cho riêng nghĩa này (1 nghĩa/lần để gần như tức thì)
@@ -231,8 +232,14 @@ async def ai_create_new_word_sema(word_info):
             refine_task = asyncio.create_task(request_refinement(render_refine_prompt(word_value, language_code, sense_objs)))
 
         # Đợi các task chạy ngầm (socket, dịch, metadata) xong rồi mới đụng vào nội dung các nghĩa
+        # Có trần thời gian: một lệnh gọi Gemini treo / 503 liên tục không được giữ người dùng chờ vô hạn.
+        # Phần chưa xong bị huỷ, nghĩa vẫn được lưu và bản dịch thiếu sẽ được get-word dịch bù sau (redis_trans).
         if background_tasks:
-            await asyncio.gather(*background_tasks, return_exceptions=True)
+            _, pending = await asyncio.wait(list(background_tasks), timeout=settings.AI_BACKGROUND_TIMEOUT)
+            for task in pending:
+                task.cancel()
+            if pending:
+                logger.warning('Tạo từ %s: %s tác vụ dịch / metadata quá %ss, bỏ qua để lưu phần đã có', word_value, len(pending), settings.AI_BACKGROUND_TIMEOUT)
 
         refinement = None
         if refine_task:

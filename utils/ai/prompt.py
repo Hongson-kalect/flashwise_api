@@ -6,7 +6,7 @@ def render_word_prompt(word, language_code):
     extra_rules = ""
     if language_code == 'ja':
         extra_rules = (
-            "5. Japanese: level is JLPT (N5-N1). 'roman' is the Hepburn romaji of that exact text. "
+            "6. Japanese: level is JLPT (N5-N1). 'roman' is the Hepburn romaji of that exact text. "
             "ipas has one item per reading: label READING, value = the full hiragana reading, roman = its romaji. "
             "Never put furigana or brackets inside any text."
         )
@@ -20,6 +20,7 @@ def render_word_prompt(word, language_code):
     2. Grouping: One entry per POS. Senses ordered by frequency.
     3. Level: Defs/Examples must match the word's level.
     4. Validation: 'should_be_saved' is FALSE for typos or random word strings.
+    5. Usage: ONLY a short note on grammar patterns, prepositions, collocations or register (e.g. "Used with 'in'; usually plural"). NEVER example sentences; leave it empty if there is nothing useful to say.
     {extra_rules}
 
     # OUTPUT:

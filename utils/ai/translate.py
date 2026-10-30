@@ -60,6 +60,7 @@ async def process_translation_chunk(chunk, language_code, language_str, translat
         # WORD: {word} | FROM: {language_code} | TO: {language_str}
         # CONTENTS: {json.dumps(chunk, ensure_ascii=False)}
         # TASK: Translate into {language_str}. Output MINIFIED JSON only.
+        # RULES: definition, usage and examples: translate the text faithfully. translations: 1-5 short equivalents of the headword '{word}' in the sense given by its definition (single words or short phrases, NEVER a full sentence or the definition itself).
         """
 
 

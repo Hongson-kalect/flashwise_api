@@ -1,3 +1,5 @@
+import time
+import asyncio
 import copy
 import json
 import re
@@ -146,6 +148,32 @@ class BuildTranslateJobsTests(TestCase):
         _, report = refine.apply_refinement(senses, {'senses': [{'id': 's1', 'action': 'fix', 'usage': 'at the bank'}]}, 'en')
         job = refine.build_translate_jobs(senses, report, 'en')[0]['contents']
         self.assertIs(job['translations'], False)
+
+    def test_empty_usage_removes_it_with_its_translations(self):
+        # Draft hay nhét câu ví dụ vào usage; refine trả "" nghĩa là bỏ hẳn (không đòi dịch lại gì)
+        senses = [make_sense(usage='Turn on the light.')]
+        senses[0]['contents']['usage']['vi'] = {'value': 'Bật đèn.'}
+        _, report = refine.apply_refinement(senses, {'senses': [{'id': 's1', 'action': 'fix', 'usage': '', 'reason': 'not a pattern'}]}, 'en')
+        self.assertNotIn('usage', senses[0]['contents'])
+        self.assertEqual([c['fields'] for c in report['changed']], [['usage']])
+        self.assertEqual(refine.build_translate_jobs(senses, report, 'en'), [])
+
+        # Không có usage sẵn mà model trả "" thì không phải thay đổi
+        _, report = refine.apply_refinement(senses, {'senses': [{'id': 's1', 'action': 'fix', 'usage': ''}]}, 'en')
+        self.assertEqual(report['changed'], [])
+
+    def test_cosmetic_differences_are_not_a_change(self):
+        # Gemini thật từng "sửa" definition thành đúng chữ cũ (khác dạng chữ / khoảng trắng): không được bỏ bản dịch rồi dịch lại
+        senses = [make_sense(definition='A financial institution.', examples=('I went to the bank.',))]
+        item = {'id': 's1', 'action': 'fix', 'definition': ' A  financial institution. ', 'examples': ['I went to the  bank.']}
+        _, report = refine.apply_refinement(senses, {'senses': [item]}, 'en')
+        self.assertEqual(report['changed'], [])
+        self.assertIn('translations', senses[0]['contents'])
+        self.assertEqual(refine.build_translate_jobs(senses, report, 'en'), [])
+
+        # Full-width và half-width của cùng một chữ cũng coi là một
+        self.assertTrue(refine._same('ＡＢＣ　ｄｅｆ', 'ABC def'))
+        self.assertFalse(refine._same('bank', 'banks'))
 
     def test_no_job_for_non_text_changes(self):
         senses = [make_sense()]
@@ -392,6 +420,30 @@ class PipelineTests(TestCase):
         for sense in self.senses():
             self.assertEqual((sense.quality_status, sense.ai_pass), ('draft', 1))
             self.assertTrue(sense.ai_model)
+
+    @override_settings(AI_BACKGROUND_TIMEOUT=1)
+    def test_stuck_translation_does_not_block_saving(self):
+        async def stuck_metadata(props):
+            await asyncio.sleep(30)  # lệnh gọi Gemini treo
+
+        started = time.monotonic()
+        result = self.run_pipeline(lambda m: stream_pieces(DRAFT), self.refine_with(lambda ids: [{'id': i, 'action': 'keep'} for i in ids]), metadata=stuck_metadata)
+        self.assertLess(time.monotonic() - started, 15)
+        self.assertTrue(result['is_valid'])
+        self.word.refresh_from_db()
+        self.assertEqual(self.word.status, 'COMPLETED')
+        self.assertEqual(len(self.senses()), 2)
+        self.assertEqual({s.quality_status for s in self.senses()}, {'refined'})
+
+    def test_cache_failure_does_not_lose_translation_or_refine(self):
+        with mock.patch.object(WordCacheManager, 'cache_word_add_sense', side_effect=ConnectionError('redis down')):
+            self.run_pipeline(lambda m: stream_pieces(DRAFT), self.refine_with(lambda ids: [{'id': ids[0], 'action': 'fix', 'level': 'B2', 'reason': 'x'}, {'id': ids[1], 'action': 'keep'}]))
+        self.assertTrue(self.translate_calls)  # bản dịch vẫn được tạo dù cache hỏng
+        self.word.refresh_from_db()
+        self.assertEqual(self.word.status, 'COMPLETED')
+        # Refine áp xong thì lưu đúng bản refined, không rơi về nửa draft nửa refined
+        self.assertEqual({(s.quality_status, s.ai_pass) for s in self.senses()}, {('refined', 2)})
+        self.assertIn('B2', {s.level for s in self.senses()})
 
     @override_settings(AI_REFINE_ENABLED=False)
     def test_refine_can_be_switched_off(self):

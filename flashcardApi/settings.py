@@ -129,6 +129,7 @@ GEMINI_API_MODEL = ["gemini-2.5-flash-lite","gemini-3.1-flash-lite","gemini-2.5-
 AI_REFINE_ENABLED = os.getenv('AI_REFINE_ENABLED', 'True').lower() in ('1', 'true', 'yes')
 GEMINI_REFINE_MODELS = [m.strip() for m in os.getenv('GEMINI_REFINE_MODELS', 'gemini-2.5-flash,gemini-2.5-flash-lite').split(',') if m.strip()]
 AI_REFINE_THINKING_BUDGET = int(os.getenv('AI_REFINE_THINKING_BUDGET', '1024'))
+AI_REFINE_MAX_ADD = int(os.getenv('AI_REFINE_MAX_ADD', '3')) # số nghĩa tối đa bước 2 được bổ sung cho 1 từ
 AI_REFINE_TIMEOUT = int(os.getenv('AI_REFINE_TIMEOUT', '60')) # giây cho mỗi model, quá hạn thì thử model kế tiếp rồi giữ bản draft
 AI_BACKGROUND_TIMEOUT = int(os.getenv('AI_BACKGROUND_TIMEOUT', '90')) # giây tối đa chờ dịch / metadata của bước 1 trước khi lưu
 # Từ ở trạng thái PROCESSING quá lâu mà không có cache (worker chết) thì coi như lỗi và tạo lại

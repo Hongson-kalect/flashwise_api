@@ -21,6 +21,7 @@ from google.genai import types
 
 from utils.ai.constain import language_map
 from utils.ai.japanese import add_ruby
+from utils.utils import uuidv7
 from utils.utils.best_effort import best_effort
 from utils.utils.socket import socket_message
 
@@ -41,10 +42,10 @@ refine_schema = {
             "items": {
                 "type": "OBJECT",
                 "properties": {
-                    "id": {"type": "STRING"},
-                    "action": {"type": "STRING", "enum": ["keep", "fix", "remove"]},
-                    "reason": {"type": "STRING", "description": "Why it was fixed or removed. Empty for keep."},
-                    # Chỉ điền các trường thật sự thay đổi khi action = fix
+                    "id": {"type": "STRING", "description": "Copied exactly for keep / fix / remove. Omit for add."},
+                    "action": {"type": "STRING", "enum": ["keep", "fix", "remove", "add"]},
+                    "reason": {"type": "STRING", "description": "Why it was fixed, removed or added. Empty for keep."},
+                    # fix: chỉ điền các trường thật sự thay đổi. add: điền đủ pos, definition, examples (và usage, level, register, ipas nếu có)
                     "pos": {"type": "STRING"},
                     "definition": {"type": "STRING"},
                     "usage": {"type": "STRING"},
@@ -61,7 +62,7 @@ refine_schema = {
                     },
                     "is_offensive": {"type": "BOOLEAN"},
                 },
-                "required": ["id", "action"],
+                "required": ["action"],
             },
         },
     },
@@ -107,6 +108,7 @@ def draft_view(sense, language_code):
 def render_refine_prompt(word, language_code, senses):
     language_name = language_map.get(language_code, 'en')
     drafts = json.dumps([draft_view(s, language_code) for s in senses], ensure_ascii=False)
+    max_add = settings.AI_REFINE_MAX_ADD
 
     return f"""
     # ROLE: Senior lexicographer reviewing a junior's draft dictionary entry.
@@ -114,19 +116,21 @@ def render_refine_prompt(word, language_code, senses):
     Word: '{word}' ({language_name}). Draft senses (JSON, content is in {language_name}):
     {drafts}
 
-    # TASK: Check every draft sense, standardize it, and change ONLY what is wrong or inconsistent.
+    # TASK: Check every draft sense, standardize it, and change ONLY what is wrong or inconsistent. Every change costs a re-translation into many languages, so NEVER rewrite a definition, usage or example that is already correct just to shorten, reword or polish it.
 
     # CHECKS:
     1. Correctness: the definition is accurate for the given pos and is a real meaning of the word; IPA matches the word and its label (US/UK/...).
     2. Standard form: pos is a lowercase English term (noun, verb, adjective, adverb, ...); level is CEFR A1-C2 (or N1-N5 for Japanese, TOPIK1-6 for Korean); register uses only the allowed values; definition is one clear sentence in {language_name}; usage is ONLY a short note on grammar patterns, prepositions or register, never example sentences: rewrite it as such a note, or set usage to an empty string if there is nothing useful to say.
     3. Examples: natural, grammatical, at most 2, and each MUST contain '{word}' (or an inflected form).
-    4. Senses: remove a sense that duplicates another sense (same meaning and pos) or is not a real meaning. Keep the most frequent meaning first. NEVER add new senses.
+    4. Senses: remove a sense that duplicates another sense (same meaning and pos) or is not a real meaning. If your own fixes (e.g. changing pos or definition) would make two senses mean the same, remove the weaker one instead of keeping both. Keep the most frequent meaning first.
+    5. Missing senses: if the draft clearly misses a COMMON, distinct meaning or part of speech that a learner will meet, add it (at most {max_add}). Do not add rare, archaic, technical or idiom-only meanings, and never add a near-duplicate of an existing sense. If the draft is complete, add nothing.
 
     # OUTPUT:
     One item per draft sense, with the id copied exactly.
     - action=keep when nothing needs to change (no other fields).
     - action=fix with ONLY the fields that change (examples: give the full corrected list), plus a short reason.
     - action=remove with a short reason.
+    - action=add for each missing sense, WITHOUT id: give pos, definition, 1-2 examples, usage / level / register / ipas when applicable, plus a short reason.
     Strictly follow the JSON schema.
     """
 
@@ -206,14 +210,57 @@ def _apply_fix(sense, item, language_code):
     return {'fields': fields, 'scope': scope, 'reason': _clean(item.get('reason'), 300)}
 
 
+def _new_sense(item, template, language_code, existing):
+    """Dựng nghĩa mới từ item action=add, cùng dạng với nghĩa của bước 1. None nếu thiếu / trùng nghĩa đã có."""
+    pos = _clean(item.get('pos'), MAX_POS).lower()
+    definition = _clean(item.get('definition'), 1000)
+    examples = [t for t in (_clean(x, 500) for x in item.get('examples') or []) if t][:2] if isinstance(item.get('examples'), list) else []
+    if not pos or not definition or not examples:
+        return None
+    for old in existing:
+        if old.get('pos') == pos and _same(definition, _text(((old.get('contents') or {}).get('definition') or {}).get(language_code))):
+            return None
+
+    usage = _clean(item.get('usage'), 1000)
+    contents = {
+        'definition': {language_code: {'value': definition}},
+        'examples': [{language_code: {'value': text}} for text in examples],
+    }
+    if usage:
+        contents['usage'] = {language_code: {'value': usage}}
+
+    level = _clean(item.get('level'), MAX_LEVEL).upper()
+    register = [r for r in dict.fromkeys(item.get('register') or []) if r in REGISTER_VALUES] if isinstance(item.get('register'), list) else []
+    ipas = [
+        {'value': _clean(i.get('value'), 100), 'label': _clean(i.get('label'), 20)}
+        for i in item.get('ipas') or [] if isinstance(i, dict) and _clean(i.get('value'), 100)
+    ] if isinstance(item.get('ipas'), list) else []
+    sense = {
+        'id': str(uuidv7.generate_uuid7()),
+        'word_id': template.get('word_id'),
+        'word_value': template.get('word_value'),
+        'language_code': language_code,
+        'is_offensive': bool(item.get('is_offensive')),
+        'pos': pos,
+        'level': level if LEVEL_RE.match(level) else None,
+        'register': register or ['neutral'],
+        'ipas': ipas or (template.get('ipas') or []),  # cùng từ nên phát âm giống các nghĩa có sẵn
+        'contents': contents,
+    }
+    if language_code == 'ja':
+        add_ruby(contents, language_code)
+    return sense
+
+
 def apply_refinement(senses, refinement, language_code):
     """
     Áp kết quả refine lên danh sách nghĩa draft (sửa tại chỗ).
     - id lạ bị bỏ qua; nghĩa model không nhắc tới coi như giữ nguyên.
-    - Model đòi xoá hết thì bỏ qua yêu cầu xoá (không bao giờ để từ không còn nghĩa nào).
-    Trả (các nghĩa còn lại, report).
+    - action=add dựng nghĩa mới (tối đa AI_REFINE_MAX_ADD, thiếu trường hoặc trùng nghĩa có sẵn thì bỏ).
+    - Model đòi xoá hết mà không bổ sung nghĩa nào thì bỏ qua yêu cầu xoá (không bao giờ để từ không còn nghĩa).
+    Trả (các nghĩa còn lại, report); report['added'] là nghĩa mới, đã nằm cuối danh sách trả về.
     """
-    report = {'removed': [], 'changed': [], 'scope': {}, 'all_removed_ignored': False}
+    report = {'removed': [], 'changed': [], 'added': [], 'scope': {}, 'all_removed_ignored': False}
     items = refinement.get('senses') if isinstance(refinement, dict) else None
     if not isinstance(items, list):
         return senses, report
@@ -221,9 +268,18 @@ def apply_refinement(senses, refinement, language_code):
     by_id = {s['id']: s for s in senses}
     removals = {}
     changes = {}
+    added = []
 
     for item in items:
-        sense = by_id.get(item.get('id')) if isinstance(item, dict) else None
+        if not isinstance(item, dict):
+            continue
+        if item.get('action') == 'add':
+            if senses and len(added) < settings.AI_REFINE_MAX_ADD:
+                new = _new_sense(item, senses[0], language_code, [*senses, *(sense for sense, _ in added)])
+                if new:
+                    added.append((new, _clean(item.get('reason'), 300)))
+            continue
+        sense = by_id.get(item.get('id'))
         if sense is None:
             continue
         action = item.get('action')
@@ -234,11 +290,20 @@ def apply_refinement(senses, refinement, language_code):
             if change:
                 changes[sense['id']] = change
 
-    if removals and len(removals) >= len(senses):
+    if removals and len(removals) >= len(senses) and not added:
         report['all_removed_ignored'] = True
         removals = {}
 
     survivors = [s for s in senses if s['id'] not in removals]
+    for new, reason in added:
+        survivors.append(new)
+        report['added'].append({'id': new['id'], 'reason': reason})
+        # Nghĩa mới chưa có bản dịch nào: dịch toàn bộ phần có nội dung
+        report['scope'][new['id']] = {
+            'definition': True,
+            'usage': 'usage' in new['contents'],
+            'examples': list(range(len(new['contents']['examples']))),
+        }
     report['removed'] = [{'id': sid, 'reason': reason} for sid, reason in removals.items()]
     for sid, change in changes.items():
         if sid in removals:
@@ -285,13 +350,17 @@ def public_sense(sense):
 def stamp_senses(senses, report, model):
     """Ghi dấu nguồn gốc lên từng nghĩa trước khi lưu DB (các trường này có trên AISense)."""
     changed = {c['id']: c for c in report['changed']}
+    added = {a['id']: a for a in report.get('added', [])}
     at = datetime.now(dt_timezone.utc).isoformat()
     for sense in senses:
         change = changed.get(sense['id'])
         sense['quality_status'] = 'refined'
         sense['ai_pass'] = 2
         sense['ai_model'] = model
-        sense['ai_review'] = {'fields': change['fields'], 'reason': change['reason'], 'at': at} if change else {'unchanged': True, 'at': at}
+        if sense['id'] in added:
+            sense['ai_review'] = {'added': True, 'reason': added[sense['id']]['reason'], 'at': at}
+        else:
+            sense['ai_review'] = {'fields': change['fields'], 'reason': change['reason'], 'at': at} if change else {'unchanged': True, 'at': at}
 
 
 # ======================= PHẦN GỌI MẠNG =======================
@@ -363,13 +432,13 @@ async def refine_word(word_value, language_code, senses, refinement, *, draft_mo
         if socket_room and report['removed']:
             await notify({"type": "SENSE_REMOVED", "payload": [r['id'] for r in report['removed']]})
 
-        if report['changed']:
+        if report['changed'] or report['added']:
             payload = {}
-            for change in report['changed']:
+            for change in [*report['changed'], *report['added']]:
                 sense = by_id[change['id']]
                 payload[sense['id']] = {k: sense.get(k) for k in ('id', 'pos', 'level', 'register', 'ipas', 'is_offensive', 'contents')}
             if socket_room:
-                # App gộp theo id nên nghĩa đã gửi ở bước 1 sẽ được thay bằng bản chuẩn hoá
+                # App gộp theo id: nghĩa đã gửi ở bước 1 được thay bằng bản chuẩn hoá, nghĩa mới (id lạ) được thêm vào
                 await notify({"type": "PARTIAL_SENSE", "payload": payload})
 
             jobs = build_translate_jobs(survivors, report, language_code)
@@ -384,7 +453,7 @@ async def refine_word(word_value, language_code, senses, refinement, *, draft_mo
                     "current_senses": [by_id[j['id']] for j in jobs],
                 }))
             # Metadata (đồng nghĩa, thành ngữ, từ khoá ảnh...) sinh từ nghĩa + loại từ nên chỉ làm lại khi một trong hai đổi
-            meta_senses = [by_id[c['id']] for c in report['changed'] if {'definition', 'pos'} & set(c['fields'])]
+            meta_senses = [by_id[c['id']] for c in report['changed'] if {'definition', 'pos'} & set(c['fields'])] + [by_id[a['id']] for a in report['added']]
             if meta_senses:
                 tasks.append(ai_create_metadata({
                     "word_value": word_value,
@@ -392,9 +461,13 @@ async def refine_word(word_value, language_code, senses, refinement, *, draft_mo
                     "current_senses": meta_senses,
                 }))
             if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+                try:
+                    # Cũng có trần thời gian như bước chờ dịch của bước 1: lệnh gọi treo không giữ người dùng chờ vô hạn
+                    await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=settings.AI_BACKGROUND_TIMEOUT)
+                except asyncio.TimeoutError:
+                    logger.warning('Refine %s: dịch / metadata lại quá %ss, lưu phần đã có', word_value, settings.AI_BACKGROUND_TIMEOUT)
 
-        logger.info('Refine %s: giữ %s, sửa %s, xoá %s', word_value, len(survivors) - len(report['changed']), len(report['changed']), len(report['removed']))
+        logger.info('Refine %s: giữ %s, sửa %s, xoá %s, thêm %s', word_value, len(survivors) - len(report['changed']) - len(report['added']), len(report['changed']), len(report['removed']), len(report['added']))
         return survivors
     except Exception:
         logger.exception('Refine %s lỗi khi áp kết quả, giữ bản draft', word_value)

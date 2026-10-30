@@ -17,6 +17,7 @@ from rest_framework.test import APITestCase
 from uuid6 import uuid7
 
 from ai.models import AISense, AISenseMetadata, AIWord
+from ai.validators import is_uuid
 from utils.ai import refine
 from utils.ai.word_render import ai_create_new_word_sema
 from utils.ai.japanese import add_ruby
@@ -122,6 +123,62 @@ class ApplyRefinementTests(TestCase):
         survivors, report = self.apply(senses, [{'id': 's1', 'action': 'remove'}, {'id': 's2', 'action': 'remove'}])
         self.assertEqual(len(survivors), 2)
         self.assertTrue(report['all_removed_ignored'])
+
+    def add_item(self, **overrides):
+        return {'action': 'add', 'pos': 'Verb', 'definition': 'To deposit money in a bank.', 'examples': ['I bank at the corner branch.'],
+                'level': 'b1', 'reason': 'common verb sense is missing', **overrides}
+
+    def test_add_builds_a_new_sense_like_a_draft_one(self):
+        senses = [make_sense('s1')]
+        survivors, report = self.apply(senses, [{'id': 's1', 'action': 'keep'}, self.add_item(usage="Used with 'at'.")])
+        self.assertEqual(len(survivors), 2)
+        new = survivors[-1]
+        self.assertEqual([a['id'] for a in report['added']], [new['id']])
+        self.assertEqual((new['pos'], new['level'], new['word_value'], new['language_code'], new['register']), ('verb', 'B1', 'bank', 'en', ['neutral']))
+        self.assertEqual(new['ipas'], senses[0]['ipas'])  # cùng từ nên mượn phát âm của nghĩa có sẵn
+        self.assertEqual(new['contents']['definition'], {'en': {'value': 'To deposit money in a bank.'}})
+        self.assertEqual(new['contents']['examples'], [{'en': {'value': 'I bank at the corner branch.'}}])
+        self.assertEqual(new['contents']['usage'], {'en': {'value': "Used with 'at'."}})
+        self.assertTrue(is_uuid(new['id']))
+
+        # Nghĩa mới chưa có bản dịch nào: job dịch đủ definition, usage, example và translations
+        job = refine.build_translate_jobs(survivors, report, 'en')[0]
+        self.assertEqual(job['id'], new['id'])
+        self.assertEqual(set(job['contents']), {'definition', 'usage', 'examples', 'translations'})
+        self.assertEqual(job['contents']['translations'], 'To deposit money in a bank.')
+
+        refine.stamp_senses(survivors, report, 'fake-pro')
+        self.assertEqual(new['ai_review']['added'], True)
+        self.assertEqual(survivors[0]['ai_review']['unchanged'], True)
+
+    def test_invalid_or_duplicate_add_is_ignored(self):
+        senses = [make_sense('s1', pos='noun', definition='A financial institution.')]
+        for bad in (self.add_item(pos=''), self.add_item(definition=''), self.add_item(examples=[]), self.add_item(examples='x'),
+                    self.add_item(pos='noun', definition=' A  financial institution. ')):
+            survivors, report = self.apply(senses, [bad])
+            self.assertEqual((len(survivors), report['added']), (1, []), bad)
+
+    @override_settings(AI_REFINE_MAX_ADD=2)
+    def test_add_is_capped(self):
+        senses = [make_sense('s1')]
+        items = [self.add_item(definition=f'meaning {i}') for i in range(5)]
+        survivors, report = self.apply(senses, items)
+        self.assertEqual(len(report['added']), 2)
+        self.assertEqual(len(survivors), 3)
+
+    def test_replacing_every_sense_is_allowed_when_new_ones_are_added(self):
+        senses = [make_sense('s1')]
+        survivors, report = self.apply(senses, [{'id': 's1', 'action': 'remove', 'reason': 'wrong'}, self.add_item()])
+        self.assertEqual([s['pos'] for s in survivors], ['verb'])
+        self.assertFalse(report['all_removed_ignored'])
+
+    def test_add_for_japanese_gets_ruby(self):
+        senses = [make_sense('s1')]
+        senses[0]['language_code'] = 'ja'
+        survivors, report = refine.apply_refinement(senses, {'senses': [self.add_item(definition='猫がいる。', examples=['猫が好きです。'])]}, 'ja')
+        new = survivors[-1]
+        self.assertEqual([a['id'] for a in report['added']], [new['id']])
+        self.assertEqual(new['contents']['examples'][0]['ja']['ruby'], '[猫|ねこ]が[好|す]きです。')
 
     def test_garbage_refinement_changes_nothing(self):
         senses = [make_sense()]
@@ -453,6 +510,26 @@ class PipelineTests(TestCase):
         self.assertEqual(final['status'], 'CACHED')
         self.assertNotIn('stage', final)
         self.assertEqual(set(final['senses']), {str(s.id) for s in self.senses()})
+
+    def test_refine_can_add_a_missing_sense(self):
+        def builder(ids):
+            return [{'id': i, 'action': 'keep'} for i in ids] + [{
+                'action': 'add', 'pos': 'verb', 'definition': 'To deposit money in a bank.', 'level': 'B1',
+                'examples': ['I bank at the corner branch.'], 'reason': 'common verb sense is missing',
+            }]
+
+        result = self.run_pipeline(lambda m: stream_pieces(DRAFT), self.refine_with(builder))
+        self.assertTrue(result['is_valid'])
+        senses = self.senses()
+        self.assertEqual(len(senses), 3)
+        added = [s for s in senses if (s.ai_review or {}).get('added')]
+        self.assertEqual(len(added), 1)
+        new = added[0]
+        self.assertEqual((new.pos, new.quality_status, new.ai_pass, new.ai_model), ('verb', 'refined', 2, 'fake-pro'))
+        self.assertEqual(new.contents['definition']['vi'], {'value': 'vi: To deposit money in a bank.'})  # được dịch
+        self.assertEqual(new.contents['translations'], {'vi': ['vi-word']})
+        self.assertIsNotNone(new.metadata_id)  # và có metadata
+        self.assertEqual(set(self.cache.cache_word_get_data('en', self.WORD)['senses']), {str(s.id) for s in senses})
 
     @override_settings(AI_BACKGROUND_TIMEOUT=1)
     def test_stuck_translation_does_not_block_saving(self):

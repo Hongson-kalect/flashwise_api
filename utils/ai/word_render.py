@@ -1,4 +1,5 @@
 import logging
+import time
 import traceback
 import json
 import redis
@@ -108,6 +109,7 @@ async def ai_create_new_word_sema(word_info):
 
         # Tập hợp quản lý toàn bộ task chạy ngầm (Socket, Ảnh, Dịch, Metadata)
         background_tasks = set()
+        marks = {'start': time.monotonic()}
 
         attempts = 0
         while not ai_trunks and attempts < len(models):
@@ -181,7 +183,7 @@ async def ai_create_new_word_sema(word_info):
                                 if language_code == 'ja':
                                     add_ruby(processed_contents["contents"], language_code)
                                 sense_objs.append(processed_contents)
-                                best_effort(cache.cache_word_add_sense, language_code, word_value, id, processed_contents)  # cache hỏng không được làm mất dịch / metadata của nghĩa
+                                marks.setdefault('first_sense', time.monotonic())  # bản nháp chỉ đi qua socket cho người tra đầu tiên, không vào cache
 
                                 # 1. Gửi socket PARTIAL ngầm: người tra đầu tiên thấy nghĩa ngay
                                 s_task = asyncio.create_task(socket_message(socket_room, {"type": "PARTIAL_SENSE", "payload": {id: processed_contents}}))
@@ -218,6 +220,8 @@ async def ai_create_new_word_sema(word_info):
                 except Exception as e:
                     logger.warning('Tạo từ %s lỗi ở lần thử %s với %s: %s', word_value, attempts, model, e)
 
+        marks['stream_end'] = time.monotonic()
+
         if rejected:
             await _close_word(word_id, word_value, language_code, socket_room, cache, 'REJECTED', 'NOT_FOUND', 'REJECTED', 'Word rejected')
             return {"id": word_id, "senses": [], "is_valid": False}
@@ -229,6 +233,7 @@ async def ai_create_new_word_sema(word_info):
         # --- BƯỚC 2: chuẩn hoá. Chỉ gửi nội dung ngôn ngữ gốc nên chạy song song được với các task dịch đang chạy ---
         refine_task = None
         if settings.AI_REFINE_ENABLED:
+            best_effort(cache.cache_word_set_stage, language_code, word_value, 'refine')
             refine_task = asyncio.create_task(request_refinement(render_refine_prompt(word_value, language_code, sense_objs)))
 
         # Đợi các task chạy ngầm (socket, dịch, metadata) xong rồi mới đụng vào nội dung các nghĩa
@@ -241,17 +246,21 @@ async def ai_create_new_word_sema(word_info):
             if pending:
                 logger.warning('Tạo từ %s: %s tác vụ dịch / metadata quá %ss, bỏ qua để lưu phần đã có', word_value, len(pending), settings.AI_BACKGROUND_TIMEOUT)
 
+        marks['background_done'] = time.monotonic()
+
         refinement = None
         if refine_task:
             try:
                 refinement = await refine_task
             except Exception:
                 logger.exception('Refine %s lỗi', word_value)
+        marks['refine_response'] = time.monotonic()
 
         sense_objs = await refine_word(
             word_value, language_code, sense_objs, refinement,
             draft_model=draft_model, socket_room=socket_room, cache=cache,
         )
+        marks['applied'] = time.monotonic()
 
         try:
             await sync_to_async(save_sense)(sense_objs, word_id)
@@ -267,6 +276,8 @@ async def ai_create_new_word_sema(word_info):
             await _close_word(word_id, word_value, language_code, socket_room, cache, 'FAILED', 'ERROR', 'ERROR', str(e))
             raise
 
+        marks['saved'] = time.monotonic()
+        logger.info('Tạo từ %s [%s]: %s', word_value, language_code, ', '.join(f'{name} {value - marks["start"]:.1f}s' for name, value in marks.items() if name != 'start'))
         return {"id": word_id, "senses": sense_objs, "is_valid": True}
 
     except Exception as e:

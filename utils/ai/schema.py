@@ -176,7 +176,7 @@ word_schema = {
                                 "value": { "type": "STRING" },
                                 "label": {
                                     "type": "STRING",
-                                    "description": "US, UK, ROMAN, etc."
+                                    "description": "US or UK for English; READING for a reading in another script. Never ROMAN (a copy of the same pronunciation)."
                                 },
                             },
                             "required": ["value", "label"]

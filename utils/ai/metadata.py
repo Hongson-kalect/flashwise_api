@@ -158,7 +158,6 @@ async def ai_create_metadata(props):
 
         for sense_id, sense_metadata in result.items():
             metadata = {"id": str(uuidv7.generate_uuid7()), **sense_metadata}
-            cache.cache_word_add_metadata(language_code, word, sense_id, metadata)
             sense = mapping_sense.get(sense_id)
 
             sense['metadata'] = metadata or {}

@@ -360,9 +360,6 @@ async def refine_word(word_value, language_code, senses, refinement, *, draft_mo
         stamp_senses(survivors, report, refinement['model'])
         by_id = {s['id']: s for s in survivors}
 
-        if cache:
-            for removed in report['removed']:
-                best_effort(cache.cache_word_remove_sense, language_code, word_value, removed['id'])
         if socket_room and report['removed']:
             await notify({"type": "SENSE_REMOVED", "payload": [r['id'] for r in report['removed']]})
 
@@ -371,8 +368,6 @@ async def refine_word(word_value, language_code, senses, refinement, *, draft_mo
             for change in report['changed']:
                 sense = by_id[change['id']]
                 payload[sense['id']] = {k: sense.get(k) for k in ('id', 'pos', 'level', 'register', 'ipas', 'is_offensive', 'contents')}
-                if cache:
-                    best_effort(cache.cache_word_add_sense, language_code, word_value, sense['id'], public_sense(sense))
             if socket_room:
                 # App gộp theo id nên nghĩa đã gửi ở bước 1 sẽ được thay bằng bản chuẩn hoá
                 await notify({"type": "PARTIAL_SENSE", "payload": payload})

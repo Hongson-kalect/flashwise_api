@@ -71,6 +71,7 @@ class WordCacheManager:
             "senses": {},      # Lưu dạng { sense_id: { image: "...", contents: "...", metadata: "..." ,... } }
             "langs": [user_language_code],
             "status": "PROCESSING",
+            "stage": "draft", # draft: bước 1 đang sinh + dịch; refine: bước 2 đang chuẩn hoá. Nội dung nháp KHÔNG vào cache, chỉ bản đã chuẩn hoá (cache_word)
             "started_at": time.time(),  # get-word dùng để phát hiện job chết (key bị đọc liên tục nên TTL trượt không tự hết hạn)
         }
 
@@ -135,6 +136,14 @@ class WordCacheManager:
 
         pipe = self.r.pipeline()
         pipe.json().set(key, Path(".status"), status)
+        self._pipe_expire(pipe, key)
+        pipe.execute()
+
+    def cache_word_set_stage(self, language_code, word_val, stage):
+        key = self._key(language_code, word_val)
+
+        pipe = self.r.pipeline()
+        pipe.json().set(key, Path(".stage"), stage)
         self._pipe_expire(pipe, key)
         pipe.execute()
 

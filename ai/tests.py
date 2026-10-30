@@ -181,6 +181,21 @@ class BuildTranslateJobsTests(TestCase):
         self.assertEqual(refine.build_translate_jobs(senses, report, 'en'), [])
 
 
+class AddRubyTests(TestCase):
+    def test_skips_text_without_japanese_characters(self):
+        # Draft của từ tiếng Nhật đôi khi viết usage bằng tiếng Anh: không có gì để đọc, không được sinh ruby (bộ sinh furigana lỗi với chuỗi đó)
+        contents = {
+            'definition': {'ja': {'value': '猫'}},
+            'usage': {'ja': {'value': 'Generally used for the animal.'}},
+            'examples': [{'ja': {'value': '猫がいる。'}}],
+        }
+        with self.assertNoLogs('utils.ai.japanese', level='WARNING'):
+            add_ruby(contents, 'ja')
+        self.assertIn('ruby', contents['definition']['ja'])
+        self.assertNotIn('ruby', contents['usage']['ja'])
+        self.assertEqual(contents['examples'][0]['ja']['ruby'], '[猫|ねこ]がいる。')
+
+
 class ComputeLanguagesTests(TestCase):
     def test_all_translated(self):
         self.assertEqual(compute_languages([make_sense()], 'en'), ['en', 'vi'])
@@ -420,6 +435,24 @@ class PipelineTests(TestCase):
         for sense in self.senses():
             self.assertEqual((sense.quality_status, sense.ai_pass), ('draft', 1))
             self.assertTrue(sense.ai_model)
+
+    def test_draft_never_reaches_cache_and_stage_is_visible(self):
+        self.assertEqual(self.cache.cache_word_get_data('en', self.WORD)['stage'], 'draft')
+        seen = {}
+
+        async def request(prompt):
+            seen.update(self.cache.cache_word_get_data('en', self.WORD))  # người tra khác đang xem cache đúng lúc bước 2 chạy
+            ids = re.findall(r'"id": "([0-9a-f-]{36})"', prompt)
+            return {'data': {'senses': [{'id': i, 'action': 'keep'} for i in ids]}, 'model': 'fake-pro'}
+
+        self.run_pipeline(lambda m: stream_pieces(DRAFT), request)
+        self.assertEqual((seen['status'], seen['stage']), ('PROCESSING', 'refine'))
+        self.assertEqual(seen['senses'], {})  # nháp bước 1 chỉ đi qua socket, không nằm trong Redis
+
+        final = self.cache.cache_word_get_data('en', self.WORD)
+        self.assertEqual(final['status'], 'CACHED')
+        self.assertNotIn('stage', final)
+        self.assertEqual(set(final['senses']), {str(s.id) for s in self.senses()})
 
     @override_settings(AI_BACKGROUND_TIMEOUT=1)
     def test_stuck_translation_does_not_block_saving(self):

@@ -360,3 +360,212 @@ class UserCollectionApiTests(APITestCase):
         self.assertEqual((shared.version, shared.collectionitem_set.count()), (1, 1))
         user_collection.refresh_from_db()
         self.assertEqual((str(user_collection.collection_id), user_collection.version), (str(remix.id), 1))
+
+
+@override_settings(CACHES=LOCMEM_CACHE)
+class UserCollectionEditFlowTests(APITestCase):
+    """Luồng: tạo bộ từ nghĩa có sẵn -> sửa / xoá / thêm nghĩa -> phát hành (upload) -> người khác tải về."""
+
+    def setUp(self):
+        django_cache.clear()
+        self.alice = User.objects.create_user('alice')
+        self.bob = User.objects.create_user('bob')
+        self.client.force_authenticate(self.alice)
+        (_, self.one), (_, self.two), (_, self.three) = [make_word_with_sense(w, is_official=True) for w in ('one', 'two', 'three')]
+
+    def create_collection(self, *senses):
+        res = self.client.post('/api/collections/', {'name': 'Mine', 'language_code': 'en', 'senses': [{'id': str(s.id)} for s in senses]}, format='json')
+        self.assertEqual(res.status_code, 201)
+        return Collection.objects.get(id=res.data['id']), UserCollection.objects.get(id=res.data['user_collection'])
+
+    def items(self, user_collection):
+        res = self.client.get(f'/api/user-collections/{user_collection.id}/')
+        self.assertEqual(res.status_code, 200)
+        return res.data['items']
+
+    def post(self, action, user_collection, **body):
+        return self.client.post(f'/api/user-collections/{user_collection.id}/{action}/', {'user_collection_id': str(user_collection.id), **body}, format='json')
+
+    def upload(self, user_collection):
+        return self.post('upload', user_collection)
+
+    def as_user(self, user):
+        self.client.force_authenticate(user)
+
+    # ---------- tạo -> phát hành -> tải ----------
+
+    def test_create_upload_download_flow(self):
+        collection, mine = self.create_collection(self.one, self.two)
+        self.assertEqual({i['sense']['id'] for i in self.items(mine)}, {str(self.one.id), str(self.two.id)})  # bản nháp của người tạo
+        self.assertFalse(Collection.objects.get(pk=collection.pk).released)
+
+        # Chưa phát hành: người khác không thấy, không tải được
+        self.as_user(self.bob)
+        self.assertEqual(self.client.post(f'/api/user-collections/{collection.id}/download/').status_code, 404)
+
+        self.as_user(self.alice)
+        self.assertEqual(self.upload(mine).status_code, 200)
+        collection.refresh_from_db()
+        self.assertEqual((collection.version, collection.released, collection.is_uploaded, collection.item_count), (1, True, True, 2))
+        self.assertTrue(all(s.is_frozen for s in AISense.objects.filter(id__in=[self.one.id, self.two.id])))
+
+        self.as_user(self.bob)
+        self.assertEqual(self.client.post(f'/api/user-collections/{collection.id}/download/').status_code, 201)
+        bobs = UserCollection.objects.get(user=self.bob, collection=collection)
+        self.assertEqual(bobs.version, 1)  # bắt đầu ở version hiện tại nên thấy ngay các từ đã phát hành
+        self.assertEqual({i['sense']['id'] for i in self.items(bobs)}, {str(self.one.id), str(self.two.id)})
+        self.assertEqual(Collection.objects.get(pk=collection.pk).downloaded_count, 1)
+
+    def test_upload_without_changes_is_rejected(self):
+        collection, mine = self.create_collection(self.one)
+        self.assertEqual(self.upload(mine).status_code, 200)
+        self.assertEqual(self.upload(mine).status_code, 400)
+        collection.refresh_from_db()
+        self.assertEqual(collection.version, 1)
+
+    # ---------- sửa nghĩa ----------
+
+    def test_update_released_item_creates_draft_and_keeps_old_version_for_others(self):
+        collection, mine = self.create_collection(self.one)
+        self.upload(mine)
+        self.as_user(self.bob)
+        self.client.post(f'/api/user-collections/{collection.id}/download/')
+        bobs = UserCollection.objects.get(user=self.bob, collection=collection)
+
+        self.as_user(self.alice)
+        released = CollectionItem.objects.get(collection=collection, released=True)
+        res = self.client.post('/api/user-collections/update-sense/', {
+            'user_collection_id': str(mine.id), 'collection_item_id': str(released.id), 'delta': {'definition': {'en': {'value': 'my def'}}},
+        }, format='json')
+        self.assertEqual(res.status_code, 200, res.data)
+
+        draft = CollectionItem.objects.get(id=res.data['collection_item_id'])
+        self.assertEqual((draft.released, draft.original_id, draft.parent), (False, released.original_id, [released.id]))
+        self.assertNotEqual(draft.sense_id, self.one.id)  # nghĩa chính thức không sửa tại chỗ
+        self.assertEqual(draft.sense.original_id, self.one.id)
+        self.one.refresh_from_db()
+        self.assertEqual(self.one.delta, {})
+
+        # Alice thấy bản sửa, Bob (đang ở version 1) vẫn thấy nghĩa cũ
+        self.assertEqual([i['sense']['id'] for i in self.items(mine)], [str(draft.sense_id)])
+        self.as_user(self.bob)
+        self.assertEqual([i['sense']['id'] for i in self.items(bobs)], [str(self.one.id)])
+
+        # Sửa tiếp: dùng lại đúng dòng nháp, sửa tại chỗ vì nghĩa tuỳ chỉnh của chính Alice chưa đóng băng
+        self.as_user(self.alice)
+        res = self.client.post('/api/user-collections/update-sense/', {
+            'user_collection_id': str(mine.id), 'collection_item_id': str(draft.id), 'delta': {'usage': {'en': {'value': 'x'}}},
+        }, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['sense_id'], draft.sense_id)
+        self.assertEqual(CollectionItem.objects.filter(collection=collection, released=False).count(), 1)
+
+        # Phát hành: bản sửa thay bản cũ ở version 2 và bị đóng băng
+        self.assertEqual(self.upload(mine).status_code, 200)
+        draft.refresh_from_db()
+        self.assertEqual((draft.released, draft.version), (True, 2))
+        self.assertTrue(draft.sense.is_frozen)
+        self.assertEqual([i['sense']['id'] for i in self.items(mine)], [str(draft.sense_id)])
+
+    def test_update_validation_and_isolation(self):
+        collection, mine = self.create_collection(self.one)
+        item = CollectionItem.objects.get(collection=collection)
+        body = {'user_collection_id': str(mine.id), 'collection_item_id': str(item.id)}
+        for bad in ({'user_collection_id': 'x', 'collection_item_id': str(item.id)}, {**body, 'delta': 'str'}, {**body, 'image': 5}):
+            self.assertEqual(self.client.post('/api/user-collections/update-sense/', bad, format='json').status_code, 400)
+
+        # Bob không sửa được dòng nháp của Alice, kể cả khi tự có UserCollection trên cùng bộ
+        theirs = UserCollection.objects.create(user=self.bob, collection=collection, version=0)
+        self.as_user(self.bob)
+        res = self.client.post('/api/user-collections/update-sense/', {'user_collection_id': str(theirs.id), 'collection_item_id': str(item.id), 'delta': {'a': 1}}, format='json')
+        self.assertEqual(res.status_code, 404)
+        # ... và cũng không dùng UserCollection của Alice
+        res = self.client.post('/api/user-collections/update-sense/', {'user_collection_id': str(mine.id), 'collection_item_id': str(item.id), 'delta': {'a': 1}}, format='json')
+        self.assertEqual(res.status_code, 404)
+
+    # ---------- xoá nghĩa ----------
+
+    def test_delete_released_item_uses_tombstone_and_add_restores(self):
+        collection, mine = self.create_collection(self.one, self.two)
+        self.upload(mine)
+        released = CollectionItem.objects.get(collection=collection, sense=self.one)
+
+        res = self.post('delete-sense', mine, collection_item_id=str(released.id))
+        self.assertEqual(res.status_code, 200, res.data)  # trước đây IntegrityError vì unique (collection, sense)
+        self.assertEqual([i['sense']['id'] for i in self.items(mine)], [str(self.two.id)])
+        self.assertEqual(self.post('delete-sense', mine, collection_item_id=str(released.id)).status_code, 200)  # gọi lại không nhân bia mộ
+        self.assertEqual(CollectionItem.objects.filter(collection=collection, sense=self.one, released=False).count(), 1)
+
+        # Thêm lại đúng từ đó: bỏ bia mộ, bản phát hành hiện lại, không thêm dòng mới
+        res = self.post('add-sense', mine, sense_id=str(self.one.id))
+        self.assertEqual((res.status_code, res.data.get('restored')), (200, True))
+        self.assertEqual(CollectionItem.objects.filter(collection=collection, sense=self.one).count(), 1)
+        self.assertEqual({i['sense']['id'] for i in self.items(mine)}, {str(self.one.id), str(self.two.id)})
+
+    def test_delete_then_upload_removes_word_from_next_version(self):
+        collection, mine = self.create_collection(self.one, self.two)
+        self.upload(mine)
+        released = CollectionItem.objects.get(collection=collection, sense=self.one)
+        self.post('delete-sense', mine, collection_item_id=str(released.id))
+        self.assertEqual(self.upload(mine).status_code, 200)
+
+        collection.refresh_from_db()
+        self.assertEqual((collection.version, collection.item_count), (2, 1))
+        self.assertEqual(collection.metadatas[-1]['changelog']['deleted'], [str(self.one.id)])
+        self.assertEqual([i['sense']['id'] for i in self.items(mine)], [str(self.two.id)])
+
+    def test_delete_draft_reverts_or_disappears(self):
+        collection, mine = self.create_collection(self.one)
+        self.upload(mine)
+        released = CollectionItem.objects.get(collection=collection)
+        edited = self.client.post('/api/user-collections/update-sense/', {'user_collection_id': str(mine.id), 'collection_item_id': str(released.id), 'delta': {'a': {'x': 1}}}, format='json')
+
+        res = self.post('delete-sense', mine, collection_item_id=str(edited.data['collection_item_id']))
+        self.assertEqual((res.status_code, res.data['action']), (200, 'REVERTED_TO_ORIGINAL'))
+        self.assertEqual(res.data['collection_item_id'], released.id)
+        self.assertEqual([i['sense']['id'] for i in self.items(mine)], [str(self.one.id)])
+
+        added = self.post('add-sense', mine, sense_id=str(self.two.id))
+        res = self.post('delete-sense', mine, collection_item_id=str(added.data['item_id']))
+        self.assertEqual(res.data['action'], 'NEW_DRAFT_DELETED')
+        self.assertEqual([i['sense']['id'] for i in self.items(mine)], [str(self.one.id)])
+
+    # ---------- thêm nghĩa ----------
+
+    def test_add_sense_rules(self):
+        collection, mine = self.create_collection(self.one)
+        res = self.post('add-sense', mine, sense_id=str(self.two.id))
+        self.assertEqual(res.status_code, 200)
+        draft = CollectionItem.objects.get(id=res.data['item_id'])
+        self.assertEqual((draft.released, draft.created_by, draft.value, draft.original_id), (False, self.alice, 'two', self.two.id))
+        self.assertEqual(self.post('add-sense', mine, sense_id=str(self.two.id)).status_code, 400)  # trùng
+        self.assertEqual(self.post('add-sense', mine, sense_id='nope').status_code, 400)
+
+        # Nghĩa tuỳ chỉnh của người khác thì không thêm được (trước đây thêm được bất kỳ id nào)
+        word = AIWord.objects.get(value='three')
+        private = AISense.objects.create(word=word, word_value='three', language_code='en', is_official=False, created_by=self.bob, contents={})
+        self.assertEqual(self.post('add-sense', mine, sense_id=str(private.id)).status_code, 404)
+        own = AISense.objects.create(word=word, word_value='three', language_code='en', is_official=False, created_by=self.alice, contents={})
+        self.assertEqual(self.post('add-sense', mine, sense_id=str(own.id)).status_code, 200)
+
+    def test_clear_custom_drops_all_drafts(self):
+        collection, mine = self.create_collection(self.one)
+        self.upload(mine)
+        self.post('add-sense', mine, sense_id=str(self.two.id))
+        res = self.post('clear-custom', mine)
+        self.assertEqual((res.status_code, res.data['cleared_count']), (200, 1))
+        self.assertEqual([i['sense']['id'] for i in self.items(mine)], [str(self.one.id)])
+
+    # ---------- từ chờ AI ----------
+
+    def test_pending_words_become_visible_drafts_for_the_owner(self):
+        collection, mine = self.create_collection(self.one)
+        Collection.objects.filter(pk=collection.pk).update(pending_words=['two'])
+        res = self.client.get(f'/api/collections/{collection.id}/')  # xem bộ thì từ chờ được thêm vào
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual({i['sense']['id'] for i in self.items(mine)}, {str(self.one.id), str(self.two.id)})
+        self.assertEqual(Collection.objects.get(pk=collection.pk).item_count, 2)
+        # Xem lại không thêm trùng
+        Collection.objects.filter(pk=collection.pk).update(pending_words=['two'])
+        self.client.get(f'/api/collections/{collection.id}/')
+        self.assertEqual(CollectionItem.objects.filter(collection=collection, sense=self.two).count(), 1)

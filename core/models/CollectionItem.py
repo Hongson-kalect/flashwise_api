@@ -27,8 +27,10 @@ class CollectionItem(models.Model):
 
     class Meta:
         db_table = 'collection_items'
-        # Ràng buộc Unique để tránh 1 từ xuất hiện 2 lần trong 1 bộ
-        unique_together = ('collection', 'sense')
+        # Một nghĩa có thể có nhiều dòng trong cùng bộ (bản đã phát hành, bản nháp sửa, dòng xoá nháp), chỉ cấm trùng trong cùng 1 phiên bản phát hành
+        constraints = [
+            models.UniqueConstraint(fields=['collection', 'sense', 'version'], condition=models.Q(released=True), name='unique_released_item_per_version'),
+        ]
 
         # Tối ưu hóa Index cho việc truy vấn danh sách từ của 1 bộ
         indexes = [

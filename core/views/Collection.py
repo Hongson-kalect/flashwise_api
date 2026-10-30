@@ -103,15 +103,19 @@ class CollectionViewSet(SoftDeleteViewSet):
                     invalid.append(word.value)
 
             senses = list(best_official_senses(done, collection.language_code)) if done else []
+            # Từ đã nằm trong bộ (bản nháp hay bản phát hành) thì không thêm lại
+            present = set(CollectionItem.objects.filter(collection=collection).values_list('original_id', flat=True))
+            to_add = [sense for sense in senses if (sense.original_id or sense.id) not in present]
             resolved = {sense.word_value for sense in senses} | set(invalid)
             if not resolved:
                 return collection
 
             last = CollectionItem.objects.filter(collection=collection).aggregate(last=Max('display_order'))['last']
-            CollectionItem.objects.bulk_create(make_items(collection.id, senses, 0 if last is None else last + 1), ignore_conflicts=True)
+            # Giao cho người tạo bộ như bản nháp của họ (dòng không có created_by thì không ai thấy)
+            CollectionItem.objects.bulk_create(make_items(collection.id, to_add, 0 if last is None else last + 1, collection.created_by))
             collection.pending_words = [w for w in pending if w not in resolved]
             collection.invalid_words = list(dict.fromkeys([*(collection.invalid_words or []), *invalid]))
-            collection.item_count = CollectionItem.objects.filter(collection=collection).exclude(is_deleted=True).count()
+            collection.item_count = CollectionItem.objects.filter(collection=collection).exclude(is_deleted=True).values('original_id').distinct().count()
             collection.save(update_fields=['pending_words', 'invalid_words', 'item_count', 'updated_at'])
             return collection
 

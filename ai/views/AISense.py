@@ -9,6 +9,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from ai.jobs import queue_translation
+from ai.sense_edit import apply_sense_edit
 from ai.models.AISense import AISense
 from ai.models.AISenseMetadata import AISenseMetadata
 from ai.models.AIWord import AIWord
@@ -127,31 +128,7 @@ class AISenseViewSet(SoftDeleteViewSet):
         sense = self.get_queryset().filter(id=sense_id).first()
         if not sense:
             return Response({"message": "Sense not found"}, status=status.HTTP_404_NOT_FOUND)
-        if image is None:
-            image = sense.image_preview
-
-        in_place = not sense.is_official and not sense.is_frozen and (user.is_staff or sense.created_by_id == user.id)
-
-        with transaction.atomic():
-            metadata_instance = sense.metadata
-            if isinstance(raw_metadata, dict) and raw_metadata:
-                # Metadata là dữ liệu dùng chung nên không sửa tại chỗ: tạo bản mới từ bản cũ cộng phần user gửi
-                base = {f: getattr(sense.metadata, f) for f in METADATA_FIELDS} if sense.metadata else {}
-                metadata_instance = AISenseMetadata.objects.create(**{**base, **clean_metadata(raw_metadata)}, created_by=user)
-
-            if in_place:
-                sense.delta = deep_merge(delta, sense.delta)
-                sense.image_preview = image
-                sense.metadata = metadata_instance
-                sense.updated_by = user
-                sense.save()
-            else:
-                sense = AISense.objects.create(
-                    word_id=sense.word_id, word_value=sense.word_value, delta=delta, image_preview=image,
-                    metadata=metadata_instance, created_by=user, language_code=sense.language_code,
-                    is_official=False, is_frozen=False, is_ai_created=False,
-                    original=sense.original or sense, previous=None if sense.is_official else sense,
-                )
+        sense = apply_sense_edit(user, sense, delta, raw_metadata, image)
 
         data = AISenseSerializer(sense).data
         data['contents'] = self._user_contents(sense, user_language_code)

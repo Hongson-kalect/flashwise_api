@@ -8,6 +8,7 @@ from unittest import mock
 from unittest.mock import AsyncMock
 
 from asgiref.sync import async_to_sync
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache as django_cache
 from django.test import TestCase, override_settings
@@ -128,6 +129,23 @@ class ApplyRefinementTests(TestCase):
         return {'action': 'add', 'pos': 'Verb', 'definition': 'To deposit money in a bank.', 'examples': ['I bank at the corner branch.'],
                 'level': 'b1', 'reason': 'common verb sense is missing', **overrides}
 
+    def test_add_is_off_by_default(self):
+        # Nghĩa thêm ở bước 2 không có bước nào kiểm lại nên mặc định tắt: model có trả add thì bỏ qua, prompt cũng không gợi ý
+        self.assertFalse(settings.AI_REFINE_ALLOW_ADD)
+        senses = [make_sense('s1')]
+        survivors, report = self.apply(senses, [{'id': 's1', 'action': 'keep'}, self.add_item()])
+        self.assertEqual((len(survivors), report['added']), (1, []))
+        prompt = refine.render_refine_prompt('bank', 'en', senses)
+        self.assertIn('Never add new senses', prompt)
+        self.assertNotIn('action=add', prompt)
+
+    @override_settings(AI_REFINE_ALLOW_ADD=True)
+    def test_prompt_allows_adding_only_when_switched_on(self):
+        prompt = refine.render_refine_prompt('bank', 'en', [make_sense('s1')])
+        self.assertIn('action=add', prompt)
+        self.assertNotIn('Never add new senses', prompt)
+
+    @override_settings(AI_REFINE_ALLOW_ADD=True)
     def test_add_builds_a_new_sense_like_a_draft_one(self):
         senses = [make_sense('s1')]
         survivors, report = self.apply(senses, [{'id': 's1', 'action': 'keep'}, self.add_item(usage="Used with 'at'.")])
@@ -151,6 +169,7 @@ class ApplyRefinementTests(TestCase):
         self.assertEqual(new['ai_review']['added'], True)
         self.assertEqual(survivors[0]['ai_review']['unchanged'], True)
 
+    @override_settings(AI_REFINE_ALLOW_ADD=True)
     def test_invalid_or_duplicate_add_is_ignored(self):
         senses = [make_sense('s1', pos='noun', definition='A financial institution.')]
         for bad in (self.add_item(pos=''), self.add_item(definition=''), self.add_item(examples=[]), self.add_item(examples='x'),
@@ -158,7 +177,7 @@ class ApplyRefinementTests(TestCase):
             survivors, report = self.apply(senses, [bad])
             self.assertEqual((len(survivors), report['added']), (1, []), bad)
 
-    @override_settings(AI_REFINE_MAX_ADD=2)
+    @override_settings(AI_REFINE_ALLOW_ADD=True, AI_REFINE_MAX_ADD=2)
     def test_add_is_capped(self):
         senses = [make_sense('s1')]
         items = [self.add_item(definition=f'meaning {i}') for i in range(5)]
@@ -166,12 +185,14 @@ class ApplyRefinementTests(TestCase):
         self.assertEqual(len(report['added']), 2)
         self.assertEqual(len(survivors), 3)
 
+    @override_settings(AI_REFINE_ALLOW_ADD=True)
     def test_replacing_every_sense_is_allowed_when_new_ones_are_added(self):
         senses = [make_sense('s1')]
         survivors, report = self.apply(senses, [{'id': 's1', 'action': 'remove', 'reason': 'wrong'}, self.add_item()])
         self.assertEqual([s['pos'] for s in survivors], ['verb'])
         self.assertFalse(report['all_removed_ignored'])
 
+    @override_settings(AI_REFINE_ALLOW_ADD=True)
     def test_add_for_japanese_gets_ruby(self):
         senses = [make_sense('s1')]
         senses[0]['language_code'] = 'ja'
@@ -511,6 +532,7 @@ class PipelineTests(TestCase):
         self.assertNotIn('stage', final)
         self.assertEqual(set(final['senses']), {str(s.id) for s in self.senses()})
 
+    @override_settings(AI_REFINE_ALLOW_ADD=True)
     def test_refine_can_add_a_missing_sense(self):
         def builder(ids):
             return [{'id': i, 'action': 'keep'} for i in ids] + [{

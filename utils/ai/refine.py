@@ -108,7 +108,15 @@ def draft_view(sense, language_code):
 def render_refine_prompt(word, language_code, senses):
     language_name = language_map.get(language_code, 'en')
     drafts = json.dumps([draft_view(s, language_code) for s in senses], ensure_ascii=False)
-    max_add = settings.AI_REFINE_MAX_ADD
+    if settings.AI_REFINE_ALLOW_ADD:
+        add_rule = f"""
+    5. Missing senses: if the draft clearly misses a COMMON, distinct meaning or part of speech that a learner will meet, add it (at most {settings.AI_REFINE_MAX_ADD}). Do not add rare, archaic, technical or idiom-only meanings, and never add a near-duplicate of an existing sense. If the draft is complete, add nothing."""
+        add_output = """
+    - action=add for each missing sense, WITHOUT id: give pos, definition, 1-2 examples, usage / level / register / ipas when applicable, plus a short reason."""
+    else:
+        add_rule = """
+    5. Never add new senses, only check the ones given."""
+        add_output = ""
 
     return f"""
     # ROLE: Senior lexicographer reviewing a junior's draft dictionary entry.
@@ -123,14 +131,13 @@ def render_refine_prompt(word, language_code, senses):
     2. Standard form: pos is a lowercase English term (noun, verb, adjective, adverb, ...); level is CEFR A1-C2 (or N1-N5 for Japanese, TOPIK1-6 for Korean); register uses only the allowed values; definition is one clear sentence in {language_name}; usage is ONLY a short note on grammar patterns, prepositions or register, never example sentences: rewrite it as such a note, or set usage to an empty string if there is nothing useful to say.
     3. Examples: natural, grammatical, at most 2, and each MUST contain '{word}' (or an inflected form).
     4. Senses: remove a sense that duplicates another sense (same meaning and pos) or is not a real meaning. If your own fixes (e.g. changing pos or definition) would make two senses mean the same, remove the weaker one instead of keeping both. Keep the most frequent meaning first.
-    5. Missing senses: if the draft clearly misses a COMMON, distinct meaning or part of speech that a learner will meet, add it (at most {max_add}). Do not add rare, archaic, technical or idiom-only meanings, and never add a near-duplicate of an existing sense. If the draft is complete, add nothing.
+{add_rule}
 
     # OUTPUT:
     One item per draft sense, with the id copied exactly.
     - action=keep when nothing needs to change (no other fields).
     - action=fix with ONLY the fields that change (examples: give the full corrected list), plus a short reason.
-    - action=remove with a short reason.
-    - action=add for each missing sense, WITHOUT id: give pos, definition, 1-2 examples, usage / level / register / ipas when applicable, plus a short reason.
+    - action=remove with a short reason.{add_output}
     Strictly follow the JSON schema.
     """
 
@@ -274,7 +281,7 @@ def apply_refinement(senses, refinement, language_code):
         if not isinstance(item, dict):
             continue
         if item.get('action') == 'add':
-            if senses and len(added) < settings.AI_REFINE_MAX_ADD:
+            if settings.AI_REFINE_ALLOW_ADD and senses and len(added) < settings.AI_REFINE_MAX_ADD:
                 new = _new_sense(item, senses[0], language_code, [*senses, *(sense for sense, _ in added)])
                 if new:
                     added.append((new, _clean(item.get('reason'), 300)))

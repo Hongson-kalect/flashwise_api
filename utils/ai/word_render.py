@@ -32,13 +32,14 @@ from asgiref.sync import sync_to_async
 logger = logging.getLogger(__name__)
 
 from utils.ai.schema import word_schema, nonlatin_schema, complex_schema
-from utils.ai.prompt import render_word_prompt 
-from utils.celery.fetch_image import get_image_by_keyword 
-from utils.ai.translate import ai_create_translate_sema 
-from utils.ai.metadata import ai_create_metadata 
+from utils.ai.prompt import render_word_prompt, WORD_SYSTEM_PROMPT
+from utils.celery.fetch_image import get_image_by_keyword
+from utils.ai.translate import ai_create_translate_sema
+from utils.ai.metadata import ai_create_metadata
 from utils.utils.normalize import normalize
 from utils.utils.best_effort import best_effort
 from ai.queries import load_word
+from utils.ai import claude
 from utils.ai.japanese import add_ruby
 from utils.ai.refine import render_refine_prompt, request_refinement, refine_word
 
@@ -74,9 +75,9 @@ async def _close_word(word_id, word_value, language_code, socket_room, cache, st
 async def ai_create_new_word_sema(word_info):
     """
     Tạo 1 từ mới theo 2 bước AI:
-      1. draft: model rẻ stream từng nghĩa, mỗi nghĩa gửi socket + cache ngay cho người tra đầu tiên,
-         đồng thời dịch / sinh metadata cho nghĩa đó.
-      2. refine: model mạnh hơn kiểm tra và chuẩn hoá cả bản draft (chạy song song với việc dịch của bước 1),
+      1. draft (Claude Haiku, AI_DRAFT_MODELS): stream từng nghĩa, mỗi nghĩa gửi socket ngay cho người tra đầu tiên,
+         đồng thời dịch / sinh metadata cho nghĩa đó (Gemini flash-lite, GEMINI_API_MODEL).
+      2. refine (Claude Haiku, AI_REFINE_MODELS; mọi bước đều tắt thinking): kiểm tra và chuẩn hoá cả bản draft (chạy song song với việc dịch của bước 1),
          bản đã chuẩn hoá mới được ghi vào DB và cache.
     """
     cache = WordCacheManager()
@@ -100,7 +101,7 @@ async def ai_create_new_word_sema(word_info):
     current_prompt = render_word_prompt(word_value, language_code)
 
     try:
-        models = settings.GEMINI_API_MODEL
+        models = settings.AI_DRAFT_MODELS
         ai_trunks = []
         sense_objs = []
         valid = False
@@ -113,29 +114,25 @@ async def ai_create_new_word_sema(word_info):
 
         attempts = 0
         while not ai_trunks and attempts < len(models):
-            local_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            model = models[attempts]
+            attempts += 1
 
-            async with local_client.aio as client:
-                model = models[attempts]
-                attempts += 1
-
-                try:
-                    response = await client.models.generate_content_stream(
-                        model=model,
-                        contents=current_prompt,
-                        config=types.GenerateContentConfig(
-                            max_output_tokens=8192,
-                            response_mime_type="application/json",
-                            response_schema=current_schema,
-                            thinking_config=types.ThinkingConfig(thinking_budget=0)
-                        )
-                    )
+            try:
+                # Claude Haiku, tắt thinking để nghĩa đầu về nhanh nhất; schema đặt metadata trước senses nên biết sớm từ có bị từ chối không
+                async with claude.client() as client, client.messages.stream(
+                    model=model,
+                    max_tokens=8192,
+                    system=WORD_SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": current_prompt}],
+                    thinking={"type": "disabled"},
+                    output_config=claude.output_config(current_schema),
+                ) as response:
                     pointer = 0
 
-                    async for chunk in response:
-                        if not chunk.text:
+                    async for text in response.text_stream:
+                        if not text:
                             continue
-                        ai_trunks.append(chunk.text)
+                        ai_trunks.append(text)
                         full_text = "".join(ai_trunks)
 
                         if not valid:
@@ -176,7 +173,7 @@ async def ai_create_new_word_sema(word_info):
                                         "definition": {language_code: sense.get("definition")},
                                         "usage": {language_code: sense.get("usage")},
                                         "examples": [
-                                            {language_code: ex} for ex in sense.get("examples", [])
+                                            {language_code: ex} for ex in (sense.get("examples") or [])[:2]  # schema Claude không có maxItems
                                         ],
                                     }
                                 }
@@ -217,8 +214,8 @@ async def ai_create_new_word_sema(word_info):
 
                             except Exception as e:
                                 logger.warning('Lỗi đọc 1 nghĩa từ stream của %s: %s', word_value, e)
-                except Exception as e:
-                    logger.warning('Tạo từ %s lỗi ở lần thử %s với %s: %s', word_value, attempts, model, e)
+            except Exception as e:
+                logger.warning('Tạo từ %s lỗi ở lần thử %s với %s: %s', word_value, attempts, model, e)
 
         marks['stream_end'] = time.monotonic()
 

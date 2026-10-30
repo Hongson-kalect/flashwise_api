@@ -21,7 +21,9 @@ load_dotenv() # Nó sẽ tự tìm file .env ở thư mục gốc
 BASE_DIR = Path(__file__).resolve().parent.parent
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 
-BASE_LANGUAGE =  ['en','zh','es','fr','ar','ja','ko','de','pt','vi'] 
+# Ngôn ngữ dịch sẵn cho mọi từ mới, cộng ngôn ngữ của người đang chờ từ đó. Ngôn ngữ khác dịch khi có người cần (get-word đẩy vào redis_trans);
+# lô seed truyền thêm 'base_languages' trong job để dịch nhiều ngôn ngữ cùng lúc
+BASE_LANGUAGE = [m.strip() for m in os.getenv('BASE_LANGUAGE', 'en').split(',') if m.strip()]
 
 MEDIA_URL = '/upload/'  # hoặc '/media/' nếu bạn thích
 MEDIA_ROOT = os.path.join(BASE_DIR, 'upload')  # Đây là thư mục chứa ảnh
@@ -122,18 +124,29 @@ CHANNEL_LAYERS = {
     },
 }
 
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-GEMINI_API_MODEL = ["gemini-2.5-flash-lite","gemini-3.1-flash-lite","gemini-2.5-flash-lite","gemini-3.1-flash-lite"]
+def _env_list(name, default):
+    return [m.strip() for m in os.getenv(name, default).split(',') if m.strip()]
 
-# --- Tạo từ bằng AI theo 2 bước: draft (model rẻ, stream cho người tra đầu tiên) -> refine (model mạnh hơn kiểm tra / chuẩn hoá, rồi mới ghi DB) ---
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+
+# --- Model cho từng bước tạo từ (danh sách = thử lần lượt khi lỗi) ---
+# Bước 1 draft + bước 2 refine: Claude Haiku (structured output nên JSON luôn đúng schema)
+AI_DRAFT_MODELS = _env_list('AI_DRAFT_MODELS', 'claude-haiku-5-5')
+AI_REFINE_MODELS = _env_list('AI_REFINE_MODELS', 'claude-haiku-5-5')
+# Mọi bước đều tắt thinking. Effort refine: low / medium / high (Haiku chỉ cho tắt thinking khi effort <= high)
+AI_REFINE_EFFORT = os.getenv('AI_REFINE_EFFORT', 'low')
+# Nội dung nghĩa, dịch, metadata: Gemini flash-lite (lặp tên model = gọi lại khi 503)
+GEMINI_API_MODEL = _env_list('GEMINI_API_MODEL', 'gemini-2.5-flash-lite,gemini-2.5-flash-lite')
+
+# --- Tạo từ bằng AI theo 2 bước: draft (stream cho người tra đầu tiên) -> refine (kiểm tra / chuẩn hoá, rồi mới ghi DB) ---
 AI_REFINE_ENABLED = os.getenv('AI_REFINE_ENABLED', 'True').lower() in ('1', 'true', 'yes')
-GEMINI_REFINE_MODELS = [m.strip() for m in os.getenv('GEMINI_REFINE_MODELS', 'gemini-2.5-flash,gemini-2.5-flash-lite').split(',') if m.strip()]
-AI_REFINE_THINKING_BUDGET = int(os.getenv('AI_REFINE_THINKING_BUDGET', '1024'))
 # Bước 2 bổ sung nghĩa còn thiếu: mặc định TẮT vì nghĩa thêm vào không có bước nào kiểm lại (đo thật: có khi thêm nghĩa hiếm / gần trùng). Bật bằng AI_REFINE_ALLOW_ADD=True
 AI_REFINE_ALLOW_ADD = os.getenv('AI_REFINE_ALLOW_ADD', 'False').lower() in ('1', 'true', 'yes')
 AI_REFINE_MAX_ADD = int(os.getenv('AI_REFINE_MAX_ADD', '3')) # số nghĩa tối đa được bổ sung cho 1 từ khi bật
 AI_REFINE_TIMEOUT = int(os.getenv('AI_REFINE_TIMEOUT', '60')) # giây cho mỗi model, quá hạn thì thử model kế tiếp rồi giữ bản draft
 AI_BACKGROUND_TIMEOUT = int(os.getenv('AI_BACKGROUND_TIMEOUT', '90')) # giây tối đa chờ dịch / metadata của bước 1 trước khi lưu
+AI_GEMINI_TIMEOUT = int(os.getenv('AI_GEMINI_TIMEOUT', '25')) # giây tối đa cho 1 lần gọi Gemini dịch / metadata; quá hạn thì thử model kế tiếp (đo thật có từ treo 30-96s)
 # Từ ở trạng thái PROCESSING quá lâu mà không có cache (worker chết) thì coi như lỗi và tạo lại
 WORD_PROCESSING_STALE_SECONDS = int(os.getenv('WORD_PROCESSING_STALE_SECONDS', '600'))
 

@@ -2,7 +2,7 @@
 Bước 2 của pipeline tạo từ: chuẩn hoá bản draft.
 
 Bước 1 (word_render.py) stream từng nghĩa về cho người tra đầu tiên ngay khi model rẻ trả ra.
-Bước 2 gửi toàn bộ draft cho model mạnh hơn để kiểm tra và chuẩn hoá, kết quả này mới được ghi vào DB
+Bước 2 gửi toàn bộ draft cho Claude (tắt thinking) để kiểm tra và chuẩn hoá, kết quả này mới được ghi vào DB
 (draft không bao giờ vào DB). Bản dịch / metadata sinh từ draft chỉ làm lại cho phần bị sửa.
 
 Phần thuần (prompt, apply_refinement, build_translate_jobs) không gọi mạng nên test được trực tiếp.
@@ -16,9 +16,8 @@ import unicodedata
 from datetime import datetime, timezone as dt_timezone
 
 from django.conf import settings
-from google import genai
-from google.genai import types
 
+from utils.ai import claude
 from utils.ai.constain import language_map
 from utils.ai.japanese import add_ruby
 from utils.utils import uuidv7
@@ -105,41 +104,52 @@ def draft_view(sense, language_code):
     }
 
 
+REFINE_SYSTEM_PROMPT = (
+    "You are a senior lexicographer reviewing a junior's draft entry for a learner's dictionary. "
+    "You correct real errors and leave correct content untouched."
+)
+
+
 def render_refine_prompt(word, language_code, senses):
+    """Prompt cho Claude Haiku: dữ liệu trong thẻ XML, quy tắc ngắn có lý do (model làm theo tốt hơn khi biết vì sao)."""
     language_name = language_map.get(language_code, 'en')
     drafts = json.dumps([draft_view(s, language_code) for s in senses], ensure_ascii=False)
     if settings.AI_REFINE_ALLOW_ADD:
-        add_rule = f"""
-    5. Missing senses: if the draft clearly misses a COMMON, distinct meaning or part of speech that a learner will meet, add it (at most {settings.AI_REFINE_MAX_ADD}). Do not add rare, archaic, technical or idiom-only meanings, and never add a near-duplicate of an existing sense. If the draft is complete, add nothing."""
-        add_output = """
-    - action=add for each missing sense, WITHOUT id: give pos, definition, 1-2 examples, usage / level / register / ipas when applicable, plus a short reason."""
+        add_rule = f"7. Missing senses: add a common, distinct meaning a learner will meet only if the draft clearly lacks it (at most {settings.AI_REFINE_MAX_ADD}). No rare, archaic, technical or idiom-only meanings, no near-duplicates."
+        add_output = "\n- action=add (no id) for each missing sense: pos, definition, 1-2 examples, plus usage / level / register / ipas when useful, and a short reason."
     else:
-        add_rule = """
-    5. Never add new senses, only check the ones given."""
+        add_rule = "7. Never add new senses; only review the ones given."
         add_output = ""
+    if language_code == 'ja':
+        # ipas tiếng Nhật là cách đọc hiragana (label READING), không phải IPA: không để model "sửa" thành romaji
+        ipa_check = "ipas: label READING holds the full hiragana reading of the word; keep it in hiragana."
+    else:
+        ipa_check = "ipas: valid IPA between slashes, matching the word and its label."
 
-    return f"""
-    # ROLE: Senior lexicographer reviewing a junior's draft dictionary entry.
-    # CONTEXT:
-    Word: '{word}' ({language_name}). Draft senses (JSON, content is in {language_name}):
-    {drafts}
+    return f"""Review the draft senses of the {language_name} word '{word}'. All content is in {language_name}.
 
-    # TASK: Check every draft sense, standardize it, and change ONLY what is wrong or inconsistent. Every change costs a re-translation into many languages, so NEVER rewrite a definition, usage or example that is already correct just to shorten, reword or polish it.
+<draft>
+{drafts}
+</draft>
 
-    # CHECKS:
-    1. Correctness: the definition is accurate for the given pos and is a real meaning of the word; IPA matches the word and its label (US/UK/...).
-    2. Standard form: pos is a lowercase English term (noun, verb, adjective, adverb, ...); level is CEFR A1-C2 (or N1-N5 for Japanese, TOPIK1-6 for Korean); register uses only the allowed values; definition is one clear sentence in {language_name}; usage is ONLY a short note on grammar patterns, prepositions or register, never example sentences: rewrite it as such a note, or set usage to an empty string if there is nothing useful to say.
-    3. Examples: natural, grammatical, at most 2, and each MUST contain '{word}' (or an inflected form).
-    4. Senses: remove a sense that duplicates another sense (same meaning and pos) or is not a real meaning. If your own fixes (e.g. changing pos or definition) would make two senses mean the same, remove the weaker one instead of keeping both. Keep the most frequent meaning first.
+Change only what is wrong. Each change is re-translated into 10 languages, so leave correct text exactly as it is: do not reword, shorten or polish it.
+
+<checks>
+1. Meaning: the definition is accurate for its pos and is a real meaning of '{word}'. Remove invented or wrong senses. If a sense blends two unrelated meanings, fix it to the more common one.
+2. Duplicates: remove a sense with the same meaning and pos as another (keep the better one). Check again after your own fixes.
+3. Form: pos is a lowercase English term (noun, verb, adjective, ...; a noun used before another noun stays a noun); level is CEFR A1-C2 (JLPT N5-N1 for Japanese, TOPIK1-6 for Korean); definition is one clear sentence that does not use '{word}' itself.
+4. usage: only a short note on grammar, prepositions / particles, collocations or register, about this sense only. If it holds an example sentence, is wrong, or describes another sense, rewrite it or return "" to delete it.
+5. examples: at most 2, natural and grammatical, each containing '{word}' or an inflected form and showing this sense, not another one. Replace an example that fits another sense.
+6. {ipa_check}
 {add_rule}
+</checks>
 
-    # OUTPUT:
-    One item per draft sense, with the id copied exactly.
-    - action=keep when nothing needs to change (no other fields).
-    - action=fix with ONLY the fields that change (examples: give the full corrected list), plus a short reason.
-    - action=remove with a short reason.{add_output}
-    Strictly follow the JSON schema.
-    """
+<output>
+One item per draft sense, with its id copied exactly:
+- action=keep: nothing to change, no other fields.
+- action=fix: only the changed fields (examples: the full corrected list), plus a short reason.
+- action=remove: a short reason.{add_output}
+</output>"""
 
 
 def _apply_fix(sense, item, language_code):
@@ -374,27 +384,28 @@ def stamp_senses(senses, report, model):
 
 async def request_refinement(prompt):
     """
-    Gọi model mạnh hơn, thử lần lượt GEMINI_REFINE_MODELS.
+    Gọi Claude (tắt thinking, độ kỹ AI_REFINE_EFFORT), thử lần lượt AI_REFINE_MODELS.
     Trả {'data': dict, 'model': str}, hoặc None nếu mọi model đều lỗi / quá hạn.
     """
-    for model in settings.GEMINI_REFINE_MODELS:
+    for model in settings.AI_REFINE_MODELS:
         try:
-            client = genai.Client(api_key=settings.GEMINI_API_KEY)
-            async with client.aio as aclient:
+            async with claude.client() as client:
                 response = await asyncio.wait_for(
-                    aclient.models.generate_content(
+                    client.messages.create(
                         model=model,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            max_output_tokens=8192,
-                            response_mime_type="application/json",
-                            response_schema=refine_schema,
-                            thinking_config=types.ThinkingConfig(thinking_budget=settings.AI_REFINE_THINKING_BUDGET),
-                        ),
+                        max_tokens=8192,
+                        system=REFINE_SYSTEM_PROMPT,
+                        messages=[{"role": "user", "content": prompt}],
+                        thinking={"type": "disabled"},  # mọi bước đều tắt thinking; Haiku chỉ nhận disabled khi effort <= high
+                        output_config=claude.output_config(refine_schema, effort=settings.AI_REFINE_EFFORT),
                     ),
                     timeout=settings.AI_REFINE_TIMEOUT,
                 )
-            data = json.loads(response.text)
+            if response.stop_reason in ('refusal', 'max_tokens'):
+                logger.warning('Refine %s dừng vì %s', model, response.stop_reason)
+                continue
+            text = next((block.text for block in response.content if block.type == 'text'), '')
+            data = json.loads(text)
             if isinstance(data, dict) and isinstance(data.get('senses'), list):
                 return {'data': data, 'model': model}
             logger.warning('Refine %s trả về sai cấu trúc', model)

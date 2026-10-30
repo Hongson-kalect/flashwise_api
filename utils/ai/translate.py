@@ -14,6 +14,7 @@ from utils.utils.retry import retry_async
 from asgiref.sync import sync_to_async
 
 from utils.ai.schema import render_translate_schema
+from utils.ai.constain import language_map
 
 def get_minified_schema(sense_ids, langs):
     lang_props = {l: {"type": "string"} for l in langs}
@@ -55,13 +56,18 @@ async def process_translation_chunk(chunk, language_code, language_str, translat
         sense_ids = list(chunk.keys())
         schema = render_translate_schema(word, language_code, chunk, translate_lang)
 
-        prompt = f"""
-        # ROLE: Translator
-        # WORD: {word} | FROM: {language_code} | TO: {language_str}
-        # CONTENTS: {json.dumps(chunk, ensure_ascii=False)}
-        # TASK: Translate into {language_str}. Output MINIFIED JSON only.
-        # RULES: definition, usage and examples: translate the text faithfully. translations: 1-5 short equivalents of the headword '{word}' in the sense given by its definition (single words or short phrases, NEVER a full sentence or the definition itself).
-        """
+        # Bước 3 (Gemini flash-lite): ngắn, nêu rõ tên ngôn ngữ, quy tắc riêng cho translations vì đây là phần model rẻ hay sai nhất
+        source_name = language_map.get(language_code, language_code)
+        targets = ", ".join(f"{code} ({language_map.get(code, code)})" for code in translate_lang)
+        prompt = f"""Translate this dictionary entry of the {source_name} word '{word}' into: {targets}.
+
+Content (JSON, keys are sense ids):
+{json.dumps(chunk, ensure_ascii=False)}
+
+Rules:
+- definition, usage, examples: translate faithfully and naturally, keeping this sense's meaning. Do not explain or add anything.
+- translations: for each language, 1-5 words a bilingual dictionary lists for '{word}' in THIS sense (the one its definition describes), most common first. Single words or short phrases only; never a sentence, the definition, or a word for another meaning.
+- Fill every language code the schema asks for."""
 
 
         models = settings.GEMINI_API_MODEL
@@ -72,7 +78,7 @@ async def process_translation_chunk(chunk, language_code, language_str, translat
             attempts += 1
             async with local_client.aio as client:
                 try:
-                    response = await client.models.generate_content(
+                    response = await asyncio.wait_for(client.models.generate_content(
                         model=model, # Đã cập nhật bản lite mới nhất 2026
                         contents=prompt,
                         config=types.GenerateContentConfig(
@@ -81,7 +87,7 @@ async def process_translation_chunk(chunk, language_code, language_str, translat
                             response_schema=schema,
                             thinking_config=types.ThinkingConfig(thinking_budget=0)
                         )
-                    )
+                    ), timeout=settings.AI_GEMINI_TIMEOUT)
                     data = json.loads(response.text.strip())
                     break
                 except Exception as e:
@@ -268,7 +274,7 @@ async def ai_create_translate_sema(props, translate_base_language=True):
         translate_lang = user_language_code if isinstance(user_language_code, list) else [user_language_code]
 
         if(translate_base_language):
-            base_lang = settings.BASE_LANGUAGE # Sau còn cần kiểm tra xem đã dịch những ngôn ngữ nào nữa...
+            base_lang = props.get('base_languages') or settings.BASE_LANGUAGE # seed có thể truyền nhiều ngôn ngữ hơn mặc định
 
             # B1: Gộp 2 list và chuyển thành set để lọc trùng
             merged_set = set(translate_lang + base_lang)

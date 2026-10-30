@@ -71,7 +71,7 @@ class WordCacheManager:
             "senses": {},      # Lưu dạng { sense_id: { image: "...", contents: "...", metadata: "..." ,... } }
             "langs": [user_language_code],
             "status": "PROCESSING",
-            "stage": "draft", # draft: bước 1 đang sinh + dịch; refine: bước 2 đang chuẩn hoá. Nội dung nháp KHÔNG vào cache, chỉ bản đã chuẩn hoá (cache_word)
+            "stage": "draft", # draft: bước 1 đang sinh + dịch; refine: bước 2 đang chuẩn hoá. Nội dung nháp KHÔNG vào cache, chỉ bản cuối (cache_word)
             "started_at": time.time(),  # get-word dùng để phát hiện job chết (key bị đọc liên tục nên TTL trượt không tự hết hạn)
         }
 

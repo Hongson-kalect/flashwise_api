@@ -166,7 +166,7 @@ word_schema = {
                             "type": "STRING",
                             "enum": ["neutral", "formal", "informal", "slang", "vulgar", "technical", "literary", "archaic", "dialect", "humorous"]
                         },
-                        "description": "Danh sách các sắc thái của từ. Nếu là từ phổ thông, chỉ cần trả về ['neutral']."
+                        "description": "Register of this sense; ['neutral'] for an ordinary word."
                     },
                     "ipas": {
                         "type": "ARRAY",

@@ -22,6 +22,7 @@ from ai.validators import is_uuid
 from utils.ai import refine
 from utils.ai.word_render import ai_create_new_word_sema
 from utils.ai.japanese import add_ruby
+from utils.ai.translate import ai_create_translate_sema
 from utils.ai.schema import complex_schema
 from utils.celery.worker import re_cache_word, save_translated_contents
 from utils.redis.word_init import WordCacheManager, compute_languages
@@ -328,39 +329,36 @@ class EmptyContentTests(TestCase):
         self.assertIn('usage', missing['contents'])
 
 
-# ======================= PIPELINE 2 BƯỚC (Gemini giả) =======================
+# ======================= PIPELINE 2 BƯỚC (Claude giả) =======================
 
-class FakeChunk:
-    def __init__(self, text):
-        self.text = text
-
-
-class FakeModels:
-    def __init__(self, script):
-        self.script = script
-
-    async def generate_content_stream(self, model, contents, config):
-        pieces = self.script(model)
-
-        async def gen():
-            for piece in pieces:
-                yield FakeChunk(piece)
-        return gen()
-
-
-class FakeAio:
-    def __init__(self, models):
-        self.models = models
+class FakeStream:
+    def __init__(self, pieces):
+        self.pieces = pieces
 
     async def __aenter__(self):
-        return SimpleNamespace(models=self.models)
+        async def gen():
+            for piece in self.pieces:
+                yield piece
+        return SimpleNamespace(text_stream=gen())
 
     async def __aexit__(self, *args):
         return False
 
 
-def fake_genai(script):
-    return SimpleNamespace(Client=lambda api_key=None: SimpleNamespace(aio=FakeAio(FakeModels(script))))
+class FakeClaude:
+    """Giả AsyncAnthropic: messages.stream(model=...) trả từng mẩu text theo script(model)."""
+    def __init__(self, script):
+        self.messages = SimpleNamespace(stream=lambda model, **kwargs: FakeStream(script(model)))
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+
+def fake_claude(script):
+    return lambda: FakeClaude(script)
 
 
 def stream_pieces(payload, size=23):
@@ -382,8 +380,8 @@ DRAFT = {
 }
 
 
-class PipelineTests(TestCase):
-    """Chạy ai_create_new_word_sema thật (stream, cache Redis, ghi Postgres); chỉ Gemini, dịch, metadata, socket là giả."""
+class PipelineBase(TestCase):
+    """Dựng 1 từ đang PROCESSING + cache Redis, dịch / metadata giả; dùng chung cho cả 2 luồng tạo từ."""
 
     WORD = 'zzbank'
 
@@ -425,6 +423,13 @@ class PipelineTests(TestCase):
             sense['metadata'] = {'id': str(uuid7()), 'tags': ['t'], 'image_keywords': [], 'advanced': {}}
         return props['current_senses']
 
+    def senses(self):
+        return list(AISense.objects.filter(word=self.word).order_by('id'))
+
+
+class PipelineTests(PipelineBase):
+    """Luồng cũ (draft -> refine): chạy ai_create_new_word_sema thật (stream, cache Redis, ghi Postgres); chỉ Claude, dịch, metadata, socket là giả."""
+
     def refine_with(self, builder):
         async def fake_request(prompt):
             self.refine_prompts.append(prompt)
@@ -434,7 +439,7 @@ class PipelineTests(TestCase):
 
     def run_pipeline(self, script, request_refinement, metadata=None):
         patches = [
-            mock.patch('utils.ai.word_render.genai', fake_genai(script)),
+            mock.patch('utils.ai.claude.client', fake_claude(script)),
             mock.patch('utils.ai.word_render.ai_create_translate_sema', self.fake_translate),
             mock.patch('utils.ai.word_render.ai_create_metadata', metadata or self.fake_metadata),
             mock.patch('utils.ai.translate.ai_create_translate_sema', self.fake_translate),
@@ -448,8 +453,6 @@ class PipelineTests(TestCase):
             self.addCleanup(p.stop)
         return async_to_sync(ai_create_new_word_sema)(self.job)
 
-    def senses(self):
-        return list(AISense.objects.filter(word=self.word).order_by('id'))
 
     def test_refined_data_is_what_gets_saved(self):
         socket = AsyncMock()
@@ -670,6 +673,39 @@ JA_DRAFT = {
 }
 
 
+class ClaudeSchemaTests(TestCase):
+    """Schema kiểu Gemini đổi sang JSON Schema cho structured outputs của Claude (sai là API trả 400)."""
+
+    def walk(self, node):
+        if isinstance(node, dict):
+            yield node
+            for value in node.values():
+                yield from self.walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from self.walk(value)
+
+    def test_every_schema_converts_cleanly(self):
+        from utils.ai import claude
+        from utils.ai.schema import word_schema
+        for schema in (word_schema, complex_schema, refine.refine_schema):
+            out = claude.output_config(schema)['format']['schema']
+            for node in self.walk(out):
+                self.assertNotIn('maxItems', node)
+                if isinstance(node.get('type'), str):
+                    self.assertEqual(node['type'], node['type'].lower())
+                if node.get('type') == 'object':
+                    self.assertIs(node['additionalProperties'], False)
+        # metadata đứng trước senses: bộ đọc stream cần biết sớm từ có bị từ chối không
+        self.assertEqual(list(claude.to_json_schema(word_schema)['properties'])[:3], ['word', 'metadata', 'senses'])
+        self.assertIn('maxItems', word_schema['properties']['senses']['items']['properties']['examples'])  # schema gốc không bị sửa
+
+    def test_effort_is_optional(self):
+        from utils.ai import claude
+        self.assertNotIn('effort', claude.output_config(refine.refine_schema))
+        self.assertEqual(claude.output_config(refine.refine_schema, effort='low')['effort'], 'low')
+
+
 class JapaneseSchemaTests(TestCase):
     def test_schema_is_flat_like_latin_plus_roman(self):
         props = complex_schema["properties"]
@@ -712,6 +748,24 @@ class TranslateFlowTests(TestCase):
         new = copy.deepcopy(base)
         new['examples'].append({'en': {'value': 'extra'}, 'fr': {'value': 'x'}})
         self.assertEqual(len(merge_translations(base, new, 'en')['examples']), 1)
+
+    def _languages_for_new_word(self, user_languages, **props):
+        """Chạy ai_create_translate_sema cho 1 nghĩa tiếng Pháp, trả về danh sách ngôn ngữ đích mà bước dịch nhận."""
+        contents = {'definition': {'fr': {'value': 'def'}}, 'usage': {'fr': {'value': ''}}, 'examples': [{'fr': {'value': 'ex'}}]}
+        sense = {'id': 's1', 'contents': contents}
+        chunk = AsyncMock(return_value=None)
+        with mock.patch('utils.ai.translate.process_translation_chunk', chunk):
+            async_to_sync(ai_create_translate_sema)({
+                'word_value': 'zzbase', 'language_code': 'fr', 'user_language_code': user_languages,
+                'missing_translate': [sense], 'current_senses': [sense], **props,
+            })
+        return sorted(chunk.call_args.args[3])
+
+    def test_new_word_translates_english_and_user_languages_only(self):
+        self.assertEqual(self._languages_for_new_word(['vi', 'ja']), ['en', 'ja', 'vi'])
+
+    def test_seed_job_can_ask_for_more_languages(self):
+        self.assertEqual(self._languages_for_new_word(['vi'], base_languages=['en', 'zh', 'fr']), ['en', 'vi', 'zh'])  # tiếng Pháp là ngôn ngữ gốc nên không tự dịch sang chính nó
 
     def _word_with_sense(self, word):
         db_word = AIWord.objects.create(value=word, language_code='en', status='COMPLETED')

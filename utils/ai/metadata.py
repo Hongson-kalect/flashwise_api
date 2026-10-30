@@ -43,7 +43,7 @@ async def process_metadata(chunk, word, language_code, mapping_table, socket_roo
             attempts += 1
             async with local_client.aio as client:
                 try:
-                    response = await client.models.generate_content(
+                    response = await asyncio.wait_for(client.models.generate_content(
                         model=model, # Đã cập nhật bản lite mới nhất 2026
                         contents=prompt,
                         config=types.GenerateContentConfig(
@@ -52,7 +52,7 @@ async def process_metadata(chunk, word, language_code, mapping_table, socket_roo
                             response_schema=schema,
                             thinking_config=types.ThinkingConfig(thinking_budget=0)
                         )
-                    )
+                    ), timeout=settings.AI_GEMINI_TIMEOUT)
                     data = json.loads(response.text.strip())
                     break
                 except Exception as e:

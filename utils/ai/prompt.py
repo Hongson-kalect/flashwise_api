@@ -1,55 +1,59 @@
 from utils.ai.constain import language_map
 
+# Bước 1 (Claude Haiku, không thinking): system ngắn cố định, chi tiết theo từ nằm ở prompt user
+WORD_SYSTEM_PROMPT = (
+    "You are an expert lexicographer writing entries for a learner's dictionary. "
+    "Fill the JSON fields in schema order: metadata first, then senses."
+)
+
+
 def render_word_prompt(word, language_code):
+    """Prompt bước 1 cho Claude Haiku: quy tắc ngắn, dữ liệu trong thẻ XML. Cấu trúc JSON do schema (structured output) lo."""
     language_name = language_map.get(language_code, 'en')
 
     extra_rules = ""
+    ipa_rule = "\n- ipas: IPA between slashes, e.g. /bæŋk/; for English label it US or UK (give both if they differ)."
     if language_code == 'ja':
-        extra_rules = (
-            "6. Japanese: level is JLPT (N5-N1). 'roman' is the Hepburn romaji of that exact text. "
-            "ipas has one item per reading: label READING, value = the full hiragana reading, roman = its romaji. "
-            "Never put furigana or brackets inside any text."
-        )
+        ipa_rule = ""
+        extra_rules = """
+<japanese>
+- level: JLPT N5-N1.
+- roman: Hepburn romaji of exactly that text.
+- ipas: one item per reading; label READING, value = the full hiragana reading, roman = its romaji.
+- Never put furigana or brackets inside any text.
+</japanese>"""
 
-    return f"""
-    # ROLE: Expert Lexicographer.
-    # TASK: Core analysis of '{word}' ({language_name}) forlearners.
+    return f"""Write the dictionary entry for the {language_name} word '{word}'.
 
-    # RULES:
-    1. Language: Content (def, usage, examples) in {language_name}; IPA/POS in English.
-    2. Grouping: One entry per POS. Senses ordered by frequency.
-    3. Level: Defs/Examples must match the word's level.
-    4. Validation: 'should_be_saved' is FALSE for typos or random word strings.
-    5. Usage: ONLY a short note on grammar patterns, prepositions, collocations or register (e.g. "Used with 'in'; usually plural"). NEVER example sentences; leave it empty if there is nothing useful to say.
-    {extra_rules}
+<rules>
+- Validity: if '{word}' is a typo, gibberish or not a real {language_name} word, set should_be_saved to false and return no senses.
+- Senses: cover the meanings a learner dictionary (Oxford, Cambridge, Longman) lists for the word, most common first, each with its own pos. Include standard everyday and scientific meanings; skip rare, archaic, slang and idiom-only ones. One sense = one meaning: never merge two unrelated meanings, never split one into near-duplicates.
+- Language: definition, usage and examples in {language_name}; pos, level and register in English.
+- pos: lowercase English term (noun, verb, adjective, adverb, ...). A noun used before another noun (kitchen table) stays a noun: no adjective sense for it.
+- definition: one clear sentence, in simpler words than '{word}'; never use '{word}' or its forms in it.
+- usage: a short note on grammar patterns, prepositions / particles, collocations or register, e.g. "Usually plural; used with 'in'". About this sense only, never an example sentence. Only write what you are sure of: a wrong note is worse than none, so use "" if there is nothing useful.
+- examples: 1-2 natural sentences at the sense's level that show exactly this sense (not another one), each containing '{word}' or an inflected form. Never reuse an example in another sense.
+- level: CEFR A1-C2 (TOPIK1-6 for Korean).
+- register: ["neutral"] unless the sense is marked.{ipa_rule}
+</rules>{extra_rules}"""
 
-    # OUTPUT:
-    Strictly follow the Core JSON Schema.
-    Example must include '{word}'.
-    """
-
-    #  - For non-Latin (Japanese, Chinese, Korean): Provide ROMAN (Romaji/Pinyin) and phonetic script.
 
 def render_enhanced_prompt(word, language_code, senses):
+    """Prompt bước 4 (metadata) cho Gemini flash-lite: ngắn, mỗi danh sách 1 dòng định nghĩa rõ, có khoá nghĩa để model không lẫn."""
     language_name = language_map.get(language_code, 'en')
+    sense_lines = "\n".join(f"{key}: ({s['pos']}) {s['definition']}" for key, s in senses.items())
 
-    # Ví dụ truyền dữ liệu từ Query 1 vào
-    context_data = [f"POS: {s_contents['pos']}, Definition: {s_contents['definition']}" for s_id, s_contents in senses.items()]
+    return f"""Add metadata to each sense of the {language_name} word '{word}'.
 
-    return f"""
-    # ROLE: Linguistic Consultant & Visual Designer.
-    # CONTEXT: 
-    Word: '{word}' ({language_name})
-    Senses: {context_data}
+Senses (key: (pos) definition):
+{sense_lines}
 
-    # TASK: Enhance the word above with synonyms, idioms, and visual metadata.
-
-    # RULES:
-    1. Image Keywords: MUST be in English. Focus on concrete, searchable stock-photo tags.
-    2. Relevance: Idioms and synonyms must strictly relate to the specific senses provided.
-    3. Limits: Max 5 unique items per list.
-
-    # OUTPUT:
-    Strictly follow the Enhanced JSON Schema.
-    """
-
+For each sense key, about THAT sense only:
+- synonyms / antonyms: {language_name} words with the same / opposite meaning.
+- relateds: closely related {language_name} words (same topic or word family).
+- forms: inflected or derived forms of '{word}' (plural, past tense, comparative...).
+- collocations: common phrases containing '{word}', e.g. "heavy rain".
+- idioms: idioms or fixed expressions with '{word}' in this sense.
+- tags: 1-5 short lowercase English topic tags, e.g. "finance", "nature".
+- image_keywords: 1-3 English stock-photo search terms that show this sense concretely.
+At most 5 items per list. Leave a list empty rather than invent or reuse items from another sense."""

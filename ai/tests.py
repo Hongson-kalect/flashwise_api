@@ -14,10 +14,11 @@ from django.core.cache import cache as django_cache
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from datetime import timedelta
-from rest_framework.test import APITestCase
+from rest_framework.test import APIClient, APITestCase
 from uuid6 import uuid7
 
 from ai.models import AISense, AISenseMetadata, AIWord
+from ai.queries import load_word
 from ai.validators import is_uuid
 from core.models import ImageContext, ImageLibrary
 from utils.celery.fetch_image import find_image, get_image_by_keyword
@@ -1071,3 +1072,87 @@ class FindImageTests(TestCase):
         with mock.patch('utils.celery.fetch_image.find_image') as find:
             self.assertIsNone(async_to_sync(get_image_by_keyword)({'sense_id': str(uuid7()), 'keywords': ['bank']}))
         find.assert_not_called()
+
+
+class RegenerateTests(PipelineBase):
+    """Admin tạo lại từ: nghĩa cũ dùng tới khi bản mới lưu xong rồi thôi chính thức; AI từ chối / lỗi thì giữ bản cũ."""
+
+    def setUp(self):
+        super().setUp()
+        self.word.status = 'COMPLETED'
+        self.word.save()
+        old = make_sense(str(uuid7()), definition='Old wrong meaning.')
+        old.update(word_id=self.word.id, word_value=self.WORD)
+        self.old = AISense.objects.create(**old)
+        self.admin = get_user_model().objects.create_user('regen-admin', is_staff=True)
+        self.queue = FakeQueue()
+
+    def regenerate(self, user=None):
+        self.client = APIClient()
+        self.client.force_authenticate(user or self.admin)
+        with mock.patch('ai.generation.push_job', self.queue.push_job):
+            return self.client.post(f'/api/ai-words/{self.word.id}/regenerate/', {}, format='json')
+
+    def run_job(self, payload):
+        job = self.queue.jobs[-1][1]
+        patches = [
+            mock.patch('utils.ai.claude.client', fake_claude(lambda m: stream_pieces(payload))),
+            mock.patch('utils.ai.word_render.ai_create_translate_sema', self.fake_translate),
+            mock.patch('utils.ai.word_render.ai_create_metadata', self.fake_metadata),
+            mock.patch('utils.ai.word_render.request_refinement', AsyncMock(return_value=None)),
+            mock.patch('utils.ai.word_render.socket_message', AsyncMock()),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        return async_to_sync(ai_create_new_word_sema)(job)
+
+    def test_new_senses_replace_old_ones(self):
+        res = self.regenerate()
+        self.assertEqual((res.status_code, res.data['replacing']), (202, 1))
+        self.word.refresh_from_db()
+        self.assertEqual(self.word.status, 'PROCESSING')
+        self.assertEqual(self.queue.jobs[-1][1]['replace_sense_ids'], [str(self.old.id)])
+
+        self.run_job(DRAFT)
+        self.word.refresh_from_db()
+        self.old.refresh_from_db()
+        self.assertEqual(self.word.status, 'COMPLETED')
+        self.assertFalse(self.old.is_official)  # vẫn còn cho bộ từ đang trỏ tới, nhưng không còn trong get-word
+        self.assertEqual(len(load_word(id=self.word.id).senses.all()), 2)
+
+    def test_rejection_keeps_old_senses(self):
+        self.regenerate()
+        self.run_job({**DRAFT, "metadata": {"should_be_saved": False}})
+        self.word.refresh_from_db()
+        self.old.refresh_from_db()
+        self.assertEqual((self.word.status, self.old.is_official), ('COMPLETED', True))
+        self.assertIsNone(self.cache.cache_word_get_data('en', self.WORD))  # không để NOT_FOUND che bản cũ
+
+    def test_only_admin_and_not_while_processing(self):
+        self.assertEqual(self.regenerate(get_user_model().objects.create_user('plain')).status_code, 403)
+        AIWord.objects.filter(pk=self.word.pk).update(status='PROCESSING', updated_at=timezone.now())
+        self.assertEqual(self.regenerate().status_code, 409)
+
+
+class WordSearchTests(APITestCase):
+    def setUp(self):
+        for value, state in (('zzapple', 'COMPLETED'), ('zzapplication', 'COMPLETED'), ('zzapp', 'COMPLETED'),
+                             ('zzapply', 'PROCESSING'), ('zzbanana', 'COMPLETED')):
+            AIWord.objects.create(value=value, language_code='en', status=state)
+        AIWord.objects.create(value='zzapple', language_code='fr', status='COMPLETED')
+
+    def search(self, **q):
+        return self.client.get('/api/ai-words/search/', q)
+
+    def test_prefix_then_fuzzy(self):
+        self.assertEqual([w['value'] for w in self.search(q='ZZApp', lang='en').data], ['zzapp', 'zzapple', 'zzapplication'])
+        self.assertEqual([w['value'] for w in self.search(q='zzaple', lang='en', limit=1).data], ['zzapple'])
+        self.assertEqual(self.search(q='', lang='en').status_code, 400)
+
+    @override_settings(DEBUG=False)
+    def test_clear_is_debug_only(self):
+        admin = get_user_model().objects.create_user('clear-admin', is_staff=True)
+        self.client.force_authenticate(admin)
+        self.assertEqual(self.client.delete('/api/ai-words/clear/').status_code, 403)
+        self.assertEqual(AIWord.objects.count(), 6)

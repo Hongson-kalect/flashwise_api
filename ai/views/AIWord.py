@@ -3,6 +3,9 @@ import time
 from urllib.parse import unquote
 
 from django.conf import settings
+from django.contrib.postgres.search import TrigramSimilarity
+from django.db.models import Prefetch
+from django.db.models.functions import Length
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import action
@@ -16,7 +19,7 @@ from ai.models.AIWord import AIWord
 from ai.models.TranslateLog import TranslateLog
 from ai.generation import GenerationError, start_word_generation
 from ai.jobs import queue_translation
-from ai.queries import load_word, personalize_word
+from ai.queries import load_word, official_senses, personalize_word
 from ai.serializers.AIWord import AIWordSerializer
 from core.models import Collection, CollectionItem, ImageContext, ImageLibrary, ImageLibraryContext
 from utils.redis.word_init import WordCacheManager
@@ -156,9 +159,12 @@ def _start_generation(request, cache_manager, word, language_code, user_language
     """Từ chưa có (hoặc lần tạo trước lỗi / treo): đẩy job tạo từ cho worker. existing là bản ghi AIWord cũ nếu có."""
     try:
         # Mỗi từ mới là 2 lần gọi AI (draft + refine) cộng dịch / metadata, nên giới hạn theo người dùng / IP
+        # Từ còn nghĩa chính thức (lần tạo lại trước bị treo / lỗi giữa chừng): bản mới thay hẳn, không cộng dồn
+        old_ids = [str(s.id) for s in existing.senses.all()] if existing is not None else []
         state, init_data = start_word_generation(
             cache_manager, word, language_code, user_language_code, lambda: get_request_user(request), existing,
             allow=lambda: WordGenerateThrottle().allow_request(request, None),
+            extra={'replace_sense_ids': old_ids} if old_ids else None,
         )
     except GenerationError:
         return Response({'detail': 'Service unavailable, try again later'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
@@ -225,8 +231,63 @@ class AIWordViewSet(SoftDeleteViewSet):
 
         return _start_generation(request, cache_manager, word, language_code, user_language_code, word_instance)
 
+    @action(detail=False, methods=['get'], url_path='search')
+    def search(self, request):
+        """
+        Gợi ý từ đã có khi gõ. Query: q, lang, limit (≤ 50, mặc định 20). Từ bắt đầu bằng q trước (ngắn trước),
+        chưa đủ thì thêm từ gần giống (pg_trgm). Chỉ từ đã tạo xong.
+        """
+        q = normalize_lookup(request.query_params.get('q') or '')[:100]
+        language_code = request.query_params.get('lang')
+        if not q or not language_code or len(language_code) > 10:
+            return Response({'detail': 'q and lang are required'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            limit = max(1, min(int(request.query_params.get('limit', 20)), 50))
+        except ValueError:
+            limit = 20
+
+        words = AIWord.objects.filter(language_code=language_code, status='COMPLETED').exclude(is_deleted=True).exclude(is_active=False)
+        found = list(words.filter(value__startswith=q).annotate(n=Length('value')).order_by('n', 'value')[:limit])
+        if len(found) < limit and len(q) >= 2:
+            seen = [w.id for w in found]
+            found += list(
+                words.exclude(id__in=seen).annotate(sim=TrigramSimilarity('value', q)).filter(sim__gt=0.3)
+                .order_by('-sim', 'value')[:limit - len(found)]
+            )
+        return Response([{'id': w.id, 'value': w.value, 'language_code': w.language_code} for w in found])
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminUser])
+    def regenerate(self, request, pk=None):
+        """
+        Admin: tạo lại 1 từ bằng AI (nghĩa sai / thiếu, hoặc mở lại từ bị REJECTED nhầm). Body: user_lang (tuỳ chọn).
+        Nghĩa cũ vẫn dùng được tới khi bản mới lưu xong, sau đó thôi là nghĩa chính thức (bộ từ đang trỏ tới vẫn giữ);
+        AI từ chối / lỗi thì giữ nguyên bản cũ.
+        """
+        word = AIWord.objects.filter(pk=pk).exclude(is_deleted=True).prefetch_related(Prefetch('senses', queryset=official_senses())).first()
+        if word is None:
+            return Response({'detail': 'Word not found'}, status=status.HTTP_404_NOT_FOUND)
+        updated_at = word.updated_at or word.created_at
+        if word.status == 'PROCESSING' and updated_at and (timezone.now() - updated_at).total_seconds() < settings.WORD_PROCESSING_STALE_SECONDS:
+            return Response({'detail': 'Word is being generated'}, status=status.HTTP_409_CONFLICT)
+        user_language_code = request.data.get('user_lang') or settings.BASE_LANGUAGE[0]
+
+        cache_manager = WordCacheManager()
+        cache_manager.cache_word_clear_specific(word.language_code, word.value)
+        old_ids = [str(s.id) for s in word.senses.all()]
+        try:
+            state, _ = start_word_generation(
+                cache_manager, word.value, word.language_code, user_language_code, lambda: request.user, word,
+                extra={'replace_sense_ids': old_ids} if old_ids else None,
+            )
+        except GenerationError:
+            return Response({'detail': 'Service unavailable, try again later'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response({'detail': state, 'word_id': word.id, 'replacing': len(old_ids)}, status=status.HTTP_202_ACCEPTED)
+
     @action(detail=False, methods=['delete'], url_path='clear', permission_classes=[IsAdminUser])
     def clear(self, request):
+        """Xoá sạch từ, nghĩa, ảnh, bộ từ: chỉ dùng khi phát triển (DEBUG). Dữ liệu từ lưu sẵn ở ai_words_snapshot."""
+        if not settings.DEBUG:
+            return Response({'detail': 'Only available when DEBUG is on'}, status=status.HTTP_403_FORBIDDEN)
         try:
             # Xoá toàn bộ dữ liệu trên các bảng chỉ định
             # Lưu ý: .all().delete() sẽ kích hoạt các tín hiệu (signals)

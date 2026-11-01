@@ -6,6 +6,7 @@ from django.db import models
 class Report(BaseModel):
     TARGET_CHOICES = [
         ("word", "Word"),
+        ("sense", "Sense"),
         ("collection", "Collection"),
         ("quiz", "Quiz"),
     ]

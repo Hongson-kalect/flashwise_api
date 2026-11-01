@@ -56,14 +56,18 @@ def _set_word_status(word_id, status):
     AIWord.objects.filter(id=word_id).update(status=status, updated_at=timezone.now())
 
 
-async def _close_word(word_id, word_value, language_code, socket_room, cache, status, cache_status, event, message):
+async def _close_word(word_id, word_value, language_code, socket_room, cache, status, cache_status, event, message, keep_old=False):
     """
     Kết thúc 1 từ không có kết quả dùng được (bị từ chối / lỗi): đánh dấu DB, cache và báo người đang chờ.
     cache_status NOT_FOUND / ERROR để các lần get-word sau trả ngay thay vì chờ mãi ở PROCESSING.
+    keep_old: đang tạo lại 1 từ đã có nghĩa (replace_sense_ids) thì giữ bản cũ: từ về COMPLETED, bỏ cache để tra lại từ DB.
     """
-    await sync_to_async(_set_word_status)(word_id, status)
+    await sync_to_async(_set_word_status)(word_id, 'COMPLETED' if keep_old else status)
     try:
-        cache.cache_word_set_status(language_code, word_value, cache_status)
+        if keep_old:
+            cache.cache_word_clear_specific(language_code, word_value)
+        else:
+            cache.cache_word_set_status(language_code, word_value, cache_status)
     except Exception as e:
         logger.warning('Không đặt được trạng thái cache cho %s: %s', word_value, e)
     try:
@@ -91,6 +95,8 @@ async def ai_create_new_word_sema(word_info):
     word_id = word_info.get('word_id', None)
     word_value = normalize_lookup(word_info.get('value', ''))  # phải trùng chuỗi view dùng làm cache key / room
     language_code = word_info.get('language_code', None)
+    # Tạo lại từ đã có: nghĩa cũ thôi là nghĩa chính thức khi bản mới lưu xong (bộ từ đang trỏ tới vẫn giữ nguyên)
+    replace_ids = [str(i) for i in (word_info.get('replace_sense_ids') or [])]
 
     socket_room = get_safe_room_id(word_value, language_code)
 
@@ -227,11 +233,11 @@ async def ai_create_new_word_sema(word_info):
         marks['stream_end'] = time.monotonic()
 
         if rejected:
-            await _close_word(word_id, word_value, language_code, socket_room, cache, 'REJECTED', 'NOT_FOUND', 'REJECTED', 'Word rejected')
+            await _close_word(word_id, word_value, language_code, socket_room, cache, 'REJECTED', 'NOT_FOUND', 'REJECTED', 'Word rejected', keep_old=bool(replace_ids))
             return {"id": word_id, "senses": [], "is_valid": False}
 
         if not valid or not sense_objs:
-            await _close_word(word_id, word_value, language_code, socket_room, cache, 'FAILED', 'ERROR', 'ERROR', 'No usable AI response')
+            await _close_word(word_id, word_value, language_code, socket_room, cache, 'FAILED', 'ERROR', 'ERROR', 'No usable AI response', keep_old=bool(replace_ids))
             return {"id": word_id, "senses": [], "is_valid": False, "error": "No usable AI response"}
 
         # --- BƯỚC 2: chuẩn hoá. Chỉ gửi nội dung ngôn ngữ gốc nên chạy song song được với các task dịch đang chạy ---
@@ -267,7 +273,7 @@ async def ai_create_new_word_sema(word_info):
         marks['applied'] = time.monotonic()
 
         try:
-            await sync_to_async(save_sense)(sense_objs, word_id)
+            await sync_to_async(save_sense)(sense_objs, word_id, replace_ids)
             data = await sync_to_async(build_word_payload)(word_id)
             cache.cache_word(language_code=language_code, word_id=word_id, word_val=word_value, data=data.get('senses'))
 
@@ -277,7 +283,7 @@ async def ai_create_new_word_sema(word_info):
         except Exception as e:
             traceback.print_exc()
             logger.error('Lỗi khi lưu DB / cache cho %s: %s', word_value, e)
-            await _close_word(word_id, word_value, language_code, socket_room, cache, 'FAILED', 'ERROR', 'ERROR', str(e))
+            await _close_word(word_id, word_value, language_code, socket_room, cache, 'FAILED', 'ERROR', 'ERROR', str(e), keep_old=bool(replace_ids))
             raise
 
         marks['saved'] = time.monotonic()
@@ -288,7 +294,9 @@ async def ai_create_new_word_sema(word_info):
         traceback.print_exc()
         logger.error('Lỗi xử lý từ %s: %s', word_value, e)
         # Chỉ đánh dấu FAILED khi chưa lưu xong (nếu đã COMPLETED thì lỗi nằm ở bước báo cuối)
-        await sync_to_async(AIWord.objects.filter(id=word_id).exclude(status='COMPLETED').update)(status='FAILED', updated_at=timezone.now())
+        # Đang tạo lại từ đã có nghĩa thì giữ COMPLETED với nghĩa cũ (FAILED sẽ khiến get-word tạo thêm bản nữa)
+        await sync_to_async(AIWord.objects.filter(id=word_id).exclude(status='COMPLETED').update)(
+            status='COMPLETED' if replace_ids else 'FAILED', updated_at=timezone.now())
         raise
 
 
@@ -297,9 +305,10 @@ def build_word_payload(word_id):
     return AIWordSerializer(load_word(id=word_id)).data
 
 
-def save_sense(sense_obj, word_id):
+def save_sense(sense_obj, word_id, replace_ids=()):
     """
     Ghi các nghĩa (đã chuẩn hoá) và metadata của chúng trong 1 transaction, rồi đánh dấu từ COMPLETED.
+    replace_ids: nghĩa của lần tạo trước, thôi là nghĩa chính thức (không xoá: bộ từ đang trỏ tới).
     Nghĩa thiếu metadata (bước metadata lỗi) vẫn được lưu, phần thiếu sẽ do app / lần tra sau bổ sung.
     """
     metadata_instances = []
@@ -314,6 +323,8 @@ def save_sense(sense_obj, word_id):
     with transaction.atomic():
         AISenseMetadata.objects.bulk_create(metadata_instances)
         AISense.objects.bulk_create(sense_instances)
+        if replace_ids:
+            AISense.objects.filter(id__in=list(replace_ids), word_id=word_id).update(is_official=False, updated_at=timezone.now())
         AIWord.objects.filter(id=word_id).update(status='COMPLETED', updated_at=timezone.now())
 
 async def ai_create_new_word(user, word_instance, language_code, user_language_code, socket_room):

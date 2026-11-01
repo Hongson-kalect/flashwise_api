@@ -1,3 +1,4 @@
+from django.contrib.postgres.indexes import GinIndex
 from django.db import models
 from config.models import BaseModel
 
@@ -25,6 +26,8 @@ class AIWord(BaseModel):
             models.Index(fields=["language_code", "value"], name="idx_lang_value"),
             # Index phục vụ cho Worker quét các từ đang chờ xử lý theo thời gian tạo
             models.Index(fields=["status", "created_at"], name="idx_status_created"),
+            # Gợi ý từ gần giống khi gõ (ai-words/search, pg_trgm)
+            GinIndex(fields=["value"], name="ai_word_value_trgm", opclasses=["gin_trgm_ops"]),
         ]
 
         constraints = [

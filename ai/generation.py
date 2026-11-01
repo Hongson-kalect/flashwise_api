@@ -10,7 +10,7 @@ class GenerationError(Exception):
     """Không khởi tạo được việc tạo từ (hàng đợi / DB lỗi); trạng thái đã được dọn lại."""
 
 
-def start_word_generation(cache_manager, word, language_code, user_language_code, get_user, existing=None, queue='redis_word', allow=None):
+def start_word_generation(cache_manager, word, language_code, user_language_code, get_user, existing=None, queue='redis_word', allow=None, extra=None):
     """
     Nhận việc tạo 1 từ mới bằng AI: dựng cache PROCESSING, tạo (hoặc dùng lại) bản ghi AIWord và đẩy job cho worker.
     Dùng chung cho get-word (queue redis_word) và bulk-create (queue redis_collection_word).
@@ -18,6 +18,7 @@ def start_word_generation(cache_manager, word, language_code, user_language_code
     existing: bản ghi AIWord cũ (FAILED / treo) để dùng lại, tạo mới sẽ vi phạm unique (value, language_code).
     get_user: hàm trả user đứng tên bản ghi, chỉ gọi khi thật sự tạo mới.
     allow: hàm kiểm tra hạn mức (vd throttle), chỉ gọi khi mình là người khởi tạo; False thì huỷ.
+    extra: thêm vào job, vd replace_sense_ids (tạo lại từ: nghĩa cũ thôi chính thức khi bản mới lưu xong).
 
     Trả (trạng thái, dữ liệu cache): 'joined' đã có người khởi tạo trước (chỉ đăng ký thêm ngôn ngữ),
     'throttled' vượt hạn mức, 'started' đã đẩy job. Lỗi thì ném GenerationError.
@@ -51,6 +52,7 @@ def start_word_generation(cache_manager, word, language_code, user_language_code
             "value": word,
             "language_code": language_code,
             "user_language_code": user_language_code,
+            **(extra or {}),
         })
     except Exception as e:
         logger.exception("Không khởi tạo được việc tạo từ %s", word)

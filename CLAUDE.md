@@ -36,6 +36,9 @@ Model từng bước, MỌI bước tắt thinking: draft + refine = Claude Haik
 - Nghĩa riêng: get-word (user đăng nhập) ghép nghĩa riêng lúc trả về (`personalize_word`, cache vẫn dùng chung): bản sửa thay nghĩa gốc, nghĩa tạo mới thêm vào, cả hai đứng đầu, nghĩa đã ẩn bị bỏ. `DELETE ai-senses/{id}` (nghĩa riêng chưa đóng băng; đã upload thì 409), `POST/DELETE ai-senses/{id}/hide` (UserInteraction `hide`), `GET ai-senses/mine?word_id`. Nghĩa thấy được: chính thức, của mình, đã đóng băng trong bộ đã phát hành (`visible_sense_q`).
 - Bộ từ: xem bộ = bản phát hành mới nhất + nháp của chính người xem (`live_items`). `upload` chỉ tính dòng nháp đổi `sense_id` (không đổi gì thì 400 `no_changes`), title / desc / image thành thông tin bộ; bộ đã phát hành không PATCH được, tác giả xoá thì chỉ ẩn (`is_active=False`). `GET user-collections/{id}/updates`, `POST .../update-version` (nháp của user thắng, trả `conflicts`), `GET collections/{id}/versions`, `POST user-collections/{id}/add-senses | add-words (chỉ tác giả) | reorder`, `GET user-collections/containing?sense_id`, `GET collections/?lang&q&official&mine&ordering`.
 
+## Phần học từ vựng
+Thiết kế ở `D:\Codelashwise\docs\learning-design.md` (học cụm / vuốt / giọng nói). App tự chọn thẻ, chấm, tính FSRS rồi sync. `user_sense_progress.level` = cấp thẻ 0–7 (không còn là New/Learning/Review/Mastered), có `scheduled_days`, `learning_steps`; `review_log.is_fsrs` = lần chấm đưa vào FSRS (1 dòng / thẻ / phiên, các bước trong phiên ghi 0), `mode` dạng `learn:cloze`; `learn_session` có `status`, `collection_id`, `methods`, bộ đếm. Việc tiếp theo + phần chưa chốt: `NEXT_SESSION.md`.
+
 ## App Django
 - `ai`: AIWord, AISense (nội dung đa ngôn ngữ trong JSON `contents`, versioning original/previous, `quality_status`/`ai_pass` cho pipeline sinh 2 lần), AISenseMetadata, TranslateLog
 - `core`: Collection, CollectionItem (`display_order`), UserCollection, Language, Quiz, ImageLibrary

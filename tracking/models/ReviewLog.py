@@ -21,7 +21,12 @@ class ReviewLog(UUIDModel):
     session_id = models.UUIDField(null=True, blank=True) # LearnSession chứa lần ôn này
 
     rating = models.SmallIntegerField(choices=RATING_CHOICES)
-    mode = models.CharField(max_length=30, blank=True, default="flashcard") # flashcard, quiz, typing, ...
+    mode = models.CharField(max_length=40, blank=True, default="flashcard") # <kiểu phiên>:<phương pháp>, vd learn:cloze, review:swipe, voice:speak
+    # True: lần chấm đưa vào FSRS (1 dòng / thẻ / phiên). False: bước trong phiên học cụm, lần thẻ quay lại trong phiên (chỉ thống kê)
+    is_fsrs = models.BooleanField(default=True)
+    level = models.SmallIntegerField(default=0) # Cấp thẻ lúc chấm
+    hint_count = models.SmallIntegerField(default=0) # Số gợi ý đã dùng
+    attempts = models.SmallIntegerField(default=1) # Số lần trả lời tới khi xong bước
     duration_ms = models.PositiveIntegerField(default=0) # Thời gian suy nghĩ trước khi trả lời
 
     # Trạng thái FSRS trước và sau khi chấm

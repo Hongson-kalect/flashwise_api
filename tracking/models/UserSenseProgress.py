@@ -20,8 +20,9 @@ class UserSenseProgress(UUIDModel):
     original_sense_id = models.UUIDField(db_index=True)
 
     # --- Trạng thái hiển thị cho UI ---
-    level = models.IntegerField(default=1) # 1: New, 2: Learning, 3: Review, 4: Mastered
-    max_level = models.IntegerField(default=1) # Dùng để cho phép quay lại rank nhanh hơn các từ mới trong trường hợp học lại
+    # Cấp thẻ 0-7: quyết định kiểu thẻ / phương pháp học (0 = thẻ đầy đủ lần đầu, >= 3 thì ôn bằng vuốt...), xem flashwise/docs/learning-design.md
+    level = models.IntegerField(default=0)
+    max_level = models.IntegerField(default=0) # Cấp cao nhất từng đạt, cho phép lên lại nhanh khi học lại từ đã quên
 
     # --- Bộ đếm học tập ---
     streak_correct = models.IntegerField(default=0) # Số lần nhớ liên tiếp
@@ -33,6 +34,8 @@ class UserSenseProgress(UUIDModel):
     state = models.SmallIntegerField(choices=STATE_CHOICES, default=0)
     stability = models.FloatField(default=0) # Số ngày để xác suất nhớ giảm còn 90%
     difficulty = models.FloatField(default=0) # 1 - 10, 0 = chưa học lần nào
+    scheduled_days = models.FloatField(default=0) # Khoảng ôn đã hẹn ở lần chấm gần nhất (ngày)
+    learning_steps = models.IntegerField(default=0) # Bước học ngắn hạn hiện tại (ts-fsrs: learning_steps)
     failed_at = models.DateTimeField(null=True, blank=True) # Lần quên gần nhất
 
     # --- Cờ lọc trạng thái nhanh ---

@@ -123,10 +123,11 @@ def _reject(result, item, reason):
 # ---------------------------------------------------------------- push từng bảng
 
 PROGRESS_SPEC = {
-    'level': (int, 1, 4), 'max_level': (int, 1, 4),
+    'level': (int, 0, 7), 'max_level': (int, 0, 7),
     'streak_correct': (int, 0, 10**6), 'forget_count': (int, 0, 10**6),
     'remember_count': (int, 0, 10**6), 'repetitions': (int, 0, 10**6),
     'state': (int, 0, 3), 'stability': (float, 0, 10**5), 'difficulty': (float, 0, 10),
+    'scheduled_days': (float, 0, 10**5), 'learning_steps': (int, 0, 100),
     'failed_at': ('time', True), 'last_seen_at': ('time', True),
     'last_reviewed_at': ('time', True), 'next_review_at': ('time', True),
     'is_mastered': ('bool',), 'is_hidden': ('bool',), 'is_avoid': ('bool',), 'is_deleted': ('bool',),
@@ -177,7 +178,8 @@ REVIEW_SPEC = {
     'duration_ms': (int, 0, 3600000),
     'elapsed_days': (float, 0, 10**5), 'scheduled_days': (float, 0, 10**5),
     'stability': (float, 0, 10**5), 'difficulty': (float, 0, 10),
-    'mode': ('text', 30), 'reviewed_at': ('time',),
+    'mode': ('text', 40), 'reviewed_at': ('time',),
+    'is_fsrs': ('bool',), 'level': (int, 0, 7), 'hint_count': (int, 0, 100), 'attempts': (int, 0, 100),
 }
 
 
@@ -245,7 +247,11 @@ SESSION_SPEC = {
     'type': ('choice', {c[0] for c in LearnSession.TYPE_CHOICES}),
     'start_at': ('time',), 'end_at': ('time', True),
     'time': (int, 0, 86400), 'sense_count': (int, 0, 10**4), 'is_deleted': ('bool',),
+    'status': ('choice', {c[0] for c in LearnSession.STATUS_CHOICES}),
+    'new_count': (int, 0, 10**4), 'review_count': (int, 0, 10**4),
+    'correct_count': (int, 0, 10**5), 'wrong_count': (int, 0, 10**5), 'xp_earned': (int, 0, 10**6),
 }
+MAX_SESSION_METHODS = 20
 
 
 def push_sessions(user, items):
@@ -265,6 +271,22 @@ def push_sessions(user, items):
             continue
         data['senses'] = [str(s) for s in senses]
         data.setdefault('sense_count', len(senses))
+        if 'collection_id' in item:
+            if item['collection_id'] is not None and not is_uuid(item['collection_id']):
+                _reject(result, item, 'invalid:collection_id')
+                continue
+            data['collection_id'] = item['collection_id']
+        if 'methods' in item:
+            methods = item['methods']
+            if isinstance(methods, str):  # SQLite lưu JSON dạng chuỗi
+                try:
+                    methods = json.loads(methods)
+                except ValueError:
+                    methods = None
+            if not isinstance(methods, list) or len(methods) > MAX_SESSION_METHODS or not all(isinstance(m, str) and 0 < len(m) <= 40 for m in methods):
+                _reject(result, item, 'invalid:methods')
+                continue
+            data['methods'] = methods
         row = LearnSession.objects.filter(pk=item['id']).first()
         if row is not None and row.user_id != user.pk:
             _reject(result, item, 'id_taken')
@@ -474,16 +496,18 @@ PUSH_HANDLERS = {
 PULL_TABLES = {
     'user_sense_progress': (UserSenseProgress, 'updated_at', [
         'id', 'original_sense_id', 'level', 'max_level', 'streak_correct', 'forget_count', 'remember_count', 'repetitions',
-        'state', 'stability', 'difficulty', 'failed_at', 'is_mastered', 'is_hidden', 'is_avoid', 'is_deleted',
+        'state', 'stability', 'difficulty', 'scheduled_days', 'learning_steps', 'failed_at',
+        'is_mastered', 'is_hidden', 'is_avoid', 'is_deleted',
         'last_seen_at', 'last_reviewed_at', 'next_review_at', 'created_at', 'updated_at']),
     'review_log': (ReviewLog, 'created_at', [
-        'id', 'original_sense_id', 'sense_id', 'session_id', 'rating', 'mode', 'duration_ms', 'state',
-        'elapsed_days', 'scheduled_days', 'stability', 'difficulty', 'reviewed_at', 'created_at']),
+        'id', 'original_sense_id', 'sense_id', 'session_id', 'rating', 'mode', 'is_fsrs', 'level', 'hint_count', 'attempts',
+        'duration_ms', 'state', 'elapsed_days', 'scheduled_days', 'stability', 'difficulty', 'reviewed_at', 'created_at']),
     'day_learn_log': (DayLearnLog, 'updated_at', [
         'id', 'date', 'words_learned', 'words_relearned', 'learn_time', 'app_time', 'xp_earned', 'sessions_count',
         'created_at', 'updated_at']),
     'learn_session': (LearnSession, 'updated_at', [
-        'id', 'type', 'start_at', 'end_at', 'time', 'senses', 'sense_count', 'is_deleted', 'created_at', 'updated_at']),
+        'id', 'type', 'status', 'collection_id', 'methods', 'start_at', 'end_at', 'time', 'senses', 'sense_count',
+        'new_count', 'review_count', 'correct_count', 'wrong_count', 'xp_earned', 'is_deleted', 'created_at', 'updated_at']),
     'user_note': (UserNote, 'updated_at', [
         'id', 'sense_id', 'content', 'version', 'is_deleted', 'created_at', 'updated_at']),
     'user_settings': (UserSetting, 'updated_at', ['id', 'key', 'value', 'is_deleted', 'created_at', 'updated_at']),

@@ -38,5 +38,13 @@ class UserSetting(BaseModel):
     #   ["srs_review_reminder", true],
     #   ["push_enabled", true],
     #   ["fav_learning_time", "20:00"],
-    #   ["streak_remind_enabled", true]
+    #   ["streak_remind_enabled", true],
+    #   // Phần học (flashwise/docs/learning-design.md)
+    #   ["study_methods", ["write", "choose", "listen", "cloze", "speak"]],
+    #   ["cluster_size", 6], ["cluster_steps", 6],
+    #   ["swipe_min_level", 3], ["voice_min_level", 3],
+    #   ["hearable", true], ["talkable", true],
+    #   ["learning_direction", "target_native"],
+    #   ["request_retention", 0.9],
+    #   ["new_word_first", false]
     # ];

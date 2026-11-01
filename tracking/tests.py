@@ -148,6 +148,38 @@ class PushTests(SyncTestBase):
         theirs.refresh_from_db()
         self.assertEqual(theirs.user, self.other)
 
+    def test_learning_fields(self):
+        # Trường phần học: cấp thẻ 0-7, FSRS đủ trường, review_log ghi cả bước trong phiên, phiên có cấu hình + bộ đếm
+        sid, coll = str(uuid7()), str(uuid7())
+        out = self.push(user_sense_progress=[
+            {'original_sense_id': sid, 'level': 0, 'max_level': 3, 'scheduled_days': 2.5, 'learning_steps': 1},
+            {'original_sense_id': str(uuid7()), 'level': 8},
+        ]).data['results']['user_sense_progress']
+        self.assertEqual((out['accepted'], len(out['rejected'])), (1, 1))
+        progress = UserSenseProgress.objects.get(original_sense_id=sid)
+        self.assertEqual((progress.level, progress.max_level, progress.scheduled_days, progress.learning_steps), (0, 3, 2.5, 1))
+
+        rid = str(uuid7())
+        self.push(review_log=[{'id': rid, 'original_sense_id': sid, 'rating': 2, 'mode': 'learn:cloze', 'is_fsrs': 0,
+                               'level': 1, 'hint_count': 1, 'attempts': 2, 'reviewed_at': iso(-1)}])
+        log = ReviewLog.objects.get(pk=rid)
+        self.assertEqual((log.mode, log.is_fsrs, log.level, log.hint_count, log.attempts), ('learn:cloze', False, 1, 1, 2))
+
+        session = {'id': str(uuid7()), 'type': 'learn', 'status': 'in_progress', 'collection_id': coll, 'start_at': iso(-10),
+                   'methods': '["write", "cloze"]', 'new_count': 6, 'review_count': 0, 'correct_count': 30, 'wrong_count': 4, 'xp_earned': 60}
+        self.assertEqual(self.push(learn_session=[session]).data['results']['learn_session']['accepted'], 1)
+        row = LearnSession.objects.get(pk=session['id'])
+        self.assertEqual((row.status, str(row.collection_id), row.methods, row.new_count, row.xp_earned),
+                         ('in_progress', coll, ['write', 'cloze'], 6, 60))
+        res = self.push(learn_session=[dict(session, id=str(uuid7()), status='x'), dict(session, id=str(uuid7()), methods=[1]),
+                                       dict(session, id=str(uuid7()), collection_id='x')])
+        self.assertEqual(len(res.data['results']['learn_session']['rejected']), 3)
+
+        pulled = self.client.get('/api/sync/pull/', {'tables': 'learn_session,review_log,user_sense_progress'}).data['tables']
+        self.assertIn('learning_steps', pulled['user_sense_progress']['items'][0])
+        self.assertTrue(pulled['review_log']['items'][0]['is_fsrs'] is False)
+        self.assertEqual(pulled['learn_session']['items'][0]['methods'], ['write', 'cloze'])
+
     def test_notes_create_update_delete_and_validation(self):
         note = {'sense_id': str(self.sense.id), 'content': ' hay ', 'updated_at': iso(-10)}
         self.assertEqual(self.push(user_note=[note]).data['results']['user_note']['accepted'], 1)

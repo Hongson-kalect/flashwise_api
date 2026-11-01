@@ -29,6 +29,7 @@ from utils.utils.uuidv7 import generate_uuid7
 logger = logging.getLogger(__name__)
 
 MAX_COLLECTION_SENSES = 2000
+COLLECTION_ORDERINGS = ('like_count', '-like_count', 'downloaded_count', '-downloaded_count', 'created_at', '-created_at', 'score', '-score')
 
 
 def best_official_senses(words, language_code):
@@ -51,6 +52,41 @@ def make_items(collection_id, senses, start=0, created_by=None):
     ]
 
 
+def clean_words(words):
+    """Danh sách từ client gửi -> từ đã chuẩn hoá (giống get-word / worker, không bỏ ký tự), bỏ trùng, giữ thứ tự."""
+    return list(dict.fromkeys(w for w in (normalize_lookup(w) for w in words if isinstance(w, str)) if is_lookup_word(w)))
+
+
+def sort_words(words, language_code):
+    """
+    Chia từ thành: found {từ: nghĩa chính thức tốt nhất}, invalid (bị từ chối), pending (chờ AI),
+    to_start (cần đẩy AI tạo: chưa có bản ghi hoặc lần trước lỗi), existing {từ: AIWord}.
+    """
+    found = {sense.word_value: sense for sense in best_official_senses(words, language_code)}
+    missing = [w for w in words if w not in found]
+    existing = {w.value: w for w in AIWord.objects.filter(value__in=missing, language_code=language_code).exclude(is_deleted=True)} if missing else {}
+    invalid = [w for w in missing if w in existing and existing[w].status in ('REJECTED', 'INVALID')]
+    pending = [w for w in missing if w not in invalid]
+    to_start = [w for w in pending if w not in existing or existing[w].status == 'FAILED']
+    return found, invalid, pending, to_start, existing
+
+
+def start_pending_words(user, collection_id, to_start, existing, language_code, user_language_code):
+    """Đẩy AI tạo các từ chưa có (gọi sau khi DB đã commit); tạo xong worker / retrieve thêm vào bộ qua pending_words."""
+    cache_manager = WordCacheManager()
+    queue = get_queue_client()
+    for word in to_start:
+        try:
+            state, _ = start_word_generation(
+                cache_manager, word, language_code, user_language_code, lambda: user,
+                existing=existing.get(word), queue='redis_collection_word',
+            )
+        except GenerationError:
+            continue  # từ này ở lại pending, lần sau tạo lại
+        if state == 'started':
+            queue.sadd(f'collection_id:{word}', str(collection_id))
+
+
 def _bad_request(message, **extra):
     return Response({"message": message, **extra}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -71,6 +107,19 @@ class CollectionViewSet(SoftDeleteViewSet):
     def get_queryset(self):
         queryset = visible_collections(self.request.user)
         if self.action == 'list':
+            params = self.request.query_params
+            if params.get('lang'):
+                queryset = queryset.filter(language_code=params['lang'])
+            if params.get('official') in ('true', 'false'):
+                queryset = queryset.filter(is_official=params['official'] == 'true')
+            if params.get('mine') == 'true' and self.request.user.is_authenticated:
+                queryset = queryset.filter(created_by=self.request.user)
+            q = (params.get('q') or '').strip()[:100]
+            if q:
+                queryset = queryset.filter(name__icontains=q)  # có GinIndex trigram trên name nên icontains không quét cả bảng
+            ordering = params.get('ordering')
+            if ordering in COLLECTION_ORDERINGS:
+                queryset = queryset.order_by(ordering, '-id')
             # Số từ của bản đang hiệu lực (item_count, tính lúc tạo / phát hành); đếm thẳng bảng trung gian sẽ cộng cả nháp và mọi version
             queryset = queryset.annotate(senses_count=F('item_count'))
         return queryset
@@ -226,20 +275,14 @@ class CollectionViewSet(SoftDeleteViewSet):
             return _bad_request("lang, user_lang and words are required")
 
         # Chuẩn hoá giống get-word / worker (không bỏ ký tự): 'c++' vẫn là 'c++', trùng đúng từ user tra lẻ
-        cleaned = list(dict.fromkeys(w for w in (normalize_lookup(w) for w in words if isinstance(w, str)) if is_lookup_word(w)))
+        cleaned = clean_words(words)
         if not cleaned:
             return _bad_request("No valid words")
         if len(cleaned) > settings.BULK_MAX_WORDS_PER_REQUEST:
             return _bad_request("At most %s words per request" % settings.BULK_MAX_WORDS_PER_REQUEST)
 
-        found = {sense.word_value: sense for sense in best_official_senses(cleaned, language_code)}
-        missing = [w for w in cleaned if w not in found]
-        existing = {w.value: w for w in AIWord.objects.filter(value__in=missing, language_code=language_code).exclude(is_deleted=True)} if missing else {}
-
-        invalid = [w for w in missing if w in existing and existing[w].status in ('REJECTED', 'INVALID')]
-        pending = [w for w in missing if w not in invalid]
-        # Cần AI tạo: chưa có bản ghi nào, hoặc lần tạo trước lỗi. Mỗi từ mới tốn tiền nên tính vào hạn mức theo ngày
-        to_start = [w for w in pending if w not in existing or existing[w].status == 'FAILED']
+        found, invalid, pending, to_start, existing = sort_words(cleaned, language_code)
+        # Mỗi từ mới tốn tiền nên tính vào hạn mức theo ngày
         if to_start and not consume_daily_quota(user, 'bulk_words', len(to_start), settings.BULK_WORDS_PER_DAY):
             return Response({"detail": "Daily new-word limit reached", "errorCode": "bulk_quota_exceeded"}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
@@ -253,18 +296,7 @@ class CollectionViewSet(SoftDeleteViewSet):
             CollectionItem.objects.bulk_create(make_items(collection.id, [found[w] for w in cleaned if w in found], 0, user))
 
         # Gọi AI sau khi DB đã commit
-        cache_manager = WordCacheManager()
-        queue = get_queue_client()
-        for word in to_start:
-            try:
-                state, _ = start_word_generation(
-                    cache_manager, word, language_code, user_language_code, lambda: user,
-                    existing=existing.get(word), queue='redis_collection_word',
-                )
-            except GenerationError:
-                continue  # từ này ở lại pending, lần sau tạo lại
-            if state == 'started':
-                queue.sadd(f'collection_id:{word}', str(collection.id))
+        start_pending_words(user, collection.id, to_start, existing, language_code, user_language_code)
 
         return Response(
             {"user_collection": user_collection.id, **CollectionBasicSerializer(collection).data, "pending_words": pending, "invalid_words": invalid},

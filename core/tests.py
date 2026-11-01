@@ -679,3 +679,78 @@ class UserCollectionEditFlowTests(APITestCase):
         self.as_user(self.alice)
         res = self.client.get(f'/api/collections/{collection.id}/')
         self.assertEqual({s['id'] for s in res.data['senses']}, {str(self.one.id), str(self.two.id)})
+
+    # ---------- thêm nhiều, thêm từ, sắp xếp, bộ chứa nghĩa ----------
+
+    def test_add_senses_in_batch(self):
+        collection, mine = self.create_collection(self.one)
+        _, private = make_word_with_sense('private', is_official=False, created_by=self.bob)
+        res = self.client.post(f'/api/user-collections/{mine.id}/add-senses/', {
+            'sense_ids': [str(self.two.id), str(self.one.id), str(private.id), str(self.three.id)],
+        }, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data, {'added': [str(self.two.id), str(self.three.id)], 'restored': [], 'exists': [str(self.one.id)], 'unknown': [str(private.id)]})
+        self.assertEqual([i['sense']['word_value'] for i in self.items(mine)], ['one', 'two', 'three'])
+
+    @override_settings(CACHES=LOCMEM_CACHE)
+    def test_add_words_to_own_collection(self):
+        collection, mine = self.create_collection(self.one)
+        AIWord.objects.create(value='zzbad', language_code='en', status='REJECTED')
+        queue, redis = FakeQueue(), FakeRedis()
+        self.addCleanup(WordCacheManager().cache_word_clear_specific, 'en', 'zznew')
+        with mock.patch('ai.generation.push_job', queue.push_job), mock.patch('core.views.Collection.get_queue_client', lambda: redis):
+            res = self.client.post(f'/api/user-collections/{mine.id}/add-words/', {'words': ['Two', 'one', 'zzbad', 'zznew'], 'user_lang': 'vi'}, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual((res.data['added'], res.data['pending_words'], res.data['invalid_words']), (['two'], ['zznew'], ['zzbad']))
+        collection.refresh_from_db()
+        self.assertEqual((collection.pending_words, collection.invalid_words), (['zznew'], ['zzbad']))
+        self.assertEqual([job['value'] for _, job in queue.jobs], ['zznew'])
+        self.assertEqual(redis.sets['collection_id:zznew'], {str(collection.id)})
+
+        # Người đã tải (không phải tác giả) không thêm từ được
+        self.upload(mine)
+        self.as_user(self.bob)
+        self.client.post(f'/api/user-collections/{collection.id}/download/')
+        bobs = UserCollection.objects.get(user=self.bob, collection=collection)
+        res = self.client.post(f'/api/user-collections/{bobs.id}/add-words/', {'words': ['three'], 'user_lang': 'vi'}, format='json')
+        self.assertEqual(res.status_code, 403)
+
+    def test_reorder(self):
+        collection, mine = self.create_collection(self.one, self.two)
+        self.upload(mine)
+        self.post('add-sense', mine, sense_id=str(self.three.id))
+        rows = {i['sense']['word_value']: i['id'] for i in self.items(mine)}
+        body = {'items': [{'item_id': str(rows['three']), 'display_order': -1}, {'item_id': str(rows['two']), 'display_order': -0.5}]}
+        res = self.client.post(f'/api/user-collections/{mine.id}/reorder/', body, format='json')
+        self.assertEqual((res.data['updated'], res.data['skipped']), (2, []))
+        self.assertEqual([i['sense']['word_value'] for i in self.items(mine)], ['three', 'two', 'one'])
+        self.assertEqual(Collection.objects.get(pk=collection.pk).version, 1)  # thứ tự không tạo version
+
+        # Người đã tải không đổi được thứ tự bản phát hành
+        self.as_user(self.bob)
+        self.client.post(f'/api/user-collections/{collection.id}/download/')
+        bobs = UserCollection.objects.get(user=self.bob, collection=collection)
+        res = self.client.post(f'/api/user-collections/{bobs.id}/reorder/', {'items': [{'item_id': str(rows['one']), 'display_order': 9}]}, format='json')
+        self.assertEqual((res.data['updated'], res.data['skipped']), (0, [str(rows['one'])]))
+        self.assertEqual(self.client.post(f'/api/user-collections/{bobs.id}/reorder/', {'items': [{'item_id': 'x'}]}, format='json').status_code, 400)
+
+    def test_containing(self):
+        collection, mine = self.create_collection(self.one, self.two)
+        _, other = self.create_collection(self.two)
+        res = self.client.get('/api/user-collections/containing/', {'sense_id': str(self.two.id)})
+        self.assertEqual({str(r['user_collection_id']) for r in res.data}, {str(mine.id), str(other.id)})
+        item = CollectionItem.objects.get(collection=collection, sense=self.two)
+        self.post('delete-sense', mine, collection_item_id=str(item.id))
+        res = self.client.get('/api/user-collections/containing/', {'sense_id': str(self.two.id)})
+        self.assertEqual([str(r['user_collection_id']) for r in res.data], [str(other.id)])
+
+    def test_public_list_filters(self):
+        Collection.objects.create(name='Animals EN', language_code='en', released=True, like_count=5, created_by=self.bob)
+        Collection.objects.create(name='Food EN', language_code='en', released=True, like_count=9, created_by=self.bob)
+        Collection.objects.create(name='Animals JA', language_code='ja', released=True, is_official=True, created_by=self.bob)
+        names = lambda **q: [r['name'] for r in self.client.get('/api/collections/', q).data['results']]
+        self.assertEqual(names(lang='en', ordering='-like_count'), ['Food EN', 'Animals EN'])
+        self.assertEqual(sorted(names(q='animals')), ['Animals EN', 'Animals JA'])
+        self.assertEqual(names(official='true'), ['Animals JA'])
+        self.create_collection(self.one)
+        self.assertEqual(names(mine='true'), ['Mine'])

@@ -1,4 +1,7 @@
 import json
+import uuid
+
+from django.conf import settings
 
 from django.utils import timezone
 from django.db.models import Prefetch, Q, Max
@@ -9,10 +12,11 @@ from rest_framework.permissions import IsAuthenticated
 from ai.models import AISense, AIWord, AISenseMetadata
 from ai.queries import visible_senses
 from ai.sense_edit import apply_sense_edit
-from ai.validators import MAX_DELTA_CHARS, is_uuid
+from ai.validators import MAX_DELTA_CHARS, is_lang, is_uuid
+from utils.utils.permissions import consume_daily_quota
 from core.serializers import CollectionDetailSerializer
 from core.models import Collection,CollectionItem, UserCollection
-from core.queries import live_items, visible_collections
+from core.queries import current_items, live_items, visible_collections
 from core.serializers.UserCollection import UserCollectionSerializer
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 from utils.utils.sense_handle import deep_merge
@@ -73,6 +77,33 @@ def classify_drafts(collection_id, user, base_version):
         else:
             noop.append(draft.id)
     return changes, noop
+
+
+def add_sense_to(user_collection, user, sense):
+    """
+    Thêm 1 nghĩa vào bộ (dòng nháp của user), gọi trong transaction đã khoá user_collection.
+    Trả ('exists' | 'restored' | 'added', dòng). restored: từ từng bị xoá nháp, bỏ dòng xoá thì bản phát hành hiện lại.
+    """
+    oid = sense.original_id or sense.id
+
+    def latest():
+        return visible_items(user_collection, user).filter(original_id=oid).order_by("released", "-version", "-created_at").first()
+
+    existing = latest()
+    if existing and not existing.is_deleted:
+        return 'exists', existing
+    CollectionItem.objects.filter(
+        collection_id=user_collection.collection_id, original_id=oid, created_by=user, released=False, is_deleted=True,
+    ).delete()
+    restored = latest()
+    if restored and not restored.is_deleted:
+        return 'restored', restored
+    last_order = CollectionItem.objects.filter(collection_id=user_collection.collection_id).aggregate(m=Max('display_order'))['m'] or 0.0
+    item = CollectionItem.objects.create(
+        collection_id=user_collection.collection_id, sense=sense, original_id=oid, value=sense.word_value,
+        display_order=float(last_order) + 1.0, released=False, is_deleted=False, created_by=user,
+    )
+    return 'added', item
 
 
 def freeze_senses(item_queryset):
@@ -207,7 +238,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
 
     @action(detail=True, methods=['post'], url_path='add-sense')
     def add_sense(self, request, pk=None, *args, **kwargs):
-        """Thêm một nghĩa (chính thức hoặc của chính mình) vào bộ dưới dạng dòng nháp. Body: user_collection_id, sense_id."""
+        """Thêm một nghĩa (chính thức, của mình hoặc người khác đã upload) vào bộ dưới dạng dòng nháp. Body: user_collection_id, sense_id."""
         user = request.user
         sense_id = request.data.get('sense_id')
         user_collection_id = request.data.get('user_collection_id')
@@ -216,35 +247,127 @@ class UserCollectionViewSet(SoftDeleteViewSet):
 
         with transaction.atomic():
             user_collection = get_object_or_404(self.get_queryset().select_for_update(), id=user_collection_id)
+            target_sense = get_object_or_404(visible_senses(user), id=sense_id)
+            state, item = add_sense_to(user_collection, user, target_sense)
 
-            # Nghĩa chính thức, nghĩa của mình hoặc nghĩa người khác đã upload
-            target_sense = get_object_or_404(
-                visible_senses(user), id=sense_id,
-            )
-            oid = target_sense.original_id or target_sense.id
+        if state == 'exists':
+            return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "Item already exists in this version of collection"})
+        data = {"message": "Success", "item_id": item.id}
+        if state == 'restored':
+            data['restored'] = True
+        return Response(status=status.HTTP_200_OK, data=data)
 
-            def latest():
-                return visible_items(user_collection, user).filter(original_id=oid).order_by("released", "-version", "-created_at").first()
+    @action(detail=True, methods=['post'], url_path='add-senses')
+    def add_senses(self, request, pk=None):
+        """Thêm nhiều nghĩa một lần (theo thứ tự gửi). Body: sense_ids (tối đa 500). Trả id nghĩa theo kết quả: added / restored / exists / unknown."""
+        sense_ids = request.data.get('sense_ids')
+        if not isinstance(sense_ids, list) or not sense_ids or len(sense_ids) > 500 or not all(is_uuid(i) for i in sense_ids):
+            return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "sense_ids must be a list of 1-500 ids"})
+        sense_ids = list(dict.fromkeys(str(uuid.UUID(str(i))) for i in sense_ids))
+        result = {"added": [], "restored": [], "exists": [], "unknown": []}
+        with transaction.atomic():
+            user_collection = get_object_or_404(self.get_queryset().select_for_update(), id=pk)
+            senses = {str(s.id): s for s in visible_senses(request.user).filter(id__in=sense_ids)}
+            for sense_id in sense_ids:
+                sense = senses.get(sense_id)
+                if sense is None:
+                    result["unknown"].append(sense_id)
+                    continue
+                state, _ = add_sense_to(user_collection, request.user, sense)
+                result[state].append(sense_id)
+        return Response(result)
 
-            existing = latest()
-            if existing and not existing.is_deleted:
-                return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "Item already exists in this version of collection"})
+    @action(detail=True, methods=['post'], url_path='add-words')
+    def add_words(self, request, pk=None):
+        """
+        Thêm từ (chưa cần có sẵn) vào bộ của chính mình, như bulk-create: từ đã có nghĩa vào bộ ngay (dòng nháp),
+        từ bị từ chối vào invalid_words, từ còn lại vào pending_words (đẩy AI tạo, tính hạn mức ngày).
+        Chỉ tác giả bộ (từ đang chờ được thêm vào nháp của tác giả); người đã tải dùng get-word rồi add-senses.
+        Body: words, user_lang.
+        """
+        from core.views.Collection import clean_words, sort_words, start_pending_words
 
-            # Từ từng bị xoá nháp: bỏ dòng xoá thì bản đã phát hành hiện lại, không cần thêm dòng mới
-            CollectionItem.objects.filter(
-                collection_id=user_collection.collection_id, original_id=oid, created_by=user, released=False, is_deleted=True,
-            ).delete()
-            restored = latest()
-            if restored and not restored.is_deleted:
-                return Response(status=status.HTTP_200_OK, data={"message": "Success", "item_id": restored.id, "restored": True})
+        user = request.user
+        words, user_language_code = request.data.get('words'), request.data.get('user_lang')
+        if not isinstance(words, list) or not is_lang(user_language_code):
+            return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "words and user_lang are required"})
+        cleaned = clean_words(words)
+        if not cleaned or len(cleaned) > settings.BULK_MAX_WORDS_PER_REQUEST:
+            return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "1-%s valid words required" % settings.BULK_MAX_WORDS_PER_REQUEST})
 
-            last_order = CollectionItem.objects.filter(collection_id=user_collection.collection_id).aggregate(m=Max('display_order'))['m'] or 0.0
-            item = CollectionItem.objects.create(
-                collection_id=user_collection.collection_id, sense=target_sense, original_id=oid, value=target_sense.word_value,
-                display_order=float(last_order) + 1.0, released=False, is_deleted=False, created_by=user,
-            )
+        user_collection = get_object_or_404(self.get_queryset().select_related('collection'), id=pk)
+        collection = user_collection.collection
+        if collection is None or collection.created_by_id != user.id:
+            return Response(status=status.HTTP_403_FORBIDDEN, data={"message": "Only the collection author can add words"})
 
-        return Response(status=status.HTTP_200_OK, data={"message": "Success", "item_id": item.id})
+        found, invalid, pending, to_start, existing = sort_words(cleaned, collection.language_code)
+        if to_start and not consume_daily_quota(user, 'bulk_words', len(to_start), settings.BULK_WORDS_PER_DAY):
+            return Response(status=status.HTTP_429_TOO_MANY_REQUESTS, data={"detail": "Daily new-word limit reached", "errorCode": "bulk_quota_exceeded"})
+
+        added = []
+        with transaction.atomic():
+            user_collection = self.get_queryset().select_for_update().get(pk=user_collection.pk)
+            for word in cleaned:
+                if word in found:
+                    state, _ = add_sense_to(user_collection, user, found[word])
+                    if state != 'exists':
+                        added.append(word)
+            locked = Collection.objects.select_for_update().get(pk=collection.pk)
+            locked.pending_words = list(dict.fromkeys([*(locked.pending_words or []), *pending]))
+            locked.invalid_words = list(dict.fromkeys([*(locked.invalid_words or []), *invalid]))
+            locked.save(update_fields=['pending_words', 'invalid_words', 'updated_at'])
+
+        start_pending_words(user, collection.id, to_start, existing, collection.language_code, user_language_code)
+        return Response({"added": added, "pending_words": pending, "invalid_words": invalid})
+
+    @action(detail=True, methods=['post'], url_path='reorder')
+    def reorder(self, request, pk=None):
+        """
+        Đổi thứ tự hiển thị. Body: items [{item_id, display_order}] (tối đa 2000).
+        Dòng nháp của mình đổi được; dòng đã phát hành chỉ tác giả đổi được (thứ tự không tạo version mới),
+        người khác thì dòng đó trả về trong skipped.
+        """
+        items = request.data.get('items')
+        if not isinstance(items, list) or len(items) > 2000:
+            return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "items must be a list of at most 2000"})
+        orders = {}
+        for entry in items:
+            order = entry.get('display_order') if isinstance(entry, dict) else None
+            if not isinstance(entry, dict) or not is_uuid(entry.get('item_id')) or isinstance(order, bool) or not isinstance(order, (int, float)):
+                return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "Each item needs item_id and numeric display_order"})
+            orders[str(uuid.UUID(str(entry['item_id'])))] = float(order)
+
+        with transaction.atomic():
+            user_collection = get_object_or_404(self.get_queryset().select_related('collection').select_for_update(of=('self',)), id=pk)
+            is_author = user_collection.collection is not None and user_collection.collection.created_by_id == request.user.id
+            rows = list(visible_items(user_collection, request.user).filter(id__in=list(orders)))
+            changed, skipped = [], [i for i in orders if i not in {str(r.id) for r in rows}]
+            for row in rows:
+                if row.released and not is_author:
+                    skipped.append(str(row.id))
+                    continue
+                row.display_order = orders[str(row.id)]
+                changed.append(row)
+            CollectionItem.objects.bulk_update(changed, ['display_order', 'updated_at'])
+        return Response({"updated": len(changed), "skipped": skipped})
+
+    @action(detail=False, methods=['get'], url_path='containing')
+    def containing(self, request):
+        """Bộ từ của mình đang chứa nghĩa này (cùng gốc original_id, kể cả bản sửa). Query: sense_id."""
+        sense_id = request.query_params.get('sense_id')
+        if not is_uuid(sense_id):
+            return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "Invalid sense_id"})
+        sense = get_object_or_404(visible_senses(request.user), id=sense_id)
+        oid = sense.original_id or sense.id
+        result = []
+        for user_collection in self.get_queryset().filter(collection__collectionitem__original_id=oid).select_related('collection').distinct():
+            item = current_items(user_collection.collection_id, user_collection.version, request.user).filter(original_id=oid).first()
+            if item is not None and not item.is_deleted:
+                result.append({
+                    "user_collection_id": user_collection.id, "collection_id": user_collection.collection_id,
+                    "name": user_collection.name or user_collection.collection.name, "item_id": item.id, "sense_id": item.sense_id,
+                })
+        return Response(result)
 
     @action(detail=True, methods=['post'], url_path='delete-sense')
     def delete_sense(self, request, pk=None, *args, **kwargs):

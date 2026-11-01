@@ -215,7 +215,7 @@ class BulkCreateTests(APITestCase):
         AIWord.objects.create(value='zzreject', language_code='en', status='REJECTED')
         failed = AIWord.objects.create(value='zzfailed', language_code='en', status='FAILED')
 
-        res = self.bulk(words=['ZZHave', 'zzhave', 'zzreject', 'zznewone', 'zznewtwo', 'zzfailed', '  ', 5])
+        res = self.bulk(words=['ZZHave', ' zzhave ', 'zzreject', 'zznewone', 'zznewtwo', 'zzfailed', '  ', 5])
         self.assertEqual(res.status_code, 201)
         self.assertEqual(res.data['invalid_words'], ['zzreject'])
         self.assertEqual(res.data['pending_words'], ['zznewone', 'zznewtwo', 'zzfailed'])
@@ -233,6 +233,15 @@ class BulkCreateTests(APITestCase):
         self.assertEqual(failed.status, 'PROCESSING')
         self.assertEqual(AIWord.objects.get(value='zznewone').status, 'PROCESSING')
         self.assertEqual(self.redis.sets['collection_id:zznewone'], {str(collection.id)})
+
+    def test_words_keep_symbols_like_get_word(self):
+        self.addCleanup(self.cache.cache_word_clear_specific, 'en', 'zzc++')
+        self.addCleanup(self.cache.cache_word_clear_specific, 'en', 'zzice cream')
+        res = self.bulk(words=['ZZC++', 'zzc++', '  zzIce   Cream ', '!!!'])
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data['pending_words'], ['zzc++', 'zzice cream'])  # '!!!' bị bỏ, không gọi AI
+        self.assertEqual({job['value'] for _, job in self.queue.jobs}, {'zzc++', 'zzice cream'})
+        self.assertEqual(self.cache.cache_word_get_data('en', 'zzc++')['status'], 'PROCESSING')  # get-word tra 'zzc++' sẽ vào chờ chung
 
     def test_words_already_processing_by_others_stay_pending_without_new_job(self):
         AIWord.objects.create(value='zznewone', language_code='en', status='PROCESSING')  # trước đây bị loại khỏi pending và mất hẳn

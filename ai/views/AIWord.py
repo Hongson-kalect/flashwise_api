@@ -20,6 +20,7 @@ from ai.queries import load_word
 from ai.serializers.AIWord import AIWordSerializer
 from core.models import Collection, CollectionItem, ImageContext, ImageLibrary, ImageLibraryContext
 from utils.redis.word_init import WordCacheManager
+from utils.utils.normalize import is_lookup_word, normalize_lookup
 from utils.utils.permissions import IsAdminOrReadOnly, WordGenerateThrottle, get_request_user
 from utils.utils.sense_handle import get_user_lang_content
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
@@ -185,8 +186,8 @@ class AIWordViewSet(SoftDeleteViewSet):
         if not raw_word or not language_code or not user_language_code:
             return Response({'detail': 'value, lang, user_lang are required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        word = unquote(raw_word).strip().lower()
-        if not word or len(word) > 100 or len(language_code) > 10 or len(user_language_code) > 10:
+        word = normalize_lookup(unquote(raw_word))  # cùng cách chuẩn hoá với worker và room socket của app
+        if not is_lookup_word(word) or len(language_code) > 10 or len(user_language_code) > 10:
             return Response({'detail': 'Invalid word or language code'}, status=status.HTTP_400_BAD_REQUEST)
 
         cache_manager = WordCacheManager()

@@ -20,7 +20,7 @@ from core.serializers.Collection import (
 )
 from utils.redis.client import get_queue_client
 from utils.redis.word_init import WordCacheManager
-from utils.utils.normalize import normalize  # noqa: F401  (nhiều nơi vẫn import normalize từ module này)
+from utils.utils.normalize import normalize, normalize_lookup, is_lookup_word  # noqa: F401  (nhiều nơi vẫn import normalize từ module này)
 from utils.utils.permissions import IsOwnerOrAdmin, consume_daily_quota
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 from utils.utils.uuidv7 import generate_uuid7
@@ -191,7 +191,8 @@ class CollectionViewSet(SoftDeleteViewSet):
         if not is_lang(language_code) or not is_lang(user_language_code) or not isinstance(words, list):
             return _bad_request("lang, user_lang and words are required")
 
-        cleaned = list(dict.fromkeys(w for w in (normalize(w) for w in words if isinstance(w, str)) if w and len(w) <= 100))
+        # Chuẩn hoá giống get-word / worker (không bỏ ký tự): 'c++' vẫn là 'c++', trùng đúng từ user tra lẻ
+        cleaned = list(dict.fromkeys(w for w in (normalize_lookup(w) for w in words if isinstance(w, str)) if is_lookup_word(w)))
         if not cleaned:
             return _bad_request("No valid words")
         if len(cleaned) > settings.BULK_MAX_WORDS_PER_REQUEST:

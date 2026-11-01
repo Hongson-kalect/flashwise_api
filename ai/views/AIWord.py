@@ -118,10 +118,11 @@ def _respond_from_cache(cache_manager, cached, word, language_code, user_languag
         return _word_response('CACHED', 200, data)
 
     if state == 'ERROR':
-        return _word_response('ERROR', 500, cached)
+        # Không trả nguyên cache (nội bộ); lỗi được thử lại sau WORD_ERROR_RETRY_SECONDS (xem get_word)
+        return _word_response('ERROR', 500, {'value': word, 'language_code': language_code, 'retry_after': settings.WORD_ERROR_RETRY_SECONDS})
 
     if state == 'NOT_FOUND':
-        return _word_response('NOT_FOUND', 404, cached)
+        return _word_response('NOT_FOUND', 404, {'value': word, 'language_code': language_code})
 
     # PROCESSING (và các trạng thái trung gian): người tra sau vào chờ chung, nhớ đăng ký ngôn ngữ của họ để job đang chạy dịch luôn
     if user_language_code not in (cached.get('langs') or []):
@@ -209,6 +210,10 @@ class AIWordViewSet(SoftDeleteViewSet):
 
         if cached and cached.get('status') == 'PROCESSING' and _is_stale(cached.get('started_at')):
             # Key bị đọc liên tục nên TTL không tự hết; job chết thì bỏ key để đi tiếp xuống DB và tạo lại
+            cache_manager.cache_word_clear_specific(language_code, word)
+            cached = None
+        elif cached and cached.get('status') == 'ERROR' and time.time() - (cached.get('finished_at') or 0) > settings.WORD_ERROR_RETRY_SECONDS:
+            # Tương tự: mỗi lần đọc lại gia hạn TTL nên lỗi tạm thời (API AI chập chờn) sẽ trả 500 mãi; quá hạn thì xuống DB (FAILED) để tạo lại
             cache_manager.cache_word_clear_specific(language_code, word)
             cached = None
 

@@ -229,6 +229,18 @@ async def ai_create_new_word_sema(word_info):
                                 logger.warning('Lỗi đọc 1 nghĩa từ stream của %s: %s', word_value, e)
             except Exception as e:
                 logger.warning('Tạo từ %s lỗi ở lần thử %s với %s: %s', word_value, attempts, model, e)
+                if not rejected:
+                    # Stream đứt giữa chừng: các nghĩa đã nhận chỉ là một phần của từ, không được lưu như từ hoàn chỉnh.
+                    # Bỏ cả lượt (huỷ dịch / metadata đang chạy, báo app gỡ các nghĩa đã gửi) rồi thử model kế tiếp; hết model thì FAILED.
+                    for task in list(background_tasks):
+                        task.cancel()
+                    background_tasks.clear()
+                    if sense_objs:
+                        try:
+                            await socket_message(socket_room, {"type": "SENSE_REMOVED", "payload": [s['id'] for s in sense_objs]})
+                        except Exception as socket_error:
+                            logger.warning('Gửi socket SENSE_REMOVED lỗi: %s', socket_error)
+                    ai_trunks, sense_objs, valid, draft_model = [], [], False, None
 
         marks['stream_end'] = time.monotonic()
 

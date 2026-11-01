@@ -136,6 +136,7 @@ class WordCacheManager:
 
         pipe = self.r.pipeline()
         pipe.json().set(key, Path(".status"), status)
+        pipe.json().set(key, Path(".finished_at"), time.time())  # get-word thử tạo lại từ ERROR sau WORD_ERROR_RETRY_SECONDS
         self._pipe_expire(pipe, key)
         pipe.execute()
 

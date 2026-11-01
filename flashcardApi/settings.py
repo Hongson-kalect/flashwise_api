@@ -150,6 +150,7 @@ AI_BACKGROUND_TIMEOUT = int(os.getenv('AI_BACKGROUND_TIMEOUT', '90')) # giây t�
 AI_GEMINI_TIMEOUT = int(os.getenv('AI_GEMINI_TIMEOUT', '25')) # giây tối đa cho 1 lần gọi Gemini dịch / metadata; quá hạn thì thử model kế tiếp (đo thật có từ treo 30-96s)
 # Từ ở trạng thái PROCESSING quá lâu mà không có cache (worker chết) thì coi như lỗi và tạo lại
 WORD_PROCESSING_STALE_SECONDS = int(os.getenv('WORD_PROCESSING_STALE_SECONDS', '600'))
+WORD_ERROR_RETRY_SECONDS = int(os.getenv('WORD_ERROR_RETRY_SECONDS', '60')) # tạo từ lỗi: get-word trả 500 trong khoảng này rồi cho tạo lại
 
 # Tạo bộ từ hàng loạt: mỗi từ chưa có sẽ tốn nhiều lần gọi AI
 BULK_MAX_WORDS_PER_REQUEST = int(os.getenv('BULK_MAX_WORDS_PER_REQUEST', '200'))

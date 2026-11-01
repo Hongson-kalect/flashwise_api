@@ -924,6 +924,20 @@ class GetWordApiTests(APITestCase):
         self.assertEqual(self.get('ice cream').status_code, 202)
         self.assertEqual(AIWord.objects.count(), 2)
 
+    def test_error_is_retried_after_cool_down_and_does_not_leak_cache(self):
+        word = AIWord.objects.create(value='zzerr', language_code='en', status='FAILED')
+        self.words.add('zzerr')
+        self.cache.cache_word_init('en', 'zzerr', 'vi')
+        self.cache.cache_word_set_status('en', 'zzerr', 'ERROR')
+        res = self.get('zzerr')
+        self.assertEqual(res.status_code, 500)
+        self.assertEqual(set(res.data['data']), {'value', 'language_code', 'retry_after'})  # không trả nguyên cache
+
+        self.cache.r.json().set('word:en:zzerr', '.finished_at', 0)  # quá thời gian chờ
+        res = self.get('zzerr')
+        self.assertEqual(res.status_code, 201)  # xuống DB (FAILED) và tạo lại trên cùng bản ghi
+        self.assertEqual(self.queue.jobs[-1][1]['word_id'], str(word.id))
+
     def test_completed_word_comes_from_db_with_two_queries_then_from_cache(self):
         self.make_completed('zzfull')
         with self.assertNumQueries(2):  # từ + nghĩa kèm metadata, không N+1
@@ -1156,3 +1170,52 @@ class WordSearchTests(APITestCase):
         self.client.force_authenticate(admin)
         self.assertEqual(self.client.delete('/api/ai-words/clear/').status_code, 403)
         self.assertEqual(AIWord.objects.count(), 6)
+
+
+class BrokenStreamTests(PipelineBase):
+    """Draft đứt giữa stream: nghĩa dở dang không được lưu như từ hoàn chỉnh."""
+
+    ONE_SENSE = {**DRAFT, "senses": [{**DRAFT["senses"][0], "definition": {"value": "From the second model."}}]}
+
+    def run_draft(self, script):
+        socket = AsyncMock()
+        patches = [
+            mock.patch('utils.ai.claude.client', fake_claude(script)),
+            mock.patch('utils.ai.word_render.ai_create_translate_sema', self.fake_translate),
+            mock.patch('utils.ai.word_render.ai_create_metadata', self.fake_metadata),
+            mock.patch('utils.ai.word_render.request_refinement', AsyncMock(return_value=None)),
+            mock.patch('utils.ai.word_render.socket_message', socket),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        return async_to_sync(ai_create_new_word_sema)(self.job), socket
+
+    @staticmethod
+    def broken(payload):
+        """Trả nửa đầu stream (đủ metadata + nghĩa đầu) rồi đứt kết nối."""
+        pieces = stream_pieces(payload)
+        cut = len(json.dumps(payload)) * 2 // 3 // 23
+
+        def gen():
+            yield from pieces[:cut]
+            raise ConnectionError('stream dropped')
+        return gen()
+
+    @override_settings(AI_DRAFT_MODELS=['m1', 'm2'])
+    def test_falls_back_to_next_model_and_drops_partial_senses(self):
+        result, socket = self.run_draft(lambda m: self.broken(DRAFT) if m == 'm1' else stream_pieces(self.ONE_SENSE))
+        self.assertTrue(result['is_valid'])
+        senses = self.senses()
+        self.assertEqual([s.contents['definition']['en']['value'] for s in senses], ['From the second model.'])
+        removed = [c.args[1]['payload'] for c in socket.call_args_list if c.args[1]['type'] == 'SENSE_REMOVED']
+        self.assertEqual(len(removed), 1)
+        self.assertNotIn(str(senses[0].id), removed[0])
+
+    @override_settings(AI_DRAFT_MODELS=['m1'])
+    def test_broken_stream_without_fallback_fails(self):
+        result, _ = self.run_draft(lambda m: self.broken(DRAFT))
+        self.assertFalse(result['is_valid'])
+        self.word.refresh_from_db()
+        self.assertEqual(self.word.status, 'FAILED')
+        self.assertEqual(self.senses(), [])

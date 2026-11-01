@@ -64,12 +64,13 @@ class CollectionApiTests(APITestCase):
         self.client.force_authenticate(self.admin)
         self.assertEqual(self.client.get('/api/collections/').data['count'], 4)
 
-    def test_list_count_ignores_deleted_items(self):
-        collection = self.collection(is_official=True)
+    def test_list_count_is_released_word_count(self):
+        # Số từ = item_count của bản đang hiệu lực, không đếm nháp / dòng xoá / version cũ trong bảng trung gian
+        collection = self.collection(is_official=True, item_count=1)
         _, sense1 = make_word_with_sense('one')
         _, sense2 = make_word_with_sense('two')
-        CollectionItem.objects.create(collection=collection, sense=sense1)
-        CollectionItem.objects.create(collection=collection, sense=sense2, is_deleted=True)
+        CollectionItem.objects.create(collection=collection, sense=sense1, original=sense1, released=True, version=1)
+        CollectionItem.objects.create(collection=collection, sense=sense2, original=sense2, created_by=self.bob)
         row = self.client.get('/api/collections/').data['results'][0]
         self.assertEqual(row['senses_count'], 1)
 
@@ -83,9 +84,8 @@ class CollectionApiTests(APITestCase):
     def test_detail_follows_display_order_and_skips_deleted_items(self):
         collection = self.collection(owner=self.alice)
         senses = [make_word_with_sense(w)[1] for w in ('alpha', 'beta', 'gamma')]
-        CollectionItem.objects.create(collection=collection, sense=senses[0], display_order=2)
-        CollectionItem.objects.create(collection=collection, sense=senses[1], display_order=0)
-        CollectionItem.objects.create(collection=collection, sense=senses[2], display_order=1, is_deleted=True)
+        for sense, order, deleted in zip(senses, (2, 0, 1), (False, False, True)):
+            CollectionItem.objects.create(collection=collection, sense=sense, original=sense, display_order=order, is_deleted=deleted, created_by=self.alice)
 
         self.client.force_authenticate(self.alice)
         res = self.client.get(f'/api/collections/{collection.id}/')
@@ -578,3 +578,104 @@ class UserCollectionEditFlowTests(APITestCase):
         Collection.objects.filter(pk=collection.pk).update(pending_words=['two'])
         self.client.get(f'/api/collections/{collection.id}/')
         self.assertEqual(CollectionItem.objects.filter(collection=collection, sense=self.two).count(), 1)
+
+    # ---------- version: chỉ tăng khi nghĩa thật sự đổi, người đã tải cập nhật lên bản mới ----------
+
+    def released_version(self, mine):
+        self.assertEqual(self.upload(mine).status_code, 200)
+        return Collection.objects.get(pk=mine.collection_id)
+
+    def test_drafts_that_change_nothing_do_not_create_a_version(self):
+        collection, mine = self.create_collection(self.one, self.two)
+        self.released_version(mine)
+        # Xoá rồi thêm lại đúng nghĩa đó: nháp không đổi gì so với bản phát hành
+        item = CollectionItem.objects.get(collection=collection, released=True, sense=self.one)
+        self.post('delete-sense', mine, collection_item_id=str(item.id))
+        res = self.post('add-sense', mine, sense_id=str(self.one.id))
+        self.assertEqual(res.status_code, 200)
+        res = self.upload(mine)
+        self.assertEqual((res.status_code, res.data.get('errorCode')), (400, 'no_changes'))
+        collection.refresh_from_db()
+        self.assertEqual(collection.version, 1)
+        self.assertFalse(CollectionItem.objects.filter(collection=collection, released=False).exists())
+
+    def test_upload_counts_only_real_changes_and_applies_info(self):
+        collection, mine = self.create_collection(self.one, self.two)
+        self.released_version(mine)
+        two = CollectionItem.objects.get(collection=collection, released=True, sense=self.two)
+        self.post('delete-sense', mine, collection_item_id=str(two.id))
+        self.post('add-sense', mine, sense_id=str(self.three.id))
+        res = self.post('upload', mine, title='Renamed', desc='New desc')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['changelog'], {'added': [str(self.three.id)], 'updated': [], 'deleted': [str(self.two.id)]})
+        collection.refresh_from_db()
+        self.assertEqual((collection.version, collection.name, collection.description, collection.item_count), (2, 'Renamed', 'New desc', 2))
+
+        res = self.client.get(f'/api/collections/{collection.id}/versions/')
+        self.assertEqual([v['version'] for v in res.data['versions']], [2, 1])
+
+    def test_downloader_updates_to_new_version_and_keeps_own_drafts(self):
+        collection, mine = self.create_collection(self.one, self.two)
+        self.released_version(mine)
+        self.as_user(self.bob)
+        self.client.post(f'/api/user-collections/{collection.id}/download/')
+        bobs = UserCollection.objects.get(user=self.bob, collection=collection)
+        # Bob sửa nghĩa "one" thành bản riêng (nháp)
+        one = CollectionItem.objects.get(collection=collection, released=True, sense=self.one)
+        res = self.client.post('/api/user-collections/update-sense/', {
+            'user_collection_id': str(bobs.id), 'collection_item_id': str(one.id), 'delta': {'definition': {'en': {'value': 'bob def'}}},
+        }, format='json')
+        bob_sense = res.data['sense_id']
+
+        # Tác giả đổi "one" sang nghĩa khác và thêm "three" ở v2
+        self.as_user(self.alice)
+        self.client.post('/api/user-collections/update-sense/', {
+            'user_collection_id': str(mine.id), 'collection_item_id': str(one.id), 'delta': {'definition': {'en': {'value': 'alice def'}}},
+        }, format='json')
+        self.post('add-sense', mine, sense_id=str(self.three.id))
+        self.released_version(mine)
+
+        self.as_user(self.bob)
+        res = self.client.get(f'/api/user-collections/{bobs.id}/updates/')
+        self.assertEqual((res.data['current_version'], res.data['latest_version'], res.data['has_update']), (1, 2, True))
+        self.assertEqual([c['version'] for c in res.data['changes']], [2])
+        self.assertEqual(res.data['conflicts'], [str(self.one.id)])
+
+        res = self.client.post(f'/api/user-collections/{bobs.id}/update-version/')
+        self.assertEqual((res.data['updated'], res.data['current_version'], res.data['conflicts']), (True, 2, [str(self.one.id)]))
+        items = {i['sense']['word_value']: i['sense']['id'] for i in self.items(bobs)}
+        self.assertEqual(set(items), {'one', 'two', 'three'})  # có từ mới của v2
+        self.assertEqual(str(items['one']), str(bob_sense))  # nháp của bob vẫn thắng bản tác giả
+        self.assertFalse(self.client.post(f'/api/user-collections/{bobs.id}/update-version/').data['updated'])
+
+    def test_released_collection_info_and_delete(self):
+        collection, mine = self.create_collection(self.one)
+        self.assertEqual(self.client.patch(f'/api/collections/{collection.id}/', {'name': 'Draft name'}, format='json').status_code, 200)
+        self.released_version(mine)
+        res = self.client.patch(f'/api/collections/{collection.id}/', {'name': 'x'}, format='json')
+        self.assertEqual((res.status_code, res.data['errorCode']), (400, 'collection_released'))
+
+        self.as_user(self.bob)
+        self.client.post(f'/api/user-collections/{collection.id}/download/')
+        bobs = UserCollection.objects.get(user=self.bob, collection=collection)
+
+        # Tác giả xoá bộ đã phát hành: chỉ ẩn khỏi công khai, bob vẫn học được
+        self.as_user(self.alice)
+        self.assertEqual(self.client.delete(f'/api/collections/{collection.id}/').status_code, 204)
+        collection.refresh_from_db()
+        self.assertEqual((collection.is_active, collection.is_deleted), (False, False))
+        self.assertTrue(UserCollection.objects.get(pk=mine.pk).is_deleted)
+        self.as_user(self.bob)
+        self.assertEqual(self.client.get(f'/api/collections/{collection.id}/').status_code, 404)
+        self.assertEqual(len(self.items(bobs)), 1)
+
+    def test_public_detail_hides_other_users_drafts(self):
+        collection, mine = self.create_collection(self.one)
+        self.released_version(mine)
+        self.post('add-sense', mine, sense_id=str(self.two.id))  # nháp của tác giả
+        self.as_user(self.bob)
+        res = self.client.get(f'/api/collections/{collection.id}/')
+        self.assertEqual([s['id'] for s in res.data['senses']], [str(self.one.id)])
+        self.as_user(self.alice)
+        res = self.client.get(f'/api/collections/{collection.id}/')
+        self.assertEqual({s['id'] for s in res.data['senses']}, {str(self.one.id), str(self.two.id)})

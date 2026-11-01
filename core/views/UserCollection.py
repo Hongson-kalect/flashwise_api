@@ -12,7 +12,7 @@ from ai.sense_edit import apply_sense_edit
 from ai.validators import MAX_DELTA_CHARS, is_uuid
 from core.serializers import CollectionDetailSerializer
 from core.models import Collection,CollectionItem, UserCollection
-from core.queries import visible_collections
+from core.queries import live_items, visible_collections
 from core.serializers.UserCollection import UserCollectionSerializer
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 from utils.utils.sense_handle import deep_merge
@@ -41,6 +41,38 @@ def count_released_items(collection_id):
         .order_by('original_id', '-version', '-created_at').distinct('original_id').values_list('is_deleted', flat=True)
     )
     return sum(1 for deleted in flags if not deleted)
+
+
+def classify_drafts(collection_id, user, base_version):
+    """
+    So từng dòng nháp của user với bản phát hành mới nhất tới base_version của cùng từ (original_id).
+    Trả ({added, updated, deleted}: original_id thật sự đổi, [id dòng nháp không đổi gì]).
+    Không đổi: cùng sense_id với bản đang có, hoặc xoá từ vốn không có / đã bị xoá.
+    """
+    drafts = list(CollectionItem.objects.filter(collection_id=collection_id, created_by=user, released=False))
+    base = {
+        row.original_id: row
+        for row in CollectionItem.objects.filter(
+            collection_id=collection_id, released=True, version__lte=base_version, original_id__in=[d.original_id for d in drafts],
+        ).order_by('original_id', '-version', '-created_at').distinct('original_id')
+    }
+    changes, noop = {"added": [], "updated": [], "deleted": []}, []
+    for draft in drafts:
+        current = base.get(draft.original_id)
+        live = current is not None and not current.is_deleted
+        oid = str(draft.original_id or draft.sense_id)
+        if draft.is_deleted:
+            if live:
+                changes["deleted"].append(oid)
+            else:
+                noop.append(draft.id)
+        elif not live:
+            changes["added"].append(oid)
+        elif current.sense_id != draft.sense_id:
+            changes["updated"].append(oid)
+        else:
+            noop.append(draft.id)
+    return changes, noop
 
 
 def freeze_senses(item_queryset):
@@ -115,26 +147,8 @@ class UserCollectionViewSet(SoftDeleteViewSet):
         if not collection:
             return Response(status=status.HTTP_404_NOT_FOUND, data={"message": "Collection not found"})
 
-        # === PHẦN 3: QUERY LẤY DỮ LIỆU THEO CẤU TRÚC MỚI (CHỐNG LẪN DATA) ===
-        # Lấy các item đã phát hành (v thuộc về quá khứ của User) HOẶC hàng nháp của chính user hiện tại
-        raw_items = CollectionItem.objects.filter(
-            collection_id=collection.id
-        ).filter(
-            Q(released=True, version__lte=user_col.version) |
-            Q(released=False, created_by=current_user)
-        ).order_by(
-            "original_id",
-            "released",    # Hàng nháp (False) đứng trước hàng đã release (True) để nháp thắng ở distinct
-            "-version",    # Lấy version mới nhất đè lên version cũ
-            "-created_at"  # Sắp xếp theo thời gian tạo mới nhất nếu trùng version
-        ).distinct("original_id").select_related('sense')
-
-        # Loại bỏ các item mang cờ xóa (Tombstone)
-        # Sau đó sắp xếp lại danh sách cuối cùng theo trục 'order' (float) để hiển thị lên UI cho đúng thứ tự kéo thả
-        final_items = sorted(
-            [item for item in raw_items if not item.is_deleted],
-            key=lambda x: x.display_order
-        )
+        # Mỗi từ: nháp của chính user thắng, không thì bản phát hành mới nhất tới version user đang dùng; bỏ dòng xoá
+        final_items = live_items(collection.id, user_col.version, current_user)
 
         # Gán danh sách item sạch sẽ vào thuộc tính tạm để Serializer đóng gói trả về cho Client
         user_col.items = final_items
@@ -327,196 +341,157 @@ class UserCollectionViewSet(SoftDeleteViewSet):
             }
         )
     
+    def _conflicts(self, user_collection, user, upto_version):
+        """Từ user đang có nháp mà tác giả đã đổi ở các bản phát hành sau version user đang dùng (nháp vẫn thắng)."""
+        drafted = CollectionItem.objects.filter(
+            collection_id=user_collection.collection_id, created_by=user, released=False,
+        ).values_list('original_id', flat=True)
+        changed = CollectionItem.objects.filter(
+            collection_id=user_collection.collection_id, released=True,
+            version__gt=user_collection.version, version__lte=upto_version, original_id__in=drafted,
+        ).values_list('original_id', flat=True).distinct()
+        return [str(original_id) for original_id in changed]
+
+    @action(detail=True, methods=['get'], url_path='updates')
+    def updates(self, request, pk=None):
+        """Bộ đã tải có bản phát hành mới hơn không: version đang dùng / mới nhất, changelog các bản mới, từ bị xung đột với nháp."""
+        user_collection = get_object_or_404(self.get_queryset().select_related('collection'), id=pk)
+        collection = user_collection.collection
+        if collection is None:
+            return Response(status=status.HTTP_404_NOT_FOUND, data={"message": "Collection not found"})
+        return Response({
+            "current_version": user_collection.version,
+            "latest_version": collection.version,
+            "has_update": collection.version > user_collection.version,
+            "changes": [meta for meta in (collection.metadatas or []) if (meta.get('version') or 0) > user_collection.version],
+            "conflicts": self._conflicts(user_collection, request.user, collection.version),
+        })
+
+    @action(detail=True, methods=['post'], url_path='update-version')
+    def update_version(self, request, pk=None):
+        """
+        Nâng bộ đã tải lên bản phát hành mới nhất. Nháp của user được giữ và vẫn thắng bản của tác giả;
+        các từ đó trả về trong conflicts để app báo (user xoá nháp thì nhận bản của tác giả).
+        """
+        with transaction.atomic():
+            user_collection = get_object_or_404(self.get_queryset().select_related('collection').select_for_update(of=('self',)), id=pk)
+            collection = user_collection.collection
+            if collection is None:
+                return Response(status=status.HTTP_404_NOT_FOUND, data={"message": "Collection not found"})
+            previous = user_collection.version
+            if collection.version <= previous:
+                return Response({"updated": False, "current_version": previous, "conflicts": []})
+            conflicts = self._conflicts(user_collection, request.user, collection.version)
+            user_collection.version = collection.version
+            user_collection.save(update_fields=['version', 'updated_at'])
+        return Response({"updated": True, "previous_version": previous, "current_version": collection.version, "conflicts": conflicts})
+
     @action(detail=True, methods=['post'], url_path='upload')
     def upload(self, request, pk=None, *args, **kwargs):
+        """
+        Phát hành nháp của user. Chỉ dòng nháp thật sự đổi nghĩa so với bản đang dùng mới được tính (thêm / đổi sense_id / xoá);
+        nháp không đổi gì bị dọn đi, không còn gì thật sự đổi thì trả 400 no_changes và không tạo version.
+        - Tác giả: tăng version của bộ, nháp thành bản phát hành, title / desc / image (nếu gửi) thành thông tin bộ.
+        - Người khác: tách thành bộ remix mới (v1) gồm bản đang dùng + nháp của họ.
+        Body: user_collection_id, title, desc, image (tuỳ chọn).
+        """
         user_collection_id = request.data.get('user_collection_id')
-
-        if not user_collection_id:
+        if not is_uuid(user_collection_id):
             return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "Missing user_collection_id"})
-
-        current_user = request.user if request.user.is_authenticated else None
+        current_user = request.user
+        for key, limit in (('title', 255), ('desc', 2000), ('image', 1000)):
+            value = request.data.get(key)
+            if value is not None and (not isinstance(value, str) or len(value) > limit):
+                return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": f"Invalid {key}"})
 
         with transaction.atomic():
-            # 1. Khóa dòng UserCollection và lấy Collection gốc
             user_collection = get_object_or_404(
-                self.get_queryset().select_related('collection').select_for_update(of=('self',)), 
-                id=user_collection_id
+                self.get_queryset().select_related('collection').select_for_update(of=('self',)), id=user_collection_id,
             )
             current_collection = user_collection.collection
-
             if not current_collection:
                 return Response(status=status.HTTP_404_NOT_FOUND, data={"message": "Current collection not found"})
-            
-            draft_items = CollectionItem.objects.filter(
-                collection_id=current_collection.id,
-                created_by=current_user,
-                released=False
-            )
-            if not draft_items.exists():
-                return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "No changes to upload"})
 
-            # Thay vì biến đếm int, ta chuyển thành mảng chứa ID
-            added_ids = []
-            updated_ids = []
-            deleted_ids = []
+            is_author = current_user.id == current_collection.created_by_id
+            base_version = current_collection.version if is_author else user_collection.version
+            changes, noop_ids = classify_drafts(current_collection.id, current_user, base_version)
+            if noop_ids:
+                CollectionItem.objects.filter(id__in=noop_ids).delete()
+            if not any(changes.values()):
+                return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "No changes to upload", "errorCode": "no_changes"})
 
-            if draft_items.exists():
-                past_original_ids = set(
-                    CollectionItem.objects.filter(
-                        collection_id=current_collection.id,
-                        released=True
-                    ).values_list('original_id', flat=True)
-                )
-
-                for item in draft_items:
-                    # Lấy ID cốt lõi của từ
-                    oid = str(item.original_id or item.id)
-                    
-                    if item.is_deleted:
-                        deleted_ids.append(oid)
-                    else:
-                        if item.original_id in past_original_ids:
-                            updated_ids.append(oid)
-                        else:
-                            added_ids.append(oid)
-
-            # Đóng gói vào Metadata Snapshot
             next_version = current_collection.version + 1
             current_metadatas = list(current_collection.metadatas or [])
-
             last_meta = current_metadatas[-1] if current_metadatas else {}
             new_meta = {
                 "version": next_version,
                 "title": request.data.get('title') or last_meta.get('title') or current_collection.name,
                 "desc": request.data.get('desc') or last_meta.get('desc') or current_collection.description,
                 "image": request.data.get('image') or last_meta.get('image') or current_collection.image_url,
-                
-                # Lưu hẳn danh sách ID vào log luôn
-                "changelog": {
-                    "added": added_ids,
-                    "updated": updated_ids,
-                    "deleted": deleted_ids
-                },
-                "released_at": timezone.now().isoformat()
+                "changelog": changes,
+                "released_at": timezone.now().isoformat(),
             }
 
-            next_metadatas = [*current_metadatas, new_meta]
-
-            # === PHÂN NHÁNH LOGIC THEO QUYỀN SỞ HỮU (TÁC GIẢ VS USER KHÁC) ===
-            
-            if current_user == current_collection.created_by:
-                # =========================================================
-                # CASE 1: TÁC GIẢ NÂNG CẤP VERSION (Tăng v, đóng gói nháp tại chỗ)
-                # =========================================================
-                
-                # 1. Tăng version của Collection hiện tại lên 1 đơn vị
-                next_version = current_collection.version + 1
+            if is_author:
+                # Tác giả: nháp (đã dọn dòng không đổi) thành bản phát hành của version mới
                 current_collection.version = next_version
-                current_collection.metadatas = next_metadatas
+                current_collection.metadatas = [*current_metadatas, new_meta]
+                current_collection.name = new_meta['title']
+                current_collection.description = new_meta['desc'] or ''
+                current_collection.image_url = new_meta['image']
                 current_collection.released = True
                 current_collection.is_uploaded = True
-                current_collection.save()
-
-                # 2. Đóng gói toàn bộ hàng nháp (released=False) của tác giả thành chính thức
-                # Gắn chặt vào số version mới nâng cấp
-                promoted = CollectionItem.objects.filter(
-                    collection_id=current_collection.id,
-                    created_by=current_user,
-                    released=False
-                )
+                promoted = CollectionItem.objects.filter(collection_id=current_collection.id, created_by=current_user, released=False)
                 freeze_senses(promoted.filter(is_deleted=False))
                 promoted.update(released=True, version=next_version)
                 current_collection.item_count = count_released_items(current_collection.id)
-                current_collection.save(update_fields=['item_count', 'updated_at'])
-
+                current_collection.save()
                 final_collection_id = current_collection.id
                 final_user_version = next_version
-
             else:
-                # =========================================================
-                # CASE 2: USER KHÁC UPLOAD (Sinh bản mới hoàn toàn - Fork/Merge)
-                # =========================================================
+                # Người khác: tách bộ remix mới gồm bản đang dùng + nháp của họ
                 new_collection_id = generate_uuid7()
-                
-                # 1. Thu thập "cây phả hệ" để quản lý vết tích như CivitAI
-                current_parent_id = list(current_collection.parents or [])
-                current_parent_id.append(current_collection.id)
-
-                # 2. Lấy toàn bộ các item hợp lệ hiện tại của User khác này (Gốc + Nháp của họ)
-                # Sử dụng đúng câu query distinct theo trục original_id giống hàm retrieve
-                raw_items = CollectionItem.objects.filter(
-                    collection_id=current_collection.id
-                ).filter(
-                    Q(released=True, version__lte=user_collection.version) |
-                    Q(released=False, created_by=current_user)
-                ).order_by("original_id", "released", "-version", "-created_at").distinct("original_id")
-
-                # Loại bỏ những item mang cờ xóa (is_deleted=True)
-                valid_items = [item for item in raw_items if not item.is_deleted]
-
-                # 3. Nhân bản dữ liệu sang Collection mới dưới dạng chính thức (released=True, v=1)
+                valid_items = live_items(current_collection.id, user_collection.version, current_user)
                 new_items = [
                     CollectionItem(
-                        id=generate_uuid7(),
-                        collection_id=new_collection_id,
-                        sense_id=item.sense_id,
-                        original_id=item.original_id or item.id,
-                        display_order=item.display_order,
-                        released=True,         # Đóng gói chính thức ở nhà mới
-                        version=1,             # Reset về v1 của nhánh mới
-                        is_deleted=False,
-                        created_by=current_user
+                        id=generate_uuid7(), collection_id=new_collection_id, sense_id=item.sense_id,
+                        original_id=item.original_id or item.sense_id, value=item.value, display_order=item.display_order,
+                        released=True, version=1, is_deleted=False, created_by=current_user,
                     )
                     for item in valid_items
                 ]
                 freeze_senses(CollectionItem.objects.filter(id__in=[item.id for item in valid_items]))
-                CollectionItem.objects.bulk_create(new_items)
-
-                # 4. Dọn dẹp sạch sẽ các bản ghi nháp cũ của user này ở nhà cũ
-                CollectionItem.objects.filter(
-                    collection_id=current_collection.id, 
-                    created_by=current_user, 
-                    released=False
-                ).delete()
-
-                # 5. Tạo thực thể Collection mới ghi nhận chủ quyền mới
                 Collection.objects.create(
                     id=new_collection_id,
-                    name=f"{current_collection.name} - Remixed by {current_user.username if current_user else 'Anonymous'}",
-                    description=current_collection.description,
+                    name=request.data.get('title') or f"{current_collection.name} - Remixed by {current_user.username}",
+                    description=new_meta['desc'] or '',
                     created_by=current_user,
                     original_id=current_collection.original_id or current_collection.id,
-                    parents=current_parent_id,
+                    parents=[*(current_collection.parents or []), current_collection.id],
                     previous_id=current_collection.id,
-
-                    metadatas = next_metadatas,
-
+                    metadatas=[{**new_meta, "version": 1}],
                     image=current_collection.image,
-                    image_url=current_collection.image_url,
-                    version=1, # Khởi tạo version 1
-                    released=True,
-                    is_uploaded=True,
+                    image_url=new_meta['image'],
+                    version=1, released=True, is_uploaded=True,
                     item_count=len(new_items),
-                    language_code=current_collection.language_code
+                    language_code=current_collection.language_code,
                 )
-
+                CollectionItem.objects.bulk_create(new_items)
+                CollectionItem.objects.filter(collection_id=current_collection.id, created_by=current_user, released=False).delete()
                 final_collection_id = new_collection_id
                 final_user_version = 1
 
-            # === 3. CẬP NHẬT LẠI TRẠNG THÁI CHO USERCOLLECTION ===
             user_collection.collection_id = final_collection_id
             user_collection.version = final_user_version
             user_collection.save()
 
-        return Response(
-            status=status.HTTP_200_OK, 
-            data={
-                "message": "Upload success", 
-                "collection_id": final_collection_id,
-                "user_collection_id": user_collection.id,
-                "current_version": final_user_version
-            }
-        )
+        return Response(status=status.HTTP_200_OK, data={
+            "message": "Upload success",
+            "collection_id": final_collection_id,
+            "user_collection_id": user_collection.id,
+            "current_version": final_user_version,
+            "changelog": changes,
+        })
 
     def perform_create(self, serializer):
         # Nếu bạn muốn gán user tạo collection

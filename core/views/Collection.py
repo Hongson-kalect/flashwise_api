@@ -14,7 +14,7 @@ from ai.models import AISense, AIWord
 from ai.queries import visible_senses
 from ai.validators import is_lang, is_uuid
 from core.models import Collection, CollectionItem, UserCollection
-from core.queries import visible_collections
+from core.queries import live_items, visible_collections
 from interact.models import UserInteraction
 from core.serializers.Collection import (
     CollectionBasicSerializer, CollectionDetailSerializer, CollectionListSerializer, CollectionSerializer,
@@ -71,16 +71,49 @@ class CollectionViewSet(SoftDeleteViewSet):
     def get_queryset(self):
         queryset = visible_collections(self.request.user)
         if self.action == 'list':
-            # Chỉ SELECT bảng Collection + COUNT bảng trung gian bằng SQL, không kéo chi tiết nghĩa lên RAM
-            queryset = queryset.annotate(senses_count=Count('collectionitem', filter=~Q(collectionitem__is_deleted=True)))
+            # Số từ của bản đang hiệu lực (item_count, tính lúc tạo / phát hành); đếm thẳng bảng trung gian sẽ cộng cả nháp và mọi version
+            queryset = queryset.annotate(senses_count=F('item_count'))
         return queryset
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
         if instance.pending_words:
             instance = self._resolve_pending(instance)
-        items = list(instance.collectionitem_set.exclude(is_deleted=True).select_related('sense').order_by('display_order', 'created_at'))
+        # Bản phát hành mới nhất; người xem có nháp trong bộ (tác giả, người đã tải) thì nháp của họ thắng. Nháp người khác không lộ ra
+        items = live_items(instance.id, instance.version, request.user)
         return Response(CollectionDetailSerializer(instance, context={'items': items, 'request': request}).data)
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.released and not request.user.is_staff:
+            # Người đã tải đang thấy tên / mô tả của bản phát hành: đổi qua upload (title, desc, image) để ghi vào lịch sử version
+            return Response(
+                {"message": "Released collection info changes via upload (title, desc, image)", "errorCode": "collection_released"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        """
+        Bộ chưa phát hành: xoá mềm. Bộ đã phát hành mà tác giả xoá: chỉ ẩn khỏi danh sách công khai / không tải mới được
+        (is_active=False), người đã tải vẫn giữ và học tiếp. Admin xoá mềm bất kỳ bộ nào. Bộ cũng bị gỡ khỏi thư viện của người xoá.
+        """
+        instance = self.get_object()
+        with transaction.atomic():
+            if instance.released and not request.user.is_staff:
+                instance.is_active = False
+                instance.save(update_fields=['is_active', 'updated_at'])
+            else:
+                instance.is_deleted = True
+                instance.save(update_fields=['is_deleted', 'updated_at'])
+            UserCollection.objects.filter(collection=instance, user=request.user).exclude(is_deleted=True).update(is_deleted=True)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['get'])
+    def versions(self, request, pk=None):
+        """Lịch sử phát hành: mỗi version có title, desc, image, changelog {added, updated, deleted}, released_at. Mới nhất trước."""
+        collection = self.get_object()
+        return Response({"version": collection.version, "versions": list(reversed(collection.metadatas or []))})
 
     def _resolve_pending(self, instance):
         """

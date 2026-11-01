@@ -9,6 +9,7 @@ class UserInteraction(BaseModel):
         ('like', 'Like'),
         # ('download', 'Download'), sử dụng bảng userCollection thì đúng hơn
         ('bookmark', 'Bookmark'), # Có thể mở rộng sau này
+        ('hide', 'Hide'), # Ẩn 1 nghĩa (target sense) khỏi get-word của riêng user
     ]
     TARGET_TYPES=[
         ('collection', 'Collection'),

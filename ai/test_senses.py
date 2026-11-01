@@ -260,3 +260,103 @@ class GlobalThrottleTests(APITestCase):
         with mock.patch.dict(AnonRateThrottle.THROTTLE_RATES, {'anon': '3/minute'}):
             codes = [self.client.get('/api/languages/').status_code for _ in range(5)]
         self.assertEqual(codes, [200, 200, 200, 429, 429])  # trước đây chỉ khai báo mức, chưa bật lớp throttle nào
+
+
+class PersonalSenseTests(APITestCase):
+    """Nghĩa riêng của user: get-word ghép vào, xoá / ẩn, xem nghĩa người khác đã upload."""
+
+    def setUp(self):
+        from utils.redis.word_init import WordCacheManager
+        self.cache = WordCacheManager()
+        self.cache.cache_word_clear_specific('en', 'zzpersonal')
+        self.addCleanup(self.cache.cache_word_clear_specific, 'en', 'zzpersonal')
+        self.alice = User.objects.create_user('alice')
+        self.bob = User.objects.create_user('bob')
+        self.word = AIWord.objects.create(value='zzpersonal', language_code='en', status='COMPLETED')
+        self.s1 = self.official('First meaning.')
+        self.s2 = self.official('Second meaning.')
+
+    def official(self, definition, **extra):
+        data = make_sense(str(uuid7()), definition=definition)
+        data.update(word_id=self.word.id, word_value='zzpersonal', **extra)
+        return AISense.objects.create(**data)
+
+    def custom(self, user, **extra):
+        data = dict(word_id=self.word.id, word_value='zzpersonal', language_code='en', created_by=user,
+                    is_official=False, is_frozen=False, is_ai_created=False)
+        data.update(extra)
+        return AISense.objects.create(**data)
+
+    def get_word(self, user=None):
+        self.client.force_authenticate(user)
+        res = self.client.get('/api/ai-words/get-word/', {'value': 'zzpersonal', 'lang': 'en', 'user_lang': 'vi'})
+        self.assertEqual(res.status_code, 200)
+        return list(res.data['data']['senses'].items())
+
+    def test_get_word_puts_own_senses_first_replacing_and_hiding(self):
+        fork = self.custom(self.alice, original=self.s1, delta={'definition': 'mine'}, contents={})
+        new = self.custom(self.alice, contents={'definition': {'en': {'value': 'My own meaning.'}}})
+        self.client.force_authenticate(self.alice)
+        self.assertEqual(self.client.post(f'/api/ai-senses/{self.s2.id}/hide/').data['hidden'], True)
+
+        senses = self.get_word(self.alice)
+        self.assertEqual([sid for sid, _ in senses], [str(new.id), str(fork.id)])  # s1 bị bản sửa thay, s2 bị ẩn
+        fork_data = dict(senses)[str(fork.id)]
+        self.assertEqual(fork_data['contents']['definition']['en']['value'], 'First meaning.')  # contents của nghĩa gốc
+        self.assertEqual((fork_data['delta'], str(fork_data['original']), fork_data['is_official']), ({'definition': 'mine'}, str(self.s1.id), False))
+
+        # Người khác (lần này đọc từ cache) và người chưa đăng nhập vẫn thấy nghĩa chính thức
+        self.assertEqual([sid for sid, _ in self.get_word(self.bob)], [str(self.s1.id), str(self.s2.id)])
+        self.assertEqual(len(self.get_word()), 2)
+        self.assertEqual(len(self.cache.cache_word_get_data('en', 'zzpersonal')['senses']), 2)  # cache không dính nghĩa riêng
+
+        self.client.force_authenticate(self.alice)
+        self.client.delete(f'/api/ai-senses/{self.s2.id}/hide/')
+        self.assertIn(str(self.s2.id), dict(self.get_word(self.alice)))
+
+    def test_delete_rules(self):
+        from core.models import Collection, CollectionItem
+        mine = self.custom(self.alice, contents={'definition': {'en': {'value': 'x'}}})
+        frozen = self.custom(self.alice, is_frozen=True)
+        theirs = self.custom(self.bob)
+        collection = Collection.objects.create(name='c', created_by=self.alice)
+        CollectionItem.objects.create(collection=collection, sense=mine, original=mine, created_by=self.alice, released=False)
+
+        self.client.force_authenticate(self.alice)
+        self.assertEqual(self.client.delete(f'/api/ai-senses/{self.s1.id}/').status_code, 403)
+        self.assertEqual(self.client.delete(f'/api/ai-senses/{frozen.id}/').status_code, 409)
+        self.assertEqual(self.client.delete(f'/api/ai-senses/{theirs.id}/').status_code, 404)
+        self.assertEqual(self.client.delete(f'/api/ai-senses/{mine.id}/').status_code, 204)
+        mine.refresh_from_db()
+        self.assertTrue(mine.is_deleted)
+        self.assertFalse(CollectionItem.objects.filter(sense=mine).exists())  # dòng nháp trỏ tới nghĩa đã xoá bị bỏ
+        self.assertEqual(self.client.post(f'/api/ai-senses/{frozen.id}/hide/').status_code, 400)  # nghĩa của mình thì xoá, không ẩn
+        self.client.force_authenticate(None)
+        self.assertIn(self.client.delete(f'/api/ai-senses/{self.s1.id}/').status_code, (401, 403))
+
+    def test_mine_lists_own_senses_and_hidden(self):
+        mine = self.custom(self.alice)
+        self.custom(self.bob)
+        self.client.force_authenticate(self.alice)
+        self.client.post(f'/api/ai-senses/{self.s1.id}/hide/')
+        res = self.client.get('/api/ai-senses/mine/', {'word_id': str(self.word.id)})
+        self.assertEqual([s['id'] for s in res.data['senses']], [str(mine.id)])
+        self.assertEqual(res.data['hidden'], [str(self.s1.id)])
+
+    def test_published_senses_of_others_are_visible(self):
+        from core.models import Collection, CollectionItem, UserCollection
+        published = self.custom(self.bob, is_frozen=True, contents={'definition': {'en': {'value': 'Bob meaning.'}}})
+        private = self.custom(self.bob)
+        collection = Collection.objects.create(name='c', created_by=self.bob, released=True, version=1)
+        CollectionItem.objects.create(collection=collection, sense=published, original=published, created_by=self.bob, released=True, version=1)
+
+        self.client.force_authenticate(self.alice)
+        self.assertEqual(self.client.get(f'/api/ai-senses/{published.id}/').status_code, 200)
+        self.assertEqual(self.client.get(f'/api/ai-senses/{private.id}/').status_code, 404)
+
+        own = Collection.objects.create(name='mine', created_by=self.alice)
+        uc = UserCollection.objects.create(user=self.alice, collection=own, name='mine', created_by=self.alice)
+        res = self.client.post(f'/api/user-collections/{uc.id}/add-sense/', {'user_collection_id': str(uc.id), 'sense_id': str(published.id)}, format='json')
+        self.assertEqual(res.status_code, 200)
+        res = self.client.post(f'/api/user-collections/{uc.id}/add-sense/', {'user_collection_id': str(uc.id), 'sense_id': str(private.id)}, format='json')
+        self.assertEqual(res.status_code, 404)

@@ -16,7 +16,7 @@ from ai.models.AIWord import AIWord
 from ai.models.TranslateLog import TranslateLog
 from ai.generation import GenerationError, start_word_generation
 from ai.jobs import queue_translation
-from ai.queries import load_word
+from ai.queries import load_word, personalize_word
 from ai.serializers.AIWord import AIWordSerializer
 from core.models import Collection, CollectionItem, ImageContext, ImageLibrary, ImageLibraryContext
 from utils.redis.word_init import WordCacheManager
@@ -77,6 +77,14 @@ def detect_missing_content(senses, language_code, user_language_code):
 
 def _word_response(detail, http_status, data=None):
     return Response({'detail': detail, 'status': str(http_status), 'data': data}, status=http_status)
+
+
+def _personal(request, response):
+    """Dữ liệu từ dùng chung (cache / DB) + nghĩa riêng của user đang đăng nhập, ghép lúc trả về nên cache vẫn dùng chung."""
+    data = response.data.get('data') if isinstance(response.data, dict) else None
+    if response.status_code in (200, 206) and isinstance(data, dict) and isinstance(data.get('senses'), dict):
+        response.data['data'] = personalize_word(data, request.user)
+    return response
 
 
 def _is_stale(started_at, max_age=None):
@@ -199,7 +207,7 @@ class AIWordViewSet(SoftDeleteViewSet):
             cached = None
 
         if cached:
-            return _respond_from_cache(cache_manager, cached, word, language_code, user_language_code)
+            return _personal(request, _respond_from_cache(cache_manager, cached, word, language_code, user_language_code))
 
         word_instance = load_word(value=word, language_code=language_code)
 
@@ -208,7 +216,7 @@ class AIWordViewSet(SoftDeleteViewSet):
             if state == 'REJECTED':
                 return _word_response('NOT_FOUND', 404, {'value': word, 'language_code': language_code})
             if state == 'COMPLETED':
-                return _respond_completed(cache_manager, word_instance, word, language_code, user_language_code)
+                return _personal(request, _respond_completed(cache_manager, word_instance, word, language_code, user_language_code))
             if state != 'FAILED':
                 updated_at = word_instance.updated_at or word_instance.created_at
                 stale = updated_at is None or (timezone.now() - updated_at).total_seconds() > settings.WORD_PROCESSING_STALE_SECONDS

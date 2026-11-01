@@ -11,6 +11,7 @@ from rest_framework.response import Response
 
 from ai.generation import GenerationError, start_word_generation
 from ai.models import AISense, AIWord
+from ai.queries import visible_senses
 from ai.validators import is_lang, is_uuid
 from core.models import Collection, CollectionItem, UserCollection
 from core.queries import visible_collections
@@ -134,10 +135,10 @@ class CollectionViewSet(SoftDeleteViewSet):
             sense_ids.append(str(uuid.UUID(str(sense_id))))
         sense_ids = list(dict.fromkeys(sense_ids))
 
-        # Chỉ được đưa vào bộ nghĩa chính thức hoặc nghĩa của chính mình
+        # Chỉ được đưa vào bộ nghĩa chính thức, nghĩa của mình hoặc nghĩa người khác đã upload
         senses = {
             str(sense.id): sense
-            for sense in AISense.objects.filter(id__in=sense_ids).filter(Q(is_official=True) | Q(created_by=user)).exclude(is_deleted=True)
+            for sense in visible_senses(user).filter(id__in=sense_ids)
         }
         unknown = [sense_id for sense_id in sense_ids if sense_id not in senses]
         if unknown:

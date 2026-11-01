@@ -7,6 +7,7 @@ from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from ai.models import AISense, AIWord, AISenseMetadata
+from ai.queries import visible_senses
 from ai.sense_edit import apply_sense_edit
 from ai.validators import MAX_DELTA_CHARS, is_uuid
 from core.serializers import CollectionDetailSerializer
@@ -202,9 +203,9 @@ class UserCollectionViewSet(SoftDeleteViewSet):
         with transaction.atomic():
             user_collection = get_object_or_404(self.get_queryset().select_for_update(), id=user_collection_id)
 
-            # Chỉ thêm được nghĩa chính thức hoặc nghĩa do chính mình tạo
+            # Nghĩa chính thức, nghĩa của mình hoặc nghĩa người khác đã upload
             target_sense = get_object_or_404(
-                AISense.objects.filter(Q(is_official=True) | Q(created_by=user)).exclude(is_deleted=True), id=sense_id,
+                visible_senses(user), id=sense_id,
             )
             oid = target_sense.original_id or target_sense.id
 

@@ -13,6 +13,10 @@ from ai.sense_edit import apply_sense_edit
 from ai.models.AISense import AISense
 from ai.models.AISenseMetadata import AISenseMetadata
 from ai.models.AIWord import AIWord
+from ai.queries import visible_sense_q
+from core.models import CollectionItem
+from django.utils import timezone
+from interact.models import UserInteraction
 from ai.serializers.AISense import AISenseSerializer
 from ai.validators import MAX_DELTA_CHARS, METADATA_FIELDS, clean_contents, clean_metadata, is_lang, is_uuid
 from utils.utils.permissions import IsAdminOrReadOnly
@@ -32,16 +36,68 @@ class AISenseViewSet(SoftDeleteViewSet):
     # CRUD trực tiếp lên sense hệ thống chỉ admin, user tạo / sửa sense custom qua create-sense / update-sense
     permission_classes = [IsAdminOrReadOnly]
 
+    def get_permissions(self):
+        if self.action == 'destroy':
+            return [IsAuthenticated()]  # user xoá nghĩa của chính mình, kiểm tra chủ trong destroy
+        return super().get_permissions()
+
     def get_queryset(self):
-        """Người dùng chỉ thấy nghĩa chính thức và nghĩa tuỳ chỉnh do chính mình tạo (admin thấy hết)."""
+        """Nghĩa chính thức, nghĩa của chính mình và nghĩa người khác đã upload trong bộ đã phát hành (admin thấy hết)."""
         queryset = super().get_queryset()
         user = self.request.user
         if user.is_authenticated and user.is_staff:
             return queryset
-        visible = Q(is_official=True)
-        if user.is_authenticated:
-            visible |= Q(created_by=user)
-        return queryset.filter(visible)
+        return queryset.filter(visible_sense_q(user))
+
+    def destroy(self, request, *args, **kwargs):
+        """
+        Admin: xoá mềm bất kỳ nghĩa nào. User: chỉ nghĩa tuỳ chỉnh của mình chưa đóng băng (đã upload thì bộ của người khác
+        đang trỏ tới nên không xoá được, dùng hide). Các dòng nháp của user trong bộ từ trỏ tới nghĩa này bị bỏ theo.
+        """
+        sense = self.get_object()
+        user = request.user
+        if not user.is_staff:
+            if sense.is_official or sense.created_by_id != user.id:
+                return Response({"message": "Only your own custom senses can be deleted, hide it instead"}, status=status.HTTP_403_FORBIDDEN)
+            if sense.is_frozen:
+                return Response({"message": "Published sense cannot be deleted, hide it instead", "errorCode": "sense_frozen"}, status=status.HTTP_409_CONFLICT)
+        with transaction.atomic():
+            sense.is_deleted = True
+            sense.deleted_at = timezone.now()
+            sense.updated_by = user
+            sense.save(update_fields=['is_deleted', 'deleted_at', 'updated_by', 'updated_at'])
+            CollectionItem.objects.filter(sense=sense, released=False, created_by=sense.created_by).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['post', 'delete'], url_path='hide', permission_classes=[IsAuthenticated])
+    def hide(self, request, pk=None):
+        """POST: ẩn nghĩa (thường là nghĩa chính thức) khỏi get-word của riêng mình, DELETE: bỏ ẩn. Nghĩa của mình thì xoá chứ không ẩn."""
+        sense = self.get_object()
+        if sense.created_by_id == request.user.id and not sense.is_official:
+            return _bad_request("Delete your own sense instead of hiding it")
+        want = request.method == 'POST'
+        UserInteraction.objects.update_or_create(
+            user=request.user, interaction_type='hide', target_type='sense', target_id=sense.id,
+            defaults={'status': want, 'created_by': request.user},
+        )
+        return Response({'hidden': want, 'sense_id': str(sense.id)})
+
+    @action(detail=False, methods=['get'], url_path='mine', permission_classes=[IsAuthenticated])
+    def mine(self, request):
+        """Nghĩa tuỳ chỉnh của mình (lọc theo word_id nếu có) và id các nghĩa đang ẩn. Tối đa 500 nghĩa mới nhất."""
+        word_id = request.query_params.get('word_id')
+        if word_id is not None and not is_uuid(word_id):
+            return _bad_request("Invalid word_id")
+        senses = AISense.objects.filter(created_by=request.user, is_official=False).exclude(is_deleted=True).exclude(is_active=False)
+        hidden = UserInteraction.objects.filter(user=request.user, interaction_type='hide', target_type='sense', status=True)
+        if word_id:
+            senses = senses.filter(word_id=word_id)
+            hidden = hidden.filter(target_id__in=AISense.objects.filter(word_id=word_id).values('id'))
+        senses = senses.select_related('metadata').order_by('-id')[:500]
+        return Response({
+            'senses': AISenseSerializer(senses, many=True).data,
+            'hidden': [str(target) for target in hidden.values_list('target_id', flat=True)],
+        })
 
     def _user_contents(self, sense, user_language_code):
         """

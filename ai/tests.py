@@ -19,6 +19,8 @@ from uuid6 import uuid7
 
 from ai.models import AISense, AISenseMetadata, AIWord
 from ai.validators import is_uuid
+from core.models import ImageContext, ImageLibrary
+from utils.celery.fetch_image import find_image, get_image_by_keyword
 from utils.ai import refine
 from utils.ai.word_render import ai_create_new_word_sema
 from utils.ai.japanese import add_ruby
@@ -535,6 +537,58 @@ class PipelineTests(PipelineBase):
         self.assertNotIn('stage', final)
         self.assertEqual(set(final['senses']), {str(s.id) for s in self.senses()})
 
+    async def metadata_with_keywords(self, props):
+        for sense in props['current_senses']:
+            sense['metadata'] = {'id': str(uuid7()), 'tags': [], 'image_keywords': ['money building'], 'advanced': {}}
+        return props['current_senses']
+
+    def keep_all(self):
+        return self.refine_with(lambda ids: [{'id': i, 'action': 'keep'} for i in ids])
+
+    @override_settings(PIXABAY_API_KEY='')
+    def test_no_pixabay_key_skips_images(self):
+        with mock.patch('utils.celery.fetch_image.find_image') as find_image:
+            result = self.run_pipeline(lambda m: stream_pieces(DRAFT), self.keep_all(), metadata=self.metadata_with_keywords)
+        self.assertTrue(result['is_valid'])
+        find_image.assert_not_called()
+        self.assertEqual([s.image_preview for s in self.senses()], [None, None])
+
+    @override_settings(PIXABAY_API_KEY='test-key')
+    def test_images_are_saved_with_senses_when_key_present(self):
+        context = ImageContext.objects.create(description='money building', provider='pixabay')
+        socket = AsyncMock()
+        with mock.patch('utils.celery.fetch_image.find_image', return_value=(context.id, '/upload/images/v1/p.webp')) as find_image, \
+                mock.patch('utils.celery.fetch_image.socket_message', socket):
+            result = self.run_pipeline(lambda m: stream_pieces(DRAFT), self.keep_all(), metadata=self.metadata_with_keywords)
+        self.assertTrue(result['is_valid'])
+        self.assertEqual(find_image.call_count, 2)  # mỗi nghĩa 1 lần
+        for sense in self.senses():
+            self.assertEqual((sense.image_preview, sense.image_context_id), ('/upload/images/v1/p.webp', context.id))
+        self.assertEqual([c.args[1]['type'] for c in socket.call_args_list], ['PARTIAL_IMAGE', 'PARTIAL_IMAGE'])
+        cached = self.cache.cache_word_get_data('en', self.WORD)
+        self.assertEqual({s['image_preview'] for s in cached['senses'].values()}, {'/upload/images/v1/p.webp'})
+
+    @override_settings(PIXABAY_API_KEY='test-key')
+    def test_image_failure_does_not_block_saving(self):
+        with mock.patch('utils.celery.fetch_image.find_image', side_effect=RuntimeError('pixabay down')):
+            result = self.run_pipeline(lambda m: stream_pieces(DRAFT), self.keep_all(), metadata=self.metadata_with_keywords)
+        self.assertTrue(result['is_valid'])
+        self.word.refresh_from_db()
+        self.assertEqual(self.word.status, 'COMPLETED')
+        self.assertEqual([s.image_preview for s in self.senses()], [None, None])
+
+    def test_worker_keeps_symbols_in_word(self):
+        self.prepare('c++', 'en')
+        prompts = []
+
+        def script(model):
+            return stream_pieces(DRAFT)
+
+        with mock.patch('utils.ai.word_render.render_word_prompt', side_effect=lambda w, l: prompts.append(w) or w):
+            self.run_pipeline(script, self.keep_all())
+        self.assertEqual(prompts, ['c++'])  # không bị cắt thành 'c'
+        self.assertEqual(self.cache.cache_word_get_data('en', 'c++')['status'], 'CACHED')  # đúng key view đang chờ
+
     @override_settings(AI_REFINE_ALLOW_ADD=True)
     def test_refine_can_add_a_missing_sense(self):
         def builder(ids):
@@ -859,6 +913,16 @@ class GetWordApiTests(APITestCase):
         AISense.objects.create(metadata=metadata, **sense)
         return w
 
+    def test_word_key_matches_worker_and_app_room(self):
+        self.words.update({'ice cream', 'c++'})
+        self.assertEqual(self.get('  Ice   Cream ').status_code, 201)
+        self.assertEqual(self.get('C++').status_code, 201)
+        self.assertEqual(sorted(AIWord.objects.values_list('value', flat=True)), ['c++', 'ice cream'])
+        self.assertEqual(self.cache.cache_word_get_data('en', 'c++')['status'], 'PROCESSING')
+        # Gõ khác khoảng trắng / hoa thường vẫn vào chờ chung, không tạo thêm từ
+        self.assertEqual(self.get('ice cream').status_code, 202)
+        self.assertEqual(AIWord.objects.count(), 2)
+
     def test_completed_word_comes_from_db_with_two_queries_then_from_cache(self):
         self.make_completed('zzfull')
         with self.assertNumQueries(2):  # từ + nghĩa kèm metadata, không N+1
@@ -961,3 +1025,49 @@ class GetWordApiTests(APITestCase):
         self.assertEqual(res.status_code, 503)
         self.assertEqual(AIWord.objects.get(value='zzdown').status, 'FAILED')
         self.assertIsNone(self.cache.cache_word_get_data('en', 'zzdown'))
+
+
+@override_settings(PIXABAY_API_KEY='test-key')
+class FindImageTests(TestCase):
+    HITS = {'hits': [
+        {'id': 11, 'imageWidth': 640, 'imageHeight': 400, 'webformatURL': 'https://cdn/11.png', 'user': 'a', 'pageURL': 'https://p/11'},
+        {'id': 12, 'imageWidth': 640, 'imageHeight': 400, 'webformatURL': 'https://cdn/12.png', 'user': 'b', 'pageURL': 'https://p/12'},
+    ]}
+
+    def fake_save(self, image, name, url):
+        if name.endswith('12'):
+            raise OSError('broken image')
+        image.url = f'/upload/images/v1/{name}.webp'
+        image.save()
+
+    def search(self, payload):
+        response = mock.Mock()
+        response.json.return_value = payload
+        return mock.patch('utils.celery.fetch_image.requests.get', return_value=response)
+
+    def test_fetches_once_then_reuses_context(self):
+        with self.search(self.HITS) as get, mock.patch('utils.celery.fetch_image.save_sense_image', self.fake_save):
+            first = find_image(['  Money   Building ', 'bank'])
+            second = find_image(['money building'])
+        self.assertEqual(get.call_count, 1)  # lần 2 dùng lại ImageContext, không gọi Pixabay
+        self.assertEqual(get.call_args.kwargs['params']['q'], 'money building')
+        self.assertEqual(first, second)
+        self.assertEqual(first[1], '/upload/images/v1/pixabay_11.webp')
+        # Ảnh tải hỏng không để lại bản ghi rỗng
+        self.assertEqual(list(ImageLibrary.objects.values_list('provider_id', flat=True)), ['11'])
+
+    def test_tries_next_keyword_when_no_hits(self):
+        with self.search({'hits': []}) as get:
+            self.assertIsNone(find_image(['a', 'b', 'c', 'd']))
+        self.assertEqual(get.call_count, 3)  # tối đa MAX_KEYWORDS
+        self.assertFalse(ImageContext.objects.exists())
+
+    def test_network_error_returns_none(self):
+        with mock.patch('utils.celery.fetch_image.requests.get', side_effect=OSError('timeout')):
+            self.assertIsNone(find_image(['bank']))
+
+    @override_settings(PIXABAY_API_KEY='')
+    def test_queue_job_is_skipped_without_key(self):
+        with mock.patch('utils.celery.fetch_image.find_image') as find:
+            self.assertIsNone(async_to_sync(get_image_by_keyword)({'sense_id': str(uuid7()), 'keywords': ['bank']}))
+        find.assert_not_called()

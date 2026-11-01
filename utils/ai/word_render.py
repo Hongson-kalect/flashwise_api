@@ -33,10 +33,10 @@ logger = logging.getLogger(__name__)
 
 from utils.ai.schema import word_schema, nonlatin_schema, complex_schema
 from utils.ai.prompt import render_word_prompt, WORD_SYSTEM_PROMPT
-from utils.celery.fetch_image import get_image_by_keyword
+from utils.celery.fetch_image import fetch_sense_image
 from utils.ai.translate import ai_create_translate_sema
 from utils.ai.metadata import ai_create_metadata
-from utils.utils.normalize import normalize
+from utils.utils.normalize import normalize_lookup
 from utils.utils.best_effort import best_effort
 from ai.queries import load_word
 from utils.ai import claude
@@ -72,6 +72,12 @@ async def _close_word(word_id, word_value, language_code, socket_room, cache, st
         logger.warning('Không gửi được socket %s cho %s: %s', event, word_value, e)
 
 
+async def _metadata_then_image(props, sense, socket_room):
+    """Metadata của 1 nghĩa rồi ảnh minh hoạ theo image_keywords vừa sinh (lỗi ảnh không ảnh hưởng metadata)."""
+    await ai_create_metadata(props)
+    await fetch_sense_image(sense, socket_room)
+
+
 async def ai_create_new_word_sema(word_info):
     """
     Tạo 1 từ mới theo 2 bước AI:
@@ -83,7 +89,7 @@ async def ai_create_new_word_sema(word_info):
     cache = WordCacheManager()
 
     word_id = word_info.get('word_id', None)
-    word_value = normalize(word_info.get('value', ''))
+    word_value = normalize_lookup(word_info.get('value', ''))  # phải trùng chuỗi view dùng làm cache key / room
     language_code = word_info.get('language_code', None)
 
     socket_room = get_safe_room_id(word_value, language_code)
@@ -194,11 +200,12 @@ async def ai_create_new_word_sema(word_info):
                                 # 2. Dịch + metadata cho riêng nghĩa này (1 nghĩa/lần để gần như tức thì)
                                 single_sense_list = [processed_contents]
 
-                                meta_task = asyncio.create_task(ai_create_metadata({
+                                # Ảnh cần image_keywords của metadata nên chạy nối tiếp ngay sau metadata (có PIXABAY_API_KEY mới chạy)
+                                meta_task = asyncio.create_task(_metadata_then_image({
                                     "word_value": word_value,
                                     "language_code": language_code,
                                     "current_senses": single_sense_list
-                                }))
+                                }, processed_contents, socket_room))
                                 background_tasks.add(meta_task)
                                 meta_task.add_done_callback(background_tasks.discard)
 

@@ -129,6 +129,7 @@ def _env_list(name, default):
 
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+PIXABAY_API_KEY = os.getenv('PIXABAY_API_KEY', '').strip() # rỗng = tạo từ không lấy ảnh minh hoạ
 
 # --- Model cho từng bước tạo từ (danh sách = thử lần lượt khi lỗi) ---
 # Bước 1 draft + bước 2 refine: Claude Haiku (structured output nên JSON luôn đúng schema)

@@ -404,8 +404,8 @@ class ReviewStatsTests(SyncTestBase):
         self.assertEqual([(str(r['id']), str(r['collection_id']), r['version']) for r in rows], [(str(mine.id), str(collection.id), 2)])
 
 
-class LearnSessionTests(SyncTestBase):
-    """GET /api/learn/session/: thẻ đến hạn ôn trước, rồi nghĩa mới của bộ (tracking/learn.py)."""
+class LearnTestBase(SyncTestBase):
+    """Bộ 5 nghĩa (cat có 2 nghĩa) đã tải; dùng cho GET /api/learn/new/ và /api/learn/review/ (tracking/learn.py)."""
 
     def setUp(self):
         super().setUp()
@@ -421,34 +421,87 @@ class LearnSessionTests(SyncTestBase):
                                           value=word.value, display_order=len(self.senses))
         UserCollection.objects.create(user=self.user, collection=self.collection, version=1)
 
-    def progress(self, name, **kwargs):
+    def progress(self, sense, **kwargs):
         defaults = {'state': 2, 'repetitions': 3, 'stability': 5, 'level': 3,
                     'last_reviewed_at': timezone.now() - timedelta(days=5), 'next_review_at': timezone.now() - timedelta(hours=1)}
-        return UserSenseProgress.objects.create(user=self.user, original_sense_id=self.senses[name].id, **{**defaults, **kwargs})
+        sense = self.senses[sense] if isinstance(sense, str) else sense
+        return UserSenseProgress.objects.create(user=self.user, original_sense_id=sense.id, **{**defaults, **kwargs})
 
-    def session(self, **params):
-        return self.client.get('/api/learn/session/', {'collection_id': str(self.collection.id), 'user_lang': 'en', **params})
+    def get(self, path, **params):
+        return self.client.get(f'/api/learn/{path}/', {'user_lang': 'en', **params})
 
     def ids(self, cards):
         return [str(c['sense_id']) for c in cards]
 
-    def test_new_senses_follow_collection_order_one_sense_per_word(self):
-        data = self.session(count=2).data
-        self.assertEqual(self.ids(data['new']), [str(self.senses['cat1'].id), str(self.senses['dog'].id)])  # cat2 cùng từ, sang phiên sau
-        self.assertEqual((data['due'], data['due_count'], data['new_available']), ([], 0, 5))
+    def sid(self, *names):
+        return [str(self.senses[n].id) for n in names]
+
+
+class LearnNewTests(LearnTestBase):
+    def new(self, **params):
+        return self.get('new', collection_id=str(self.collection.id), **params)
+
+    def test_follow_collection_order_one_sense_per_word(self):
+        data = self.new(count=2).data
+        self.assertEqual(self.ids(data['new']), self.sid('cat1', 'dog'))  # cat2 cùng từ, sang phiên sau
+        self.assertEqual(data['new_available'], 5)
         self.assertEqual({str(s['id']) for s in data['senses']}, set(self.ids(data['new'])))
         self.assertEqual(len(data['words']), 2)
 
-    def test_due_cards_first_lowest_recall_first(self):
+    def test_learned_and_hidden_senses_are_skipped(self):
+        from interact.models import UserInteraction
+        self.progress('dog')
+        self.progress('bird', state=0, repetitions=0)  # có dòng tiến độ nhưng chưa học lần nào: vẫn là mới
+        UserInteraction.objects.create(user=self.user, target_type='sense', target_id=self.senses['cat1'].id, interaction_type='hide', status=True)
+        data = self.new(count=10).data
+        self.assertEqual(self.ids(data['new']), self.sid('cat2', 'bird', 'fish'))
+        self.assertEqual(data['new_available'], 3)
+
+    def test_validation(self):
+        self.assertEqual(self.get('new').status_code, 400)  # thiếu collection_id
+        self.assertEqual(self.new(count='x').status_code, 400)
+        self.assertEqual(self.new(mode='quick').status_code, 400)  # học mới chưa có kiểu nhanh
+        self.client.force_authenticate(self.other)
+        self.assertEqual(self.new().status_code, 404)  # chưa tải bộ
+        self.client.force_authenticate(None)
+        self.assertEqual(self.new().status_code, 401)
+
+
+class LearnReviewTests(LearnTestBase):
+    def test_lowest_recall_first_and_count(self):
         self.progress('fish', stability=1)
         self.progress('bird', stability=30)
-        self.progress('dog', next_review_at=timezone.now() + timedelta(days=3))  # chưa đến hạn
+        self.progress('dog', stability=10)
+        self.progress('cat1', next_review_at=timezone.now() + timedelta(days=3))  # chưa đến hạn
         self.progress('cat2', is_hidden=True)
-        data = self.session(count=10).data
-        self.assertEqual(self.ids(data['due']), [str(self.senses['fish'].id), str(self.senses['bird'].id)])
+        data = self.get('review', count=2).data
+        self.assertEqual(self.ids(data['due']), self.sid('fish', 'dog'))
         self.assertLess(data['due'][0]['retrievability'], data['due'][1]['retrievability'])
-        self.assertEqual(self.ids(data['new']), [str(self.senses['cat1'].id)])  # đã có tiến độ thì không còn là từ mới
-        self.assertEqual(data['new_available'], 1)
+        self.assertEqual((data['due_count'], data['due_total'], data['mode']), (3, 3, 'normal'))
+        self.assertEqual(len(data['senses']), 2)
+
+    def test_quick_mode_only_cards_with_enough_level(self):
+        self.progress('fish', level=1)
+        self.progress('bird', level=3)
+        UserSetting.objects.create(user=self.user, key='swipe_min_level', value=3)
+        data = self.get('review', mode='quick').data
+        self.assertEqual(self.ids(data['due']), self.sid('bird'))
+        self.assertEqual((data['due_count'], data['due_total']), (1, 2))
+        self.assertEqual(self.ids(self.get('review').data['due']), self.sid('fish', 'bird'))  # normal không lọc cấp
+
+    def test_all_senses_or_one_collection(self):
+        stray_word = AIWord.objects.create(value='owl', language_code='en', status='COMPLETED')
+        stray = AISense.objects.create(word=stray_word, word_value='owl', language_code='en', contents={})
+        custom = AISense.objects.create(word=stray_word, word_value='owl', language_code='en', original=stray,
+                                        is_official=False, created_by=self.user, contents={})
+        self.progress(stray, stability=0.5)
+        self.progress('fish')
+        everywhere = self.get('review').data
+        self.assertEqual(self.ids(everywhere['due']), [str(custom.id), *self.sid('fish')])  # nghĩa ngoài bộ: dùng bản riêng của user
+        self.assertIsNone(everywhere['due'][0]['item_id'])
+        in_collection = self.get('review', collection_id=str(self.collection.id)).data
+        self.assertEqual(self.ids(in_collection['due']), self.sid('fish'))
+        self.assertIsNotNone(in_collection['due'][0]['item_id'])
 
     def test_due_until_next_day_start_in_user_zone(self):
         from tracking.learn import day_ends_at
@@ -458,16 +511,11 @@ class LearnSessionTests(SyncTestBase):
         self.assertTrue(timezone.now() < cutoff <= timezone.now() + timedelta(days=1))
         self.progress('fish', next_review_at=cutoff - timedelta(minutes=1))
         self.progress('bird', next_review_at=cutoff + timedelta(minutes=1))
-        self.assertEqual(self.ids(self.session().data['due']), [str(self.senses['fish'].id)])
+        self.assertEqual(self.ids(self.get('review').data['due']), self.sid('fish'))
 
-    def test_hidden_senses_and_validation(self):
-        from interact.models import UserInteraction
-        UserInteraction.objects.create(user=self.user, target_type='sense', target_id=self.senses['cat1'].id, interaction_type='hide', status=True)
-        self.assertEqual(self.ids(self.session(count=1).data['new']), [str(self.senses['cat2'].id)])
-
-        self.assertEqual(self.client.get('/api/learn/session/', {'user_lang': 'en'}).status_code, 400)
-        self.assertEqual(self.session(count='x').status_code, 400)
+    def test_validation(self):
+        self.assertEqual(self.get('review', mode='bogus').status_code, 400)
+        self.assertEqual(self.get('review', collection_id='x').status_code, 400)
         self.client.force_authenticate(self.other)
-        self.assertEqual(self.session().status_code, 404)  # chưa tải bộ
-        self.client.force_authenticate(None)
-        self.assertEqual(self.session().status_code, 401)
+        self.assertEqual(self.get('review', collection_id=str(self.collection.id)).status_code, 404)
+        self.assertEqual(self.get('review').data['due'], [])

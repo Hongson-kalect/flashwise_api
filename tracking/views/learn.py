@@ -1,4 +1,4 @@
-"""API chọn thẻ cho phiên học. Luật chọn ở tracking/learn.py."""
+"""API chọn thẻ: học mới và ôn tập tách riêng. Luật chọn ở tracking/learn.py."""
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -8,51 +8,95 @@ from ai.models import AISense
 from ai.validators import is_lang, is_uuid
 from core.bundle import sense_tables
 from core.models import UserCollection
-from tracking.learn import original_key, pick_session
-
-MAX_NEW = 50
-DEFAULT_NEW = 6
+from tracking.learn import NEW_MODES, REVIEW_MODES, original_key, pick_new, pick_review
 
 
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def learn_session(request):
-    """
-    Query: collection_id (bộ đã tải), user_lang, count (số nghĩa mới, mặc định 6, tối đa 50).
-    Trả {due: [...], new: [...], due_count, new_available, day_ends_at, words, senses, sense_metadata, pending}:
-    due = thẻ đến hạn ôn (học lại trước), new = nghĩa mới; words / senses / sense_metadata theo cột SQLite như bundle.
-    """
+def _bad(message):
+    return Response({'detail': message}, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _params(request, modes):
+    """Tham số chung: user_lang, mode, count. Trả (user_lang, mode, count) hoặc Response lỗi."""
     params = request.query_params
-    collection_id, user_language_code = params.get('collection_id'), params.get('user_lang')
-    if not is_uuid(collection_id) or not is_lang(user_language_code):
-        return Response({'detail': 'collection_id, user_lang are required'}, status=status.HTTP_400_BAD_REQUEST)
+    user_language_code = params.get('user_lang')
+    if not is_lang(user_language_code):
+        return _bad('user_lang is required')
+    mode = params.get('mode', 'normal')
+    if mode not in modes:
+        return _bad(f'mode must be one of {sorted(modes)}')
     try:
-        count = max(0, min(int(params.get('count', DEFAULT_NEW)), MAX_NEW))
+        count = max(0, min(int(params.get('count', modes[mode]['count'])), modes[mode]['max']))
     except ValueError:
-        return Response({'detail': 'count must be a number'}, status=status.HTTP_400_BAD_REQUEST)
+        return _bad('count must be a number')
+    return user_language_code, mode, count
 
+
+def _user_collection(request, required):
+    """Bộ user đã tải theo collection_id (id bộ gốc). Trả (bộ hoặc None, Response lỗi hoặc None)."""
+    collection_id = request.query_params.get('collection_id')
+    if not collection_id:
+        return None, (_bad('collection_id is required') if required else None)
+    if not is_uuid(collection_id):
+        return None, _bad('collection_id must be a UUID')
     user_collection = UserCollection.objects.filter(
         user=request.user, collection_id=collection_id, is_deleted=False, collection__isnull=False,
     ).first()
     if user_collection is None:
-        return Response({'detail': 'Collection not downloaded'}, status=status.HTTP_404_NOT_FOUND)
+        return None, Response({'detail': 'Collection not downloaded'}, status=status.HTTP_404_NOT_FOUND)
+    return user_collection, None
 
-    due, fresh, stats = pick_session(request.user, user_collection, count)
 
-    def card(item, progress, chance):
-        return {
-            'item_id': item.id, 'sense_id': item.sense_id, 'original_sense_id': original_key(item),
-            'level': progress.level if progress else 0,
-            'next_review_at': progress.next_review_at if progress else None,
-            'retrievability': round(chance, 4) if chance is not None else None,
-        }
+def _with_senses(cards, user_language_code):
+    """Thêm bảng words / senses / sense_metadata (như bundle) cho các thẻ; bỏ thẻ mà nghĩa không còn."""
+    senses = list(AISense.objects.filter(id__in=[c['sense_id'] for c in cards]).select_related('word', 'metadata', 'original').order_by('id'))
+    existing = {str(s.id) for s in senses}
+    return [c for c in cards if str(c['sense_id']) in existing], sense_tables(senses, user_language_code)
 
-    sense_ids = [item.sense_id for item, _, _ in due + fresh]
-    senses = list(AISense.objects.filter(id__in=sense_ids).select_related('word', 'metadata', 'original').order_by('id'))
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def learn_new(request):
+    """
+    Nghĩa mới của 1 bộ. Query: collection_id (bộ đã tải), user_lang, mode (normal), count (mặc định 6, tối đa 50).
+    Trả {mode, collection_id, new: [thẻ], new_available, words, senses, sense_metadata, pending}.
+    """
+    parsed = _params(request, NEW_MODES)
+    if isinstance(parsed, Response):
+        return parsed
+    user_language_code, mode, count = parsed
+    user_collection, error = _user_collection(request, required=True)
+    if error:
+        return error
+
+    items, available = pick_new(request.user, user_collection, count)
+    cards = [{'item_id': i.id, 'sense_id': i.sense_id, 'original_sense_id': original_key(i), 'level': 0} for i in items]
+    cards, tables = _with_senses(cards, user_language_code)
+    return Response({'mode': mode, 'collection_id': user_collection.collection_id, 'new': cards, 'new_available': available, **tables})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def learn_review(request):
+    """
+    Thẻ đến hạn ôn. Query: user_lang, mode (normal: như học mới, quick: vuốt / đọc, chỉ thẻ đủ cấp swipe_min_level),
+    count (normal mặc định 6 tối đa 50, quick 30 / 200), collection_id (tuỳ chọn: chỉ nghĩa trong bộ đó, bỏ trống = mọi nghĩa đang học).
+    Trả {mode, collection_id, due: [thẻ], due_count (hợp kiểu ôn), due_total (mọi thẻ đến hạn), day_ends_at, words, senses, sense_metadata, pending}.
+    """
+    parsed = _params(request, REVIEW_MODES)
+    if isinstance(parsed, Response):
+        return parsed
+    user_language_code, mode, count = parsed
+    user_collection, error = _user_collection(request, required=False)
+    if error:
+        return error
+
+    picked, due_total, due_count, cutoff = pick_review(request.user, mode, count, user_collection)
+    cards = [{
+        'item_id': item.id if item else None, 'sense_id': sense_id, 'original_sense_id': str(progress.original_sense_id),
+        'level': progress.level, 'next_review_at': progress.next_review_at, 'retrievability': round(chance, 4),
+    } for progress, sense_id, item, chance in picked]
+    cards, tables = _with_senses(cards, user_language_code)
     return Response({
-        'collection_id': user_collection.collection_id,
-        'due': [card(*entry) for entry in due],
-        'new': [card(*entry) for entry in fresh],
-        **stats,
-        **sense_tables(senses, user_language_code),
+        'mode': mode, 'collection_id': user_collection.collection_id if user_collection else None,
+        'due': cards, 'due_count': due_count, 'due_total': due_total, 'day_ends_at': cutoff, **tables,
     })

@@ -46,6 +46,7 @@ def make_sense(sense_id='s1', pos='noun', definition='A financial institution.',
         'pos': pos,
         'level': level,
         'register': ['neutral'],
+        'ipas': [{'value': '/bæŋk/', 'label': 'US'}],
         'is_offensive': False,
         'contents': {
             'definition': {'en': {'value': definition}, 'vi': {'value': 'bản dịch cũ'}},
@@ -100,26 +101,13 @@ class ApplyRefinementTests(TestCase):
         survivors, report = self.apply(senses, [{
             'id': 's1', 'action': 'fix',
             'pos': ' Noun ', 'level': 'b1', 'register': ['formal', 'bogus', 'formal'],
+            'ipas': [{'value': '', 'label': 'US'}, {'value': '/bank/', 'label': 'UK'}],
         }])
         sense = survivors[0]
         self.assertEqual(sense['pos'], 'noun')
         self.assertEqual(sense['level'], 'B1')
         self.assertEqual(sense['register'], ['formal'])
-
-    def test_word_ipas_fix_is_cleaned_and_keeps_roman(self):
-        draft = [{'value': 'ねこ', 'label': 'READING', 'roman': 'neko'}]
-        self.assertEqual(refine.refine_ipas(draft, None), (draft, False))
-        self.assertEqual(refine.refine_ipas(draft, {'data': {'senses': []}}), (draft, False))
-        # Model trả lại y hệt (không có roman) thì coi như không đổi, giữ roman
-        self.assertEqual(refine.refine_ipas(draft, {'data': {'ipas': [{'value': 'ねこ', 'label': 'READING'}]}}), (draft, False))
-        fixed, changed = refine.refine_ipas([{'value': 'l aɪ t', 'label': 'US'}], {'data': {'ipas': [
-            {'value': '', 'label': 'UK'}, {'value': ' /laɪt/ ', 'label': 'US'}]}})
-        self.assertEqual((fixed, changed), ([{'value': '/laɪt/', 'label': 'US'}], True))
-
-    def test_prompt_shows_word_pronunciation_once(self):
-        prompt = refine.render_refine_prompt('bank', 'en', [make_sense('s1'), make_sense('s2')], [{'value': '/bæŋk/', 'label': 'US'}])
-        self.assertEqual(prompt.count('/bæŋk/'), 1)
-        self.assertIn('<pronunciation>', prompt)
+        self.assertEqual(sense['ipas'], [{'value': '/bank/', 'label': 'UK'}])
 
     def test_invalid_level_is_ignored(self):
         senses = [make_sense(level='A2')]
@@ -169,7 +157,7 @@ class ApplyRefinementTests(TestCase):
         new = survivors[-1]
         self.assertEqual([a['id'] for a in report['added']], [new['id']])
         self.assertEqual((new['pos'], new['level'], new['word_value'], new['language_code'], new['register']), ('verb', 'B1', 'bank', 'en', ['neutral']))
-        self.assertNotIn('ipas', new)  # phát âm nằm ở cấp từ
+        self.assertEqual(new['ipas'], senses[0]['ipas'])  # cùng từ nên mượn phát âm của nghĩa có sẵn
         self.assertEqual(new['contents']['definition'], {'en': {'value': 'To deposit money in a bank.'}})
         self.assertEqual(new['contents']['examples'], [{'en': {'value': 'I bank at the corner branch.'}}])
         self.assertEqual(new['contents']['usage'], {'en': {'value': "Used with 'at'."}})
@@ -383,14 +371,14 @@ def stream_pieces(payload, size=23):
 
 DRAFT = {
     "word": "zzbank",
-    "metadata": {"should_be_saved": True, "is_common": True, "language_confidence": 0.99, "ipas": [{"value": "/bæŋk/", "label": "US"}]},
+    "metadata": {"should_be_saved": True, "is_common": True, "language_confidence": 0.99},
     "senses": [
         {"pos": "noun", "definition": {"value": "A financial institution."}, "usage": {"value": "at the bank"},
          "examples": [{"value": "I went to the zzbank."}], "is_offensive": False, "level": "A2",
-         "register": ["neutral"]},
+         "register": ["neutral"], "ipas": [{"value": "/bæŋk/", "label": "US"}]},
         {"pos": "Noun", "definition": {"value": "Land beside a river."}, "usage": {"value": ""},
          "examples": [{"value": "We sat on the zzbank."}], "is_offensive": False, "level": "b1",
-         "register": ["neutral"]},
+         "register": ["neutral"], "ipas": [{"value": "/bæŋk/", "label": "US"}]},
     ],
 }
 
@@ -445,14 +433,11 @@ class PipelineBase(TestCase):
 class PipelineTests(PipelineBase):
     """Luồng cũ (draft -> refine): chạy ai_create_new_word_sema thật (stream, cache Redis, ghi Postgres); chỉ Claude, dịch, metadata, socket là giả."""
 
-    def refine_with(self, builder, ipas=None):
+    def refine_with(self, builder):
         async def fake_request(prompt):
             self.refine_prompts.append(prompt)
             ids = re.findall(r'"id": "([0-9a-f-]{36})"', prompt)
-            data = {'senses': builder(ids)}
-            if ipas is not None:
-                data['ipas'] = ipas
-            return {'data': data, 'model': 'fake-pro'}
+            return {'data': {'senses': builder(ids)}, 'model': 'fake-pro'}
         return fake_request
 
     def run_pipeline(self, script, request_refinement, metadata=None, socket=None):
@@ -511,25 +496,29 @@ class PipelineTests(PipelineBase):
         self.assertIn('vi', cached['languages'])
         self.assertEqual(len(cached['senses']), 2)
 
-    def test_word_pronunciation_is_saved_on_word_and_sent_early(self):
+    def test_word_pronunciation_comes_from_senses(self):
         socket = AsyncMock()
-        self.run_pipeline(lambda m: stream_pieces(DRAFT), self.refine_with(lambda ids: [], ipas=[{'value': '/baŋk/', 'label': 'UK'}]), socket=socket)
-        # Người tra đầu tiên nhận phát âm draft ngay khi biết từ hợp lệ, trước nghĩa đầu tiên
+        draft = copy.deepcopy(DRAFT)
+        draft['senses'][1]['ipas'] = [{'value': '/bæŋk/', 'label': 'UK'}]
+        draft['senses'].append({**draft['senses'][0], 'definition': {'value': 'A row of similar things.'}, 'examples': [{'value': 'A zzbank of lights.'}]})
+        self.run_pipeline(lambda m: stream_pieces(draft), self.refine_with(lambda ids: []), socket=socket)
+
+        # Người tra đầu tiên có id từ ngay khi biết từ hợp lệ, trước nghĩa đầu tiên
         events = [c.args[1] for c in socket.call_args_list]
         types = [e['type'] for e in events]
         self.assertLess(types.index('WORD'), types.index('PARTIAL_SENSE'))
-        self.assertEqual(events[types.index('WORD')]['payload']['ipas'], [{'value': '/bæŋk/', 'label': 'US'}])
+        self.assertEqual(events[types.index('WORD')]['payload']['id'], str(self.word.id))
 
-        # Lưu bản refine đã sửa, ở cấp từ; nghĩa để trống (ăn theo từ)
+        # Nghĩa giữ phát âm riêng; phát âm của từ = cái hay gặp nhất
+        us = [{'value': '/bæŋk/', 'label': 'US'}]
+        self.assertEqual([s.ipas for s in self.senses()], [us, [{'value': '/bæŋk/', 'label': 'UK'}], us])
         self.word.refresh_from_db()
-        self.assertEqual(self.word.ipas, [{'value': '/baŋk/', 'label': 'UK'}])
-        self.assertEqual([s.ipas for s in self.senses()], [[], []])
-        self.assertIn('/bæŋk/', self.refine_prompts[0])
+        self.assertEqual((self.word.ipas, self.word.audio), (us, None))
         full = events[types.index('FULL_SENSE')]['payload']
-        self.assertEqual((full['ipas'], full['audio']), ([{'value': '/baŋk/', 'label': 'UK'}], None))
-        cached = self.cache.cache_word_get_data('en', self.WORD)
-        self.assertEqual(cached['word']['ipas'], [{'value': '/baŋk/', 'label': 'UK'}])
-        self.assertIn('audio', cached['word'])
+        self.assertEqual((full['ipas'], full['audio']), (us, None))
+        self.assertIn('audio', next(iter(full['senses'])))
+        cached = self.cache.cache_word_get_data('en', self.WORD)['word']
+        self.assertEqual((cached['ipas'], cached['audio']), (us, None))
 
     def test_refine_prompt_only_has_source_language_content(self):
         self.run_pipeline(lambda m: stream_pieces(DRAFT), self.refine_with(lambda ids: []))
@@ -713,9 +702,7 @@ class PipelineTests(PipelineBase):
 
         sense = self.senses()[0]
         self.assertEqual((sense.pos, sense.level), ('noun', 'N5'))
-        self.assertEqual(sense.ipas, [])
-        self.word.refresh_from_db()
-        self.assertEqual(self.word.ipas, [{'value': 'ねこ', 'label': 'READING', 'roman': 'neko'}])
+        self.assertEqual(sense.ipas[0]['roman'], 'neko')
         definition = sense.contents['definition']['ja']
         self.assertEqual(definition['roman'], 'chiisakute kawaii doubutsu.')
         # Furigana do server sinh: bỏ markup đi phải ra đúng văn bản gốc
@@ -753,14 +740,14 @@ class PipelineTests(PipelineBase):
 
 JA_DRAFT = {
     "word": "猫",
-    "metadata": {"should_be_saved": True, "is_common": True, "language_confidence": 0.99,
-                 "ipas": [{"value": "ねこ", "label": "READING", "roman": "neko"}]},
+    "metadata": {"should_be_saved": True, "is_common": True, "language_confidence": 0.99},
     "senses": [{
         "pos": "noun",
         "definition": {"value": "小さくてかわいい動物。", "roman": "chiisakute kawaii doubutsu."},
         "usage": {"value": "", "roman": ""},
         "examples": [{"value": "猫がいる。", "roman": "neko ga iru."}],
         "is_offensive": False, "level": "N5", "register": ["neutral"],
+        "ipas": [{"value": "ねこ", "label": "READING", "roman": "neko"}],
     }],
 }
 
@@ -805,9 +792,8 @@ class JapaneseSchemaTests(TestCase):
         sense = props["senses"]["items"]["properties"]
         self.assertEqual(sorted(sense["definition"]["properties"]), ["roman", "value"])
         self.assertEqual(sorted(sense["examples"]["items"]["properties"]), ["roman", "value"])
-        self.assertIn("roman", props["metadata"]["properties"]["ipas"]["items"]["properties"])
-        self.assertNotIn("ipas", sense)  # phát âm ở cấp từ (metadata), không bắt AI ghi từng nghĩa
-        self.assertIn("pos", sense)
+        self.assertIn("roman", sense["ipas"]["items"]["properties"])
+        self.assertIn("pos", sense)  # pos / level / ipas nằm ở nghĩa như tiếng Latin, không còn chui vào metadata
 
     def test_latin_schema_is_not_modified(self):
         from utils.ai.schema import word_schema

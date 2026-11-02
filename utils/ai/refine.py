@@ -44,25 +44,24 @@ refine_schema = {
                     "id": {"type": "STRING", "description": "Copied exactly for keep / fix / remove. Omit for add."},
                     "action": {"type": "STRING", "enum": ["keep", "fix", "remove", "add"]},
                     "reason": {"type": "STRING", "description": "Why it was fixed, removed or added. Empty for keep."},
-                    # fix: chỉ điền các trường thật sự thay đổi. add: điền đủ pos, definition, examples (và usage, level, register nếu có)
+                    # fix: chỉ điền các trường thật sự thay đổi. add: điền đủ pos, definition, examples (và usage, level, register, ipas nếu có)
                     "pos": {"type": "STRING"},
                     "definition": {"type": "STRING"},
                     "usage": {"type": "STRING"},
                     "examples": {"type": "ARRAY", "items": {"type": "STRING"}, "maxItems": 2},
                     "level": {"type": "STRING"},
                     "register": {"type": "ARRAY", "items": {"type": "STRING", "enum": REGISTER_VALUES}},
+                    "ipas": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "OBJECT",
+                            "properties": {"value": {"type": "STRING"}, "label": {"type": "STRING"}},
+                            "required": ["value", "label"],
+                        },
+                    },
                     "is_offensive": {"type": "BOOLEAN"},
                 },
                 "required": ["action"],
-            },
-        },
-        # Phát âm của cả từ: chỉ trả khi bản draft sai (danh sách đầy đủ đã sửa)
-        "ipas": {
-            "type": "ARRAY",
-            "items": {
-                "type": "OBJECT",
-                "properties": {"value": {"type": "STRING"}, "label": {"type": "STRING"}},
-                "required": ["value", "label"],
             },
         },
     },
@@ -89,21 +88,6 @@ def _clean(value, max_len):
     return value.strip()[:max_len] if isinstance(value, str) else ''
 
 
-def clean_ipas(items):
-    """Danh sách phát âm hợp lệ {value, label, roman?} (bỏ dòng thiếu value), rỗng nếu đầu vào không phải list."""
-    if not isinstance(items, list):
-        return []
-    ipas = []
-    for i in items:
-        if not isinstance(i, dict) or not _clean(i.get('value'), 100):
-            continue
-        ipa = {'value': _clean(i.get('value'), 100), 'label': _clean(i.get('label'), 20)}
-        if _clean(i.get('roman'), 100):
-            ipa['roman'] = _clean(i.get('roman'), 100)
-        ipas.append(ipa)
-    return ipas
-
-
 def draft_view(sense, language_code):
     """Dạng gọn của 1 nghĩa draft để đưa vào prompt (chỉ nội dung ngôn ngữ gốc, không có bản dịch)."""
     contents = sense.get('contents') or {}
@@ -115,6 +99,7 @@ def draft_view(sense, language_code):
         'examples': [_text(ex.get(language_code)) for ex in contents.get('examples') or [] if isinstance(ex, dict)],
         'level': sense.get('level'),
         'register': sense.get('register') or [],
+        'ipas': [{'value': i.get('value'), 'label': i.get('label')} for i in sense.get('ipas') or [] if isinstance(i, dict)],
         'is_offensive': bool(sense.get('is_offensive')),
     }
 
@@ -125,32 +110,27 @@ REFINE_SYSTEM_PROMPT = (
 )
 
 
-def render_refine_prompt(word, language_code, senses, ipas=None):
+def render_refine_prompt(word, language_code, senses):
     """Prompt cho Claude Haiku: dữ liệu trong thẻ XML, quy tắc ngắn có lý do (model làm theo tốt hơn khi biết vì sao)."""
     language_name = language_map.get(language_code, 'en')
     drafts = json.dumps([draft_view(s, language_code) for s in senses], ensure_ascii=False)
-    pronunciation = json.dumps([{'value': i['value'], 'label': i['label']} for i in clean_ipas(ipas)], ensure_ascii=False)
     if settings.AI_REFINE_ALLOW_ADD:
         add_rule = f"7. Missing senses: add a common, distinct meaning a learner will meet only if the draft clearly lacks it (at most {settings.AI_REFINE_MAX_ADD}). No rare, archaic, technical or idiom-only meanings, no near-duplicates."
-        add_output = "\n- action=add (no id) for each missing sense: pos, definition, 1-2 examples, plus usage / level / register when useful, and a short reason."
+        add_output = "\n- action=add (no id) for each missing sense: pos, definition, 1-2 examples, plus usage / level / register / ipas when useful, and a short reason."
     else:
         add_rule = "7. Never add new senses; only review the ones given."
         add_output = ""
     if language_code == 'ja':
         # ipas tiếng Nhật là cách đọc hiragana (label READING), không phải IPA: không để model "sửa" thành romaji
-        ipa_check = "Pronunciation: label READING holds the full hiragana reading of the word; keep it in hiragana."
+        ipa_check = "ipas: label READING holds the full hiragana reading of the word; keep it in hiragana."
     else:
-        ipa_check = "Pronunciation: valid IPA between slashes, matching the word and its label."
+        ipa_check = "ipas: valid IPA between slashes, matching the word and its label."
 
     return f"""Review the draft senses of the {language_name} word '{word}'. All content is in {language_name}.
 
 <draft>
 {drafts}
 </draft>
-
-<pronunciation>
-{pronunciation}
-</pronunciation>
 
 Change only what is wrong. Each change is re-translated into 10 languages, so leave correct text exactly as it is: do not reword, shorten or polish it.
 
@@ -169,7 +149,6 @@ One item per draft sense, with its id copied exactly:
 - action=keep: nothing to change, no other fields.
 - action=fix: only the changed fields (examples: the full corrected list), plus a short reason.
 - action=remove: a short reason.{add_output}
-Top-level ipas: only if <pronunciation> is wrong, the full corrected list; omit it otherwise.
 </output>"""
 
 
@@ -228,6 +207,15 @@ def _apply_fix(sense, item, language_code):
             sense['register'] = register
             fields.add('register')
 
+    if isinstance(item.get('ipas'), list):
+        ipas = [
+            {'value': _clean(i.get('value'), 100), 'label': _clean(i.get('label'), 20)}
+            for i in item['ipas'] if isinstance(i, dict) and _clean(i.get('value'), 100)
+        ]
+        if ipas and ipas != (sense.get('ipas') or []):
+            sense['ipas'] = ipas
+            fields.add('ipas')
+
     if isinstance(item.get('is_offensive'), bool) and item['is_offensive'] != bool(sense.get('is_offensive')):
         sense['is_offensive'] = item['is_offensive']
         fields.add('is_offensive')
@@ -260,6 +248,10 @@ def _new_sense(item, template, language_code, existing):
 
     level = _clean(item.get('level'), MAX_LEVEL).upper()
     register = [r for r in dict.fromkeys(item.get('register') or []) if r in REGISTER_VALUES] if isinstance(item.get('register'), list) else []
+    ipas = [
+        {'value': _clean(i.get('value'), 100), 'label': _clean(i.get('label'), 20)}
+        for i in item.get('ipas') or [] if isinstance(i, dict) and _clean(i.get('value'), 100)
+    ] if isinstance(item.get('ipas'), list) else []
     sense = {
         'id': str(uuidv7.generate_uuid7()),
         'word_id': template.get('word_id'),
@@ -269,6 +261,7 @@ def _new_sense(item, template, language_code, existing):
         'pos': pos,
         'level': level if LEVEL_RE.match(level) else None,
         'register': register or ['neutral'],
+        'ipas': ipas or (template.get('ipas') or []),  # cùng từ nên phát âm giống các nghĩa có sẵn
         'contents': contents,
     }
     if language_code == 'ja':
@@ -335,23 +328,6 @@ def apply_refinement(senses, refinement, language_code):
         report['changed'].append({'id': sid, 'fields': sorted(change['fields']), 'reason': change['reason']})
         report['scope'][sid] = change['scope']
     return survivors, report
-
-
-def refine_ipas(ipas, refinement):
-    """
-    Phát âm của từ sau refine: bản sửa của model (top-level ipas) nếu có và khác draft, không thì giữ draft.
-    Trả (ipas, changed). Model không trả roman (tiếng Nhật) nên giữ roman của draft khi cách đọc không đổi.
-    """
-    draft = clean_ipas(ipas)
-    data = refinement.get('data') if isinstance(refinement, dict) else None
-    fixed = clean_ipas(data.get('ipas')) if isinstance(data, dict) else []
-    if not fixed or [(i['value'], i['label']) for i in fixed] == [(i['value'], i['label']) for i in draft]:
-        return draft, False
-    romans = {i['value']: i['roman'] for i in draft if i.get('roman')}
-    for i in fixed:
-        if 'roman' not in i and i['value'] in romans:
-            i['roman'] = romans[i['value']]
-    return fixed, True
 
 
 def build_translate_jobs(senses, report, language_code):
@@ -478,7 +454,7 @@ async def refine_word(word_value, language_code, senses, refinement, *, draft_mo
             payload = {}
             for change in [*report['changed'], *report['added']]:
                 sense = by_id[change['id']]
-                payload[sense['id']] = {k: sense.get(k) for k in ('id', 'pos', 'level', 'register', 'is_offensive', 'contents')}
+                payload[sense['id']] = {k: sense.get(k) for k in ('id', 'pos', 'level', 'register', 'ipas', 'is_offensive', 'contents')}
             if socket_room:
                 # App gộp theo id: nghĩa đã gửi ở bước 1 được thay bằng bản chuẩn hoá, nghĩa mới (id lạ) được thêm vào
                 await notify({"type": "PARTIAL_SENSE", "payload": payload})

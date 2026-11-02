@@ -12,14 +12,14 @@ def render_word_prompt(word, language_code):
     language_name = language_map.get(language_code, 'en')
 
     extra_rules = ""
-    ipa_rule = "\n- metadata.ipas: how the word itself is pronounced, IPA between slashes, e.g. /bæŋk/; for English label it US or UK (give both if they differ)."
+    ipa_rule = "\n- ipas: IPA between slashes, e.g. /bæŋk/; for English label it US or UK (give both if they differ)."
     if language_code == 'ja':
         ipa_rule = ""
         extra_rules = """
 <japanese>
 - level: JLPT N5-N1.
 - roman: Hepburn romaji of exactly that text.
-- metadata.ipas: one item per reading of the word, most common first; label READING, value = the full hiragana reading, roman = its romaji.
+- ipas: one item per reading; label READING, value = the full hiragana reading, roman = its romaji.
 - Never put furigana or brackets inside any text.
 </japanese>"""
 

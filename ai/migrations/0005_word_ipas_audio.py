@@ -6,29 +6,16 @@ from collections import Counter
 from django.db import migrations, models
 
 
-def hoist_ipas(apps, schema_editor):
-    """IPA hay gặp nhất trong các nghĩa chính thức thành IPA của từ; nghĩa giống hệt của từ thì để trống (ăn theo từ)."""
+def fill_word_ipas(apps, schema_editor):
+    """IPA hay gặp nhất trong các nghĩa chính thức thành IPA chung của từ (nghĩa vẫn giữ IPA của mình)."""
     AIWord = apps.get_model('ai', 'AIWord')
     AISense = apps.get_model('ai', 'AISense')
     for word in AIWord.objects.all().iterator():
-        senses = list(AISense.objects.filter(word_id=word.id).exclude(ipas=[]))
-        official = [json.dumps(s.ipas, sort_keys=True) for s in senses if s.is_official and isinstance(s.ipas, list)]
-        if not official:
-            continue
-        common = Counter(official).most_common(1)[0][0]
-        word.ipas = json.loads(common)
-        word.save(update_fields=['ipas'])
-        same = [s for s in senses if json.dumps(s.ipas, sort_keys=True) == common]
-        for sense in same:
-            sense.ipas = []
-        AISense.objects.bulk_update(same, ['ipas'])
-
-
-def restore_ipas(apps, schema_editor):
-    AIWord = apps.get_model('ai', 'AIWord')
-    AISense = apps.get_model('ai', 'AISense')
-    for word in AIWord.objects.exclude(ipas=[]).iterator():
-        AISense.objects.filter(word_id=word.id, ipas=[]).update(ipas=word.ipas)
+        ipas = AISense.objects.filter(word_id=word.id, is_official=True).exclude(ipas=[]).values_list('ipas', flat=True)
+        counts = Counter(json.dumps(i, sort_keys=True, ensure_ascii=False) for i in ipas if isinstance(i, list) and i)
+        if counts:
+            word.ipas = json.loads(counts.most_common(1)[0][0])
+            word.save(update_fields=['ipas'])
 
 
 class Migration(migrations.Migration):
@@ -53,5 +40,5 @@ class Migration(migrations.Migration):
             name='ipas',
             field=models.JSONField(blank=True, default=list),
         ),
-        migrations.RunPython(hoist_ipas, restore_ipas),
+        migrations.RunPython(fill_word_ipas, migrations.RunPython.noop),
     ]

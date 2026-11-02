@@ -15,7 +15,7 @@ from ai.queries import visible_senses
 from ai.validators import is_lang, is_uuid
 from core.models import Collection, CollectionItem, UserCollection
 from core.queries import live_items, visible_collections
-from interact.models import UserInteraction
+from interact.likes import liked_versions, set_like, version_like_counts
 from core.serializers.Collection import (
     CollectionBasicSerializer, CollectionDetailSerializer, CollectionListSerializer, CollectionSerializer,
 )
@@ -160,9 +160,17 @@ class CollectionViewSet(SoftDeleteViewSet):
 
     @action(detail=True, methods=['get'])
     def versions(self, request, pk=None):
-        """Lịch sử phát hành: mỗi version có title, desc, image, changelog {added, updated, deleted}, released_at. Mới nhất trước."""
+        """
+        Lịch sử phát hành: mỗi version có title, desc, image, changelog {added, updated, deleted}, released_at và like_count
+        của riêng version đó. Mới nhất trước. Kèm like_count tổng (số người) và liked_versions của người xem.
+        """
         collection = self.get_object()
-        return Response({"version": collection.version, "versions": list(reversed(collection.metadatas or []))})
+        likes = version_like_counts('collection', collection.pk)
+        versions = [{**meta, 'like_count': likes.get(meta.get('version'), 0)} for meta in reversed(collection.metadatas or []) if isinstance(meta, dict)]
+        return Response({
+            "version": collection.version, "versions": versions, "like_count": collection.like_count,
+            "liked_versions": liked_versions(request.user, 'collection', collection.pk),
+        })
 
     def _resolve_pending(self, instance):
         """
@@ -242,20 +250,31 @@ class CollectionViewSet(SoftDeleteViewSet):
 
     @action(detail=True, methods=['post', 'delete'], permission_classes=[IsAuthenticated])
     def like(self, request, pk=None):
-        """POST: thích bộ từ, DELETE: bỏ thích. Gọi lại nhiều lần không đếm trùng. Trả {liked, like_count}."""
+        """
+        POST: thích 1 version của bộ (`version` trong body hoặc query, mặc định version hiện tại), DELETE: bỏ thích version đó
+        (không gửi version thì bỏ mọi version). Mỗi version đếm riêng, 1 người thích được nhiều version;
+        like_count của bộ = số người thích ít nhất 1 version. Gọi lại nhiều lần không đếm trùng.
+        Trả {liked, liked_versions, like_count, version, version_like_count}.
+        """
         collection = self.get_object()
         want = request.method == 'POST'
-        with transaction.atomic():
-            interaction, _ = UserInteraction.objects.select_for_update().get_or_create(
-                user=request.user, interaction_type='like', target_type='collection', target_id=collection.pk,
-                defaults={'status': False},
-            )
-            if bool(interaction.status) != want:
-                interaction.status = want
-                interaction.save(update_fields=['status', 'updated_at'])
-                Collection.objects.filter(pk=collection.pk).update(like_count=F('like_count') + (1 if want else -1))
-        collection.refresh_from_db(fields=['like_count'])
-        return Response({'liked': want, 'like_count': max(collection.like_count, 0)})
+        raw = request.data.get('version') if hasattr(request.data, 'get') else None
+        raw = raw if raw is not None else request.query_params.get('version')
+        if raw is None:
+            version = collection.version if want else None
+        else:
+            try:
+                version = int(raw)
+            except (TypeError, ValueError):
+                return _bad_request("Invalid version")
+            # Version đã phát hành (1..hiện tại), hoặc 0 khi bộ chưa từng phát hành
+            if not (1 <= version <= collection.version or version == collection.version):
+                return _bad_request("Unknown version")
+        versions, like_count = set_like(request.user, Collection, 'collection', collection.pk, want, version)
+        return Response({
+            'liked': bool(versions), 'liked_versions': versions, 'like_count': like_count, 'version': version,
+            'version_like_count': None if version is None else version_like_counts('collection', collection.pk).get(version, 0),
+        })
 
     @action(detail=False, methods=['post'], url_path='bulk-create', permission_classes=[IsAuthenticated])
     def create_bulk(self, request, *args, **kwargs):

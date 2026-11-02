@@ -1,8 +1,10 @@
 import json
 import logging
 
+from django.core.cache import cache
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import ExpressionWrapper, F, FloatField, Q
+from django.db.models.functions import Cast
 from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -14,8 +16,10 @@ from ai.models.AISense import AISense
 from ai.models.AISenseMetadata import AISenseMetadata
 from ai.models.AIWord import AIWord
 from ai.queries import visible_sense_q
+from core.bundle import pick_languages
 from core.models import CollectionItem
 from django.utils import timezone
+from interact.likes import set_like
 from interact.models import UserInteraction
 from ai.serializers.AISense import AISenseSerializer
 from ai.validators import MAX_DELTA_CHARS, METADATA_FIELDS, clean_contents, clean_metadata, is_lang, is_uuid
@@ -28,6 +32,46 @@ logger = logging.getLogger(__name__)
 
 def _bad_request(message):
     return Response({"message": message}, status=status.HTTP_400_BAD_REQUEST)
+
+
+TOP_MAX = 100
+TOP_CACHE_SECONDS = 600
+TOP_MIN_REVIEWS = 20  # forget_rate: nghĩa ít lần chấm thì tỉ lệ dao động mạnh nên bỏ
+TOP_SENSE_ORDERS = {
+    'forgot': 'global_forget_count',
+    'forget_rate': 'forget_rate',
+    'learned': 'learner_count',
+    'liked': 'like_count',
+}
+
+
+def top_senses(language_code, by):
+    """Nghĩa chính thức (thống kê học ghi trên mọi bản cùng gốc nên chỉ lấy bản chính thức để không trùng), giá trị > 0."""
+    queryset = (
+        AISense.objects.filter(is_official=True, language_code=language_code)
+        .exclude(is_deleted=True).exclude(is_active=False).select_related('metadata')
+    )
+    if by == 'forget_rate':
+        total = F('global_forget_count') + F('global_remember_count')
+        queryset = queryset.annotate(reviews=total).filter(reviews__gte=TOP_MIN_REVIEWS, global_forget_count__gt=0).annotate(
+            forget_rate=ExpressionWrapper(Cast('global_forget_count', FloatField()) / total, output_field=FloatField()),
+        )
+    else:
+        queryset = queryset.filter(**{TOP_SENSE_ORDERS[by] + '__gt': 0})
+    return queryset.order_by('-' + TOP_SENSE_ORDERS[by], '-global_forget_count', 'id')
+
+
+def top_sense_row(sense, language_code, user_language_code):
+    forgot, remembered = sense.global_forget_count, sense.global_remember_count
+    langs = {language_code, user_language_code} - {None}
+    return {
+        'id': str(sense.id), 'word_id': str(sense.word_id), 'word_value': sense.word_value,
+        'pos': sense.pos, 'level': sense.level, 'ipas': sense.ipas, 'image_preview': sense.image_preview,
+        'contents': pick_languages(sense.contents or {}, langs),
+        'global_forget_count': forgot, 'global_remember_count': remembered,
+        'forget_rate': round(forgot / (forgot + remembered), 4) if forgot + remembered else 0.0,
+        'learner_count': sense.learner_count, 'like_count': sense.like_count, 'global_difficulty': sense.global_difficulty,
+    }
 
 
 class AISenseViewSet(SoftDeleteViewSet):
@@ -82,21 +126,56 @@ class AISenseViewSet(SoftDeleteViewSet):
         )
         return Response({'hidden': want, 'sense_id': str(sense.id)})
 
+    @action(detail=True, methods=['post', 'delete'], url_path='like', permission_classes=[IsAuthenticated])
+    def like(self, request, pk=None):
+        """POST: thích (tim) nghĩa, DELETE: bỏ thích. Mỗi bản nghĩa (chính thức / tuỳ chỉnh) đếm riêng, gọi lại không đếm trùng."""
+        sense = self.get_object()
+        versions, like_count = set_like(request.user, AISense, 'sense', sense.id, request.method == 'POST')
+        return Response({'liked': bool(versions), 'sense_id': str(sense.id), 'like_count': like_count})
+
+    @action(detail=False, methods=['get'], url_path='top')
+    def top(self, request):
+        """
+        Nghĩa chính thức đứng đầu toàn hệ thống theo `by`: forgot (số lần chấm Again), forget_rate (tỉ lệ quên, cần
+        >= TOP_MIN_REVIEWS lần chấm), learned (số người học), liked (lượt thích). Query: lang (bắt buộc), by, limit (<= 100),
+        user_lang (kèm nội dung ngôn ngữ đó, không đẩy dịch bù). Cache TOP_CACHE_SECONDS.
+        """
+        params = request.query_params
+        language_code, user_language_code, by = params.get('lang'), params.get('user_lang'), params.get('by', 'forgot')
+        if not is_lang(language_code) or (user_language_code is not None and not is_lang(user_language_code)):
+            return _bad_request("lang is required, user_lang must be a language code")
+        if by not in TOP_SENSE_ORDERS:
+            return _bad_request("by must be one of: %s" % ', '.join(TOP_SENSE_ORDERS))
+        try:
+            limit = min(max(int(params.get('limit', 20)), 1), TOP_MAX)
+        except ValueError:
+            return _bad_request("Invalid limit")
+
+        key = f'top_senses:{language_code}:{user_language_code or ""}:{by}'
+        rows = cache.get(key)
+        if rows is None:
+            rows = [top_sense_row(sense, language_code, user_language_code) for sense in top_senses(language_code, by)[:TOP_MAX]]
+            cache.set(key, rows, TOP_CACHE_SECONDS)
+        return Response({'by': by, 'lang': language_code, 'senses': rows[:limit]})
+
     @action(detail=False, methods=['get'], url_path='mine', permission_classes=[IsAuthenticated])
     def mine(self, request):
-        """Nghĩa tuỳ chỉnh của mình (lọc theo word_id nếu có) và id các nghĩa đang ẩn. Tối đa 500 nghĩa mới nhất."""
+        """Nghĩa tuỳ chỉnh của mình (lọc theo word_id nếu có), id các nghĩa đang ẩn và đang thích. Tối đa 500 nghĩa mới nhất."""
         word_id = request.query_params.get('word_id')
         if word_id is not None and not is_uuid(word_id):
             return _bad_request("Invalid word_id")
         senses = AISense.objects.filter(created_by=request.user, is_official=False).exclude(is_deleted=True).exclude(is_active=False)
-        hidden = UserInteraction.objects.filter(user=request.user, interaction_type='hide', target_type='sense', status=True)
+        mine = UserInteraction.objects.filter(user=request.user, target_type='sense', status=True)
+        hidden, liked = mine.filter(interaction_type='hide'), mine.filter(interaction_type='like')
         if word_id:
             senses = senses.filter(word_id=word_id)
-            hidden = hidden.filter(target_id__in=AISense.objects.filter(word_id=word_id).values('id'))
+            word_senses = AISense.objects.filter(word_id=word_id).values('id')
+            hidden, liked = hidden.filter(target_id__in=word_senses), liked.filter(target_id__in=word_senses)
         senses = senses.select_related('metadata').order_by('-id')[:500]
         return Response({
             'senses': AISenseSerializer(senses, many=True).data,
             'hidden': [str(target) for target in hidden.values_list('target_id', flat=True)],
+            'liked': [str(target) for target in liked.values_list('target_id', flat=True)],
         })
 
     def _user_contents(self, sense, user_language_code):

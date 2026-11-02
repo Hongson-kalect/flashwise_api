@@ -319,16 +319,86 @@ class MeTests(SyncTestBase):
         self.assertFalse(UserProfile.objects.get(pk=profile.pk).is_active)
 
 
+@override_settings(CACHES=LOCMEM_CACHE)
+class TopSensesTests(SyncTestBase):
+    def make(self, value, forgot, remembered, learners=0, likes=0, **extra):
+        word = AIWord.objects.create(value=value, language_code='en', status='COMPLETED')
+        contents = {'definition': {'en': value + ' def', 'vi': value + ' vi', 'ja': value + ' ja'}}
+        return AISense.objects.create(word=word, word_value=value, language_code='en', contents=contents, global_forget_count=forgot,
+                                      global_remember_count=remembered, learner_count=learners, like_count=likes, **{'is_official': True, **extra})
+
+    def top(self, **params):
+        res = self.client.get('/api/ai-senses/top/', {'lang': 'en', **params})
+        self.assertEqual(res.status_code, 200)
+        return [row['word_value'] for row in res.data['senses']]
+
+    def test_orders_and_filters(self):
+        self.make('cat', forgot=30, remembered=70, learners=9, likes=1)
+        self.make('dog', forgot=10, remembered=10, learners=20)
+        self.make('rare', forgot=5, remembered=0, learners=1, likes=4)  # tỉ lệ 100% nhưng quá ít lần chấm
+        self.make('mine', forgot=99, remembered=0, is_official=False, created_by=self.user)  # bản tuỳ chỉnh không tính
+        self.assertEqual(self.top(), ['cat', 'dog', 'rare'])
+        self.assertEqual(self.top(by='forget_rate'), ['dog', 'cat'])
+        self.assertEqual(self.top(by='learned', limit=2), ['dog', 'cat'])
+        self.assertEqual(self.top(by='liked'), ['rare', 'cat'])
+
+        row = self.client.get('/api/ai-senses/top/', {'lang': 'en', 'user_lang': 'vi'}).data['senses'][0]
+        self.assertEqual(row['contents'], {'definition': {'en': 'cat def', 'vi': 'cat vi'}})
+        self.assertEqual((row['forget_rate'], row['learner_count']), (0.3, 9))
+
+    def test_public_and_validates(self):
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.get('/api/ai-senses/top/', {'lang': 'en'}).status_code, 200)
+        for params in ({}, {'lang': 'en', 'by': 'x'}, {'lang': 'en', 'limit': 'a'}, {'lang': 'en', 'user_lang': '??'}):
+            self.assertEqual(self.client.get('/api/ai-senses/top/', params).status_code, 400)
+
+
 class LikeAndFeedbackTests(SyncTestBase):
     def test_like_toggle_is_idempotent(self):
         collection = Collection.objects.create(name='IELTS', language_code='en', is_official=True)
         url = f'/api/collections/{collection.id}/like/'
-        self.assertEqual(self.client.post(url).data, {'liked': True, 'like_count': 1})
+        res = self.client.post(url)
+        self.assertEqual(res.data, {'liked': True, 'liked_versions': [0], 'like_count': 1, 'version': 0, 'version_like_count': 1})
         self.assertEqual(self.client.post(url).data['like_count'], 1)  # bấm lại không cộng thêm
         self.client.force_authenticate(self.other)
         self.assertEqual(self.client.post(url).data['like_count'], 2)
-        self.assertEqual(self.client.delete(url).data, {'liked': False, 'like_count': 1})
+        self.assertEqual(self.client.delete(url).data, {'liked': False, 'liked_versions': [], 'like_count': 1, 'version': None, 'version_like_count': None})
         self.assertEqual(self.client.delete(url).data['like_count'], 1)  # bỏ thích lại không trừ thêm
+
+    def test_like_per_version_counts_unique_users(self):
+        metas = [{'version': v, 'title': f'v{v}'} for v in (1, 2, 3)]
+        collection = Collection.objects.create(name='IELTS', language_code='en', is_official=True, released=True, version=3, metadatas=metas)
+        url = f'/api/collections/{collection.id}/like/'
+        self.assertEqual(self.client.post(url).data['version'], 3)  # mặc định version hiện tại
+        res = self.client.post(url, {'version': 1}, format='json')
+        self.assertEqual((res.data['liked_versions'], res.data['like_count'], res.data['version_like_count']), ([1, 3], 1, 1))  # 1 người 2 version vẫn tính 1
+        self.client.force_authenticate(self.other)
+        self.assertEqual(self.client.post(url + '?version=1').data['like_count'], 2)
+        for bad in (0, 4, 'x'):
+            self.assertEqual(self.client.post(url, {'version': bad}, format='json').status_code, 400)
+
+        res = self.client.get(f'/api/collections/{collection.id}/versions/')
+        self.assertEqual({v['version']: v['like_count'] for v in res.data['versions']}, {1: 2, 2: 0, 3: 1})
+        self.assertEqual((res.data['like_count'], res.data['liked_versions']), (2, [1]))
+
+        self.client.force_authenticate(self.user)
+        res = self.client.delete(url + '?version=3')  # bỏ 1 version, vẫn còn thích v1
+        self.assertEqual((res.data['liked_versions'], res.data['like_count'], res.data['version_like_count']), ([1], 2, 0))
+        res = self.client.delete(url)  # không gửi version: bỏ hết
+        self.assertEqual((res.data['liked'], res.data['like_count']), (False, 1))
+        self.assertEqual(Collection.objects.get(pk=collection.pk).like_count, 1)
+
+    def test_sense_like(self):
+        url = f'/api/ai-senses/{self.sense.id}/like/'
+        self.assertEqual(self.client.post(url).data, {'liked': True, 'sense_id': str(self.sense.id), 'like_count': 1})
+        self.assertEqual(self.client.post(url).data['like_count'], 1)
+        self.assertEqual(self.client.get('/api/ai-senses/mine/').data['liked'], [str(self.sense.id)])
+        self.assertEqual(self.client.delete(url).data, {'liked': False, 'sense_id': str(self.sense.id), 'like_count': 0})
+        self.assertEqual(self.client.get('/api/ai-senses/mine/').data['liked'], [])
+        private = AISense.objects.create(word=self.sense.word, word_value='bank', language_code='en', is_official=False, created_by=self.other, contents={})
+        self.assertEqual(self.client.post(f'/api/ai-senses/{private.id}/like/').status_code, 404)
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.post(url).status_code, 401)
 
     def test_like_requires_login_and_visibility(self):
         private = Collection.objects.create(name='Riêng', language_code='en', created_by=self.other)

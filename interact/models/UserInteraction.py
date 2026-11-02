@@ -27,11 +27,13 @@ class UserInteraction(BaseModel):
     # Định danh loại tương tác (Mặc định là 'like')
     interaction_type = models.CharField(max_length=20, choices=INTERACTION_CHOICES, default='like')
     status = models.BooleanField(default=True, null=True)
+    # Version của đối tượng (bộ từ: mỗi version like riêng, xem interact/likes.py); đối tượng không có version thì 0
+    version = models.IntegerField(default=0)
 
     class Meta:
         db_table = "user_interaction"
-        # Ràng buộc Unique: 1 User chỉ được Like 1 thực thể cố định 1 lần duy nhất
-        unique_together = ('user', 'interaction_type', 'target_type', 'target_id')
+        # Ràng buộc Unique: 1 User chỉ được Like 1 version của 1 thực thể 1 lần duy nhất
+        unique_together = ('user', 'interaction_type', 'target_type', 'target_id', 'version')
         
         # Tối ưu hóa Index cho việc truy vấn kiểm tra trạng thái hoặc lấy danh sách đã thích
         indexes = [

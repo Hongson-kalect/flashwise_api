@@ -22,7 +22,8 @@ from core.serializers.Collection import (
 from utils.redis.client import get_queue_client
 from utils.redis.word_init import WordCacheManager
 from utils.utils.normalize import normalize, normalize_lookup, is_lookup_word  # noqa: F401  (nhiều nơi vẫn import normalize từ module này)
-from utils.utils.permissions import IsOwnerOrAdmin, consume_daily_quota
+from utils.utils.permissions import IsOwnerOrAdmin, NotBanned, consume_daily_quota
+from core.scores import refresh_collection_scores
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 from utils.utils.uuidv7 import generate_uuid7
 
@@ -65,7 +66,7 @@ def sort_words(words, language_code):
     found = {sense.word_value: sense for sense in best_official_senses(words, language_code)}
     missing = [w for w in words if w not in found]
     existing = {w.value: w for w in AIWord.objects.filter(value__in=missing, language_code=language_code).exclude(is_deleted=True)} if missing else {}
-    invalid = [w for w in missing if w in existing and existing[w].status in ('REJECTED', 'INVALID')]
+    invalid = [w for w in missing if w in existing and existing[w].status in ('REJECTED', 'INVALID', 'BANNED')]
     pending = [w for w in missing if w not in invalid]
     to_start = [w for w in pending if w not in existing or existing[w].status == 'FAILED']
     return found, invalid, pending, to_start, existing
@@ -120,6 +121,8 @@ class CollectionViewSet(SoftDeleteViewSet):
             ordering = params.get('ordering')
             if ordering in COLLECTION_ORDERINGS:
                 queryset = queryset.order_by(ordering, '-id')
+            else:
+                queryset = queryset.order_by('-score', '-created_at', '-id')  # core/scores.py
             # Số từ của bản đang hiệu lực (item_count, tính lúc tạo / phát hành); đếm thẳng bảng trung gian sẽ cộng cả nháp và mọi version
             queryset = queryset.annotate(senses_count=F('item_count'))
         return queryset
@@ -190,7 +193,7 @@ class CollectionViewSet(SoftDeleteViewSet):
             for word in AIWord.objects.filter(**lookup).exclude(is_deleted=True):
                 if word.status == 'COMPLETED':
                     done.add(word.value)
-                elif word.status in ('REJECTED', 'INVALID'):
+                elif word.status in ('REJECTED', 'INVALID', 'BANNED'):
                     invalid.append(word.value)
 
             senses = list(best_official_senses(done, collection.language_code)) if done else []
@@ -248,7 +251,7 @@ class CollectionViewSet(SoftDeleteViewSet):
 
         return Response({"user_collection": user_collection.id, **serializer.data}, status=status.HTTP_201_CREATED)
 
-    @action(detail=True, methods=['post', 'delete'], permission_classes=[IsAuthenticated])
+    @action(detail=True, methods=['post', 'delete'], permission_classes=[IsAuthenticated, NotBanned])
     def like(self, request, pk=None):
         """
         POST: thích 1 version của bộ (`version` trong body hoặc query, mặc định version hiện tại), DELETE: bỏ thích version đó
@@ -271,6 +274,7 @@ class CollectionViewSet(SoftDeleteViewSet):
             if not (1 <= version <= collection.version or version == collection.version):
                 return _bad_request("Unknown version")
         versions, like_count = set_like(request.user, Collection, 'collection', collection.pk, want, version)
+        refresh_collection_scores(pk=collection.pk)
         return Response({
             'liked': bool(versions), 'liked_versions': versions, 'like_count': like_count, 'version': version,
             'version_like_count': None if version is None else version_like_counts('collection', collection.pk).get(version, 0),

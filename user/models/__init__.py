@@ -6,3 +6,4 @@ from .UserProfile import UserProfile
 from .PurchaseRecord import PurchaseRecord
 from .RestrictList import RestrictList
 from .UserSetting import UserSetting
+from .ReputationEvent import ReputationEvent

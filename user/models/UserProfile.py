@@ -56,6 +56,11 @@ class UserProfile(BaseModel):
     ban_reason = models.TextField(blank=True, null=True)
     ban_expires_at = models.DateTimeField(null=True, blank=True)
 
+    # --- UY TÍN (ẩn với user, tính lại từ ReputationEvent, xem user/reputation.py) ---
+    reputation = models.IntegerField(default=0) # Điểm đóng góp: nghĩa được chọn làm chính thức, report đúng; bị ban thì trừ
+    report_accepted = models.PositiveIntegerField(default=0) # Số report được chấp nhận
+    report_rejected = models.PositiveIntegerField(default=0) # Số report bị bác (report spam tính 2)
+
     class Meta:
         db_table = "user_profile"
         indexes = [

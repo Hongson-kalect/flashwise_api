@@ -408,11 +408,11 @@ class LikeAndFeedbackTests(SyncTestBase):
         self.assertEqual(self.client.post(f'/api/collections/{public.id}/like/').status_code, 401)
 
     def test_report_and_feedback(self):
-        target = str(uuid7())
+        target = str(self.sense.word_id)
         res = self.client.post('/api/reports/', {'target_type': 'word', 'target_id': target, 'reason': 'Sai nghĩa', 'type': 'content'}, format='json')
         self.assertEqual(res.status_code, 201)
         self.assertEqual(Report.objects.get().user, self.user)
-        res = self.client.post('/api/reports/', {'target_type': 'sense', 'target_id': target, 'reason': 'Nghĩa sai'}, format='json')
+        res = self.client.post('/api/reports/', {'target_type': 'sense', 'target_id': str(self.sense.id), 'reason': 'Nghĩa sai'}, format='json')
         self.assertEqual(res.status_code, 201)  # báo sai 1 nghĩa cụ thể
         for body in ({'target_type': 'x', 'target_id': target, 'reason': 'a'}, {'target_type': 'word', 'target_id': 'no', 'reason': 'a'},
                      {'target_type': 'word', 'target_id': target, 'reason': ' '}, {'target_type': 'word', 'target_id': target, 'reason': 'a', 'type': 'zz'}):

@@ -13,7 +13,8 @@ from ai.models import AISense, AIWord, AISenseMetadata
 from ai.queries import visible_senses
 from ai.sense_edit import apply_sense_edit
 from ai.validators import MAX_DELTA_CHARS, is_lang, is_uuid
-from utils.utils.permissions import consume_daily_quota
+from utils.utils.permissions import NotBanned, consume_daily_quota
+from core.scores import refresh_collection_scores
 from core.serializers import CollectionDetailSerializer
 from core.models import Collection,CollectionItem, UserCollection
 from core.bundle import build_bundle, load_bundle, make_etag
@@ -140,6 +141,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
             return Response({"detail": "Bạn đã sở hữu bộ sưu tập này rồi.", "id": user_col.id}, status=200)
 
         Collection.objects.filter(pk=collection.pk).update(downloaded_count=F('downloaded_count') + 1)
+        refresh_collection_scores(pk=collection.pk)
         return Response({"detail": "Tải bộ sưu tập thành công.", "id": user_col.id}, status=201)
 
     @action(detail=True, methods=['get'], url_path='bundle')
@@ -533,7 +535,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
             user_collection.save(update_fields=['version', 'updated_at'])
         return Response({"updated": True, "previous_version": previous, "current_version": collection.version, "conflicts": conflicts})
 
-    @action(detail=True, methods=['post'], url_path='upload')
+    @action(detail=True, methods=['post'], url_path='upload', permission_classes=[IsAuthenticated, NotBanned])
     def upload(self, request, pk=None, *args, **kwargs):
         """
         Phát hành nháp của user. Chỉ dòng nháp thật sự đổi nghĩa so với bản đang dùng mới được tính (thêm / đổi sense_id / xoá);

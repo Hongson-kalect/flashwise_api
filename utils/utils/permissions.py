@@ -87,3 +87,33 @@ class WordGenerateThrottle(SimpleRateThrottle):
 class FeedbackThrottle(WordGenerateThrottle):
     """Giới hạn gửi báo cáo / góp ý (chặn spam). Rate: DEFAULT_THROTTLE_RATES['feedback']."""
     scope = "feedback"
+
+
+def active_ban(user):
+    """Thông tin ban còn hiệu lực của user ({ban_reason, ban_expires_at}) hoặc None. Ban có hạn thì hết hạn tự mở."""
+    from django.db.models import Q
+    from user.models import UserProfile
+
+    if not user or not user.is_authenticated:
+        return None
+    return (
+        UserProfile.objects.filter(user=user, is_active=False)
+        .filter(Q(ban_expires_at__isnull=True) | Q(ban_expires_at__gt=timezone.now()))
+        .values('ban_reason', 'ban_expires_at').first()
+    )
+
+
+class NotBanned(BasePermission):
+    """
+    User bị ban (interact/moderation.py) không được làm việc người khác nhìn thấy: phát hành bộ, like, report.
+    Đọc thì luôn được; học, sync, tra từ, sửa nháp riêng không gắn quyền này nên vẫn dùng bình thường.
+    """
+
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return True
+        ban = active_ban(request.user)
+        if ban:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied({'detail': 'Account is banned', 'errorCode': 'user_banned', **ban})
+        return True

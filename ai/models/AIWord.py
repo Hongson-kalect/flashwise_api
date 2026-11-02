@@ -6,13 +6,14 @@ class AIWord(BaseModel):
     # Bỏ db_index=True ở đây vì đã có trong phần indexes bên dưới
     value = models.CharField(max_length=255) 
     language_code = models.CharField(max_length=10, default="en") # Nên có default rõ ràng
-    # Luồng chuẩn: PENDING -> PROCESSING -> COMPLETED, lỗi thì FAILED, từ không hợp lệ thì REJECTED
+    # Luồng chuẩn: PENDING -> PROCESSING -> COMPLETED, lỗi thì FAILED, từ không hợp lệ thì REJECTED, admin chặn thì BANNED
     STATUS_CHOICES = [
         ('PENDING', 'Pending'),
         ('PROCESSING', 'Processing'),
         ('COMPLETED', 'Completed'),
         ('FAILED', 'Failed'),
         ('REJECTED', 'Rejected'),
+        ('BANNED', 'Banned'), # Admin chặn (interact/moderation.py): get-word trả 404, không tạo lại
     ]
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='PENDING')
     description = models.TextField(null=True, blank=True)

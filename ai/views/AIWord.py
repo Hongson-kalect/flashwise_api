@@ -224,7 +224,7 @@ class AIWordViewSet(SoftDeleteViewSet):
 
         if word_instance is not None:
             state = word_instance.status
-            if state == 'REJECTED':
+            if state in ('REJECTED', 'BANNED'):
                 return _word_response('NOT_FOUND', 404, {'value': word, 'language_code': language_code})
             if state == 'COMPLETED':
                 return _personal(request, _respond_completed(cache_manager, word_instance, word, language_code, user_language_code))
@@ -274,6 +274,8 @@ class AIWordViewSet(SoftDeleteViewSet):
         updated_at = word.updated_at or word.created_at
         if word.status == 'PROCESSING' and updated_at and (timezone.now() - updated_at).total_seconds() < settings.WORD_PROCESSING_STALE_SECONDS:
             return Response({'detail': 'Word is being generated'}, status=status.HTTP_409_CONFLICT)
+        if word.status == 'BANNED':
+            return Response({'detail': 'Word is banned, unban it first', 'errorCode': 'word_banned'}, status=status.HTTP_409_CONFLICT)
         user_language_code = request.data.get('user_lang') or settings.BASE_LANGUAGE[0]
 
         cache_manager = WordCacheManager()

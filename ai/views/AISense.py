@@ -7,7 +7,7 @@ from django.db.models import ExpressionWrapper, F, FloatField, Q
 from django.db.models.functions import Cast
 from rest_framework import status
 from rest_framework.decorators import action
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 
 from ai.jobs import queue_translation
@@ -23,7 +23,10 @@ from interact.likes import set_like
 from interact.models import UserInteraction
 from ai.serializers.AISense import AISenseSerializer
 from ai.validators import MAX_DELTA_CHARS, METADATA_FIELDS, clean_contents, clean_metadata, is_lang, is_uuid
-from utils.utils.permissions import IsAdminOrReadOnly
+from utils.utils.permissions import IsAdminOrReadOnly, NotBanned
+from user.reputation import record
+from utils.redis.word_init import WordCacheManager
+from utils.utils.best_effort import best_effort
 from utils.utils.sense_handle import deep_merge, get_user_lang_sense
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 
@@ -43,6 +46,17 @@ TOP_SENSE_ORDERS = {
     'learned': 'learner_count',
     'liked': 'like_count',
 }
+
+
+def promoted_contents(sense):
+    """contents đầy đủ của nghĩa tuỳ chỉnh: delta áp lên nghĩa gốc; definition / usage user sửa chỉ giữ ngôn ngữ trong delta."""
+    base = sense.contents or (sense.original.contents if sense.original else {}) or {}
+    delta = sense.delta if isinstance(sense.delta, dict) else {}
+    merged = deep_merge(delta, base) if delta else dict(base)
+    for key in ('definition', 'usage'):
+        if isinstance(delta.get(key), dict):
+            merged[key] = dict(delta[key])
+    return merged
 
 
 def top_senses(language_code, by):
@@ -126,12 +140,42 @@ class AISenseViewSet(SoftDeleteViewSet):
         )
         return Response({'hidden': want, 'sense_id': str(sense.id)})
 
-    @action(detail=True, methods=['post', 'delete'], url_path='like', permission_classes=[IsAuthenticated])
+    @action(detail=True, methods=['post', 'delete'], url_path='like', permission_classes=[IsAuthenticated, NotBanned])
     def like(self, request, pk=None):
         """POST: thích (tim) nghĩa, DELETE: bỏ thích. Mỗi bản nghĩa (chính thức / tuỳ chỉnh) đếm riêng, gọi lại không đếm trùng."""
         sense = self.get_object()
         versions, like_count = set_like(request.user, AISense, 'sense', sense.id, request.method == 'POST')
         return Response({'liked': bool(versions), 'sense_id': str(sense.id), 'like_count': like_count})
+
+    @action(detail=True, methods=['post'], url_path='promote', permission_classes=[IsAdminUser])
+    def promote(self, request, pk=None):
+        """
+        Admin: biến nghĩa tuỳ chỉnh của user thành nghĩa chính thức của từ (nguồn bổ sung nghĩa tốt), tác giả được cộng uy tín.
+        Body: replace (mặc định true nếu nghĩa tách từ 1 nghĩa chính thức): nghĩa gốc thôi chính thức, nghĩa mới thay chỗ.
+        Nghĩa giữ original_id nên tiến độ học của mọi người với nghĩa gốc vẫn tiếp tục. Trường user đã sửa chỉ giữ ngôn ngữ
+        user viết, bản dịch cũ (đã lỗi thời) bị bỏ để get-word dịch bù.
+        """
+        sense = self.get_object()
+        if sense.is_official:
+            return _bad_request("Sense is already official")
+        original = sense.original
+        replace = request.data.get('replace', original is not None and original.is_official)
+        with transaction.atomic():
+            sense.contents = promoted_contents(sense)
+            sense.delta = {}
+            sense.is_official = True
+            sense.is_frozen = True
+            sense.quality_status = 'verified'
+            sense.updated_by = request.user
+            sense.save()
+            replaced = None
+            if replace and original is not None and original.is_official:
+                AISense.objects.filter(pk=original.pk).update(is_official=False, updated_at=timezone.now())
+                replaced = str(original.pk)
+            if sense.created_by_id and sense.created_by_id != request.user.id:
+                record(sense.created_by, 'sense_promoted', 'sense', sense.pk, by=request.user)
+        best_effort(WordCacheManager().cache_word_clear_specific, sense.language_code, sense.word_value)
+        return Response({'id': str(sense.id), 'is_official': True, 'replaced': replaced})
 
     @action(detail=False, methods=['get'], url_path='top')
     def top(self, request):

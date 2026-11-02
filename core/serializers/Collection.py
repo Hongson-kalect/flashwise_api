@@ -28,11 +28,20 @@ class CollectionBasicSerializer(BaseModelSerializer):
 # Dùng riêng cho hàm retrieve (Chi tiết kèm từ vựng)
 class CollectionDetailSerializer(BaseModelSerializer):
     senses = serializers.SerializerMethodField()
+    author_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Collection
-        fields = ['id', 'name', 'description', 'image_url', 'is_official', 'item_count', 'language_code', 'version', 'senses', 'invalid_words', 'pending_words']
+        fields = ['id', 'name', 'description', 'image_url', 'is_official', 'item_count', 'language_code', 'version', 'senses', 'invalid_words', 'pending_words', 'author_id', 'like_count']
         read_only_fields = fields
+
+    def get_author_id(self, obj):
+        # Id hồ sơ (UserProfile) của tác giả, dùng để report user; bộ chính thức không cần
+        if obj.is_official or not obj.created_by_id:
+            return None
+        from user.models import UserProfile
+        profile_id = UserProfile.objects.filter(user_id=obj.created_by_id).values_list('id', flat=True).first()
+        return str(profile_id) if profile_id else None
 
     def get_senses(self, obj):
         # Theo thứ tự người dùng sắp (display_order), bỏ nghĩa đã xoá khỏi bộ. Truyền sẵn items qua context để khỏi truy vấn lại

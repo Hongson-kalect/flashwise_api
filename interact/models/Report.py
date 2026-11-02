@@ -9,6 +9,7 @@ class Report(BaseModel):
         ("sense", "Sense"),
         ("collection", "Collection"),
         ("quiz", "Quiz"),
+        ("user", "User"), # target_id = UserProfile.id
     ]
     TYPE_CHOICES = [
             ("bug", "Bug"),
@@ -22,6 +23,13 @@ class Report(BaseModel):
         ("resolved", "Resolved"),
         ("ignored", "Ignored"),
     ]
+    # Kết quả xử lý (interact/views.py resolve_reports), quyết định cộng / trừ uy tín người report
+    OUTCOME_CHOICES = [
+        ("accepted", "Accepted"),   # Report đúng
+        ("duplicate", "Duplicate"), # Đúng nhưng đã có người báo / đã sửa: không cộng không trừ
+        ("rejected", "Rejected"),   # Không đúng
+        ("spam", "Spam"),           # Báo bừa / quấy rối
+    ]
 
 
     user = models.ForeignKey('auth.User', on_delete=models.CASCADE, related_name="reports")
@@ -34,10 +42,15 @@ class Report(BaseModel):
     message = models.TextField(blank=True, null=True)
     result = models.TextField(blank=True, null=True)  # phản hồi xử lý của admin
     is_active = models.BooleanField(default=True)
+    weight = models.FloatField(default=0.5) # Độ tin cậy của người report lúc gửi (user/reputation.py), cộng dồn để xếp hàng duyệt
+    outcome = models.CharField(max_length=20, choices=OUTCOME_CHOICES, blank=True, null=True)
+    resolved_by = models.ForeignKey('auth.User', on_delete=models.SET_NULL, null=True, blank=True, related_name="resolved_reports")
+    resolved_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "report"
         ordering = ["-created_at"]
+        indexes = [models.Index(fields=["status", "target_type", "target_id"])]
 
     def __str__(self):
         return f"Report({self.target_type}:{self.target_id})"

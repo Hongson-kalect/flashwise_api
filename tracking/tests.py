@@ -402,3 +402,72 @@ class ReviewStatsTests(SyncTestBase):
         UserCollection.objects.create(user=self.other, collection=collection)
         rows = self.client.get('/api/sync/pull/', {'tables': 'user_collection'}).data['tables']['user_collection']['items']
         self.assertEqual([(str(r['id']), str(r['collection_id']), r['version']) for r in rows], [(str(mine.id), str(collection.id), 2)])
+
+
+class LearnSessionTests(SyncTestBase):
+    """GET /api/learn/session/: thẻ đến hạn ôn trước, rồi nghĩa mới của bộ (tracking/learn.py)."""
+
+    def setUp(self):
+        super().setUp()
+        from core.models import CollectionItem, UserCollection
+        self.collection = Collection.objects.create(name='C', language_code='en', is_official=True, version=1)
+        self.senses = {}
+        cat = AIWord.objects.create(value='cat', language_code='en', status='COMPLETED')
+        for name, word in [('cat1', cat), ('cat2', cat), ('dog', None), ('bird', None), ('fish', None)]:
+            word = word or AIWord.objects.create(value=name, language_code='en', status='COMPLETED')
+            sense = AISense.objects.create(word=word, word_value=word.value, language_code='en', contents={'definition': {'en': {'value': name}}})
+            self.senses[name] = sense
+            CollectionItem.objects.create(collection=self.collection, sense=sense, original=sense, released=True, version=1,
+                                          value=word.value, display_order=len(self.senses))
+        UserCollection.objects.create(user=self.user, collection=self.collection, version=1)
+
+    def progress(self, name, **kwargs):
+        defaults = {'state': 2, 'repetitions': 3, 'stability': 5, 'level': 3,
+                    'last_reviewed_at': timezone.now() - timedelta(days=5), 'next_review_at': timezone.now() - timedelta(hours=1)}
+        return UserSenseProgress.objects.create(user=self.user, original_sense_id=self.senses[name].id, **{**defaults, **kwargs})
+
+    def session(self, **params):
+        return self.client.get('/api/learn/session/', {'collection_id': str(self.collection.id), 'user_lang': 'en', **params})
+
+    def ids(self, cards):
+        return [str(c['sense_id']) for c in cards]
+
+    def test_new_senses_follow_collection_order_one_sense_per_word(self):
+        data = self.session(count=2).data
+        self.assertEqual(self.ids(data['new']), [str(self.senses['cat1'].id), str(self.senses['dog'].id)])  # cat2 cùng từ, sang phiên sau
+        self.assertEqual((data['due'], data['due_count'], data['new_available']), ([], 0, 5))
+        self.assertEqual({str(s['id']) for s in data['senses']}, set(self.ids(data['new'])))
+        self.assertEqual(len(data['words']), 2)
+
+    def test_due_cards_first_lowest_recall_first(self):
+        self.progress('fish', stability=1)
+        self.progress('bird', stability=30)
+        self.progress('dog', next_review_at=timezone.now() + timedelta(days=3))  # chưa đến hạn
+        self.progress('cat2', is_hidden=True)
+        data = self.session(count=10).data
+        self.assertEqual(self.ids(data['due']), [str(self.senses['fish'].id), str(self.senses['bird'].id)])
+        self.assertLess(data['due'][0]['retrievability'], data['due'][1]['retrievability'])
+        self.assertEqual(self.ids(data['new']), [str(self.senses['cat1'].id)])  # đã có tiến độ thì không còn là từ mới
+        self.assertEqual(data['new_available'], 1)
+
+    def test_due_until_next_day_start_in_user_zone(self):
+        from tracking.learn import day_ends_at
+        UserSetting.objects.create(user=self.user, key='day_start_hour', value=4)
+        cutoff = day_ends_at(self.user)
+        self.assertEqual(cutoff.astimezone(ZoneInfo('Asia/Ho_Chi_Minh')).hour, 4)
+        self.assertTrue(timezone.now() < cutoff <= timezone.now() + timedelta(days=1))
+        self.progress('fish', next_review_at=cutoff - timedelta(minutes=1))
+        self.progress('bird', next_review_at=cutoff + timedelta(minutes=1))
+        self.assertEqual(self.ids(self.session().data['due']), [str(self.senses['fish'].id)])
+
+    def test_hidden_senses_and_validation(self):
+        from interact.models import UserInteraction
+        UserInteraction.objects.create(user=self.user, target_type='sense', target_id=self.senses['cat1'].id, interaction_type='hide', status=True)
+        self.assertEqual(self.ids(self.session(count=1).data['new']), [str(self.senses['cat2'].id)])
+
+        self.assertEqual(self.client.get('/api/learn/session/', {'user_lang': 'en'}).status_code, 400)
+        self.assertEqual(self.session(count='x').status_code, 400)
+        self.client.force_authenticate(self.other)
+        self.assertEqual(self.session().status_code, 404)  # chưa tải bộ
+        self.client.force_authenticate(None)
+        self.assertEqual(self.session().status_code, 401)

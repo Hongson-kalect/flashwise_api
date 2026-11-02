@@ -75,6 +75,19 @@ def load_bundle(user_collection, user):
 
 
 def build_bundle(user_collection, user, user_language_code, collection, items, senses):
+    return {
+        'user_collection': row(user_collection, USER_COLLECTION_COLUMNS),
+        'collection': row(collection, COLLECTION_COLUMNS),
+        'items': [row(item, ITEM_COLUMNS) for item in items],
+        **sense_tables(senses, user_language_code),
+    }
+
+
+def sense_tables(senses, user_language_code):
+    """
+    Các bảng ai_word / ai_sense / sense_metadata cho danh sách nghĩa (đã select_related word, metadata, original),
+    nội dung chỉ giữ ngôn ngữ gốc + user. Nghĩa thiếu bản dịch: đẩy hàng dịch theo từ, id nằm trong `pending`.
+    """
     langs = {user_language_code} | {s.language_code for s in senses}
     words, metadata, sense_rows = {}, {}, []
     missing_by_word = defaultdict(list)
@@ -106,9 +119,6 @@ def build_bundle(user_collection, user, user_language_code, collection, items, s
         pending.extend(str(s.id) for s, _ in rows)
 
     return {
-        'user_collection': row(user_collection, USER_COLLECTION_COLUMNS),
-        'collection': row(collection, COLLECTION_COLUMNS),
-        'items': [row(item, ITEM_COLUMNS) for item in items],
         'words': list(words.values()),
         'senses': sense_rows,
         'sense_metadata': list(metadata.values()),

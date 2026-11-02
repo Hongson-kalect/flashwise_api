@@ -141,7 +141,7 @@ def re_cache_word(word_ids):
         if word_instance is None:
             continue
         data = AIWordSerializer(word_instance).data
-        cache_manager.cache_word(word_instance.language_code, word_instance.id, word_instance.value, data.get('senses'))
+        cache_manager.cache_word(word_instance.language_code, word_instance.id, word_instance.value, data.get('senses'), word_fields=data)
         logger.info(f"Re-cache word completed: {word_instance.value}")
 
 

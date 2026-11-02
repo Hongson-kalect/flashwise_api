@@ -41,7 +41,7 @@ from utils.utils.best_effort import best_effort
 from ai.queries import load_word
 from utils.ai import claude
 from utils.ai.japanese import add_ruby
-from utils.ai.refine import render_refine_prompt, request_refinement, refine_word
+from utils.ai.refine import render_refine_prompt, request_refinement, refine_word, clean_ipas, refine_ipas
 
 def get_schema(mode='latin'):
     if mode == "complex":
@@ -116,6 +116,7 @@ async def ai_create_new_word_sema(word_info):
         models = settings.AI_DRAFT_MODELS
         ai_trunks = []
         sense_objs = []
+        word_ipas = []  # phát âm của cả từ (metadata.ipas), nghĩa không có ipas riêng
         valid = False
         rejected = False
         draft_model = None
@@ -158,6 +159,13 @@ async def ai_create_new_word_sema(word_info):
                                     break
                                 valid = True
                                 draft_model = model
+                                word_ipas = clean_ipas(word_meta.get("ipas"))
+                                # App gộp WORD vào thông tin từ (có id để hiện các nghĩa đến sau). Bản nháp nên không vào cache.
+                                w_task = asyncio.create_task(socket_message(socket_room, {"type": "WORD", "payload": {
+                                    "id": word_id, "value": word_value, "language_code": language_code, "ipas": word_ipas,
+                                }}))
+                                background_tasks.add(w_task)
+                                w_task.add_done_callback(background_tasks.discard)
 
                         if not valid:
                             continue
@@ -180,7 +188,6 @@ async def ai_create_new_word_sema(word_info):
                                     "pos": sense.get("pos"),
                                     "level": sense.get("level"),
                                     "register": sense.get("register"),
-                                    "ipas": sense.get("ipas"),
                                     "contents": {
                                         "definition": {language_code: sense.get("definition")},
                                         "usage": {language_code: sense.get("usage")},
@@ -240,7 +247,7 @@ async def ai_create_new_word_sema(word_info):
                             await socket_message(socket_room, {"type": "SENSE_REMOVED", "payload": [s['id'] for s in sense_objs]})
                         except Exception as socket_error:
                             logger.warning('Gửi socket SENSE_REMOVED lỗi: %s', socket_error)
-                    ai_trunks, sense_objs, valid, draft_model = [], [], False, None
+                    ai_trunks, sense_objs, valid, draft_model, word_ipas = [], [], False, None, []
 
         marks['stream_end'] = time.monotonic()
 
@@ -256,7 +263,7 @@ async def ai_create_new_word_sema(word_info):
         refine_task = None
         if settings.AI_REFINE_ENABLED:
             best_effort(cache.cache_word_set_stage, language_code, word_value, 'refine')
-            refine_task = asyncio.create_task(request_refinement(render_refine_prompt(word_value, language_code, sense_objs)))
+            refine_task = asyncio.create_task(request_refinement(render_refine_prompt(word_value, language_code, sense_objs, word_ipas)))
 
         # Đợi các task chạy ngầm (socket, dịch, metadata) xong rồi mới đụng vào nội dung các nghĩa
         # Có trần thời gian: một lệnh gọi Gemini treo / 503 liên tục không được giữ người dùng chờ vô hạn.
@@ -282,12 +289,15 @@ async def ai_create_new_word_sema(word_info):
             word_value, language_code, sense_objs, refinement,
             draft_model=draft_model, socket_room=socket_room, cache=cache,
         )
+        word_ipas, ipas_changed = refine_ipas(word_ipas, refinement)
+        if ipas_changed:
+            logger.info('Refine %s: sửa phát âm %s', word_value, word_ipas)
         marks['applied'] = time.monotonic()
 
         try:
-            await sync_to_async(save_sense)(sense_objs, word_id, replace_ids)
+            await sync_to_async(save_sense)(sense_objs, word_id, replace_ids, word_ipas)
             data = await sync_to_async(build_word_payload)(word_id)
-            cache.cache_word(language_code=language_code, word_id=word_id, word_val=word_value, data=data.get('senses'))
+            cache.cache_word(language_code=language_code, word_id=word_id, word_val=word_value, data=data.get('senses'), word_fields=data)
 
             # Gửi socket FULL chốt hạ dữ liệu cuối cùng
             await socket_message(socket_room, {"type": "FULL_SENSE", "payload": data}, True)
@@ -317,7 +327,7 @@ def build_word_payload(word_id):
     return AIWordSerializer(load_word(id=word_id)).data
 
 
-def save_sense(sense_obj, word_id, replace_ids=()):
+def save_sense(sense_obj, word_id, replace_ids=(), word_ipas=None):
     """
     Ghi các nghĩa (đã chuẩn hoá) và metadata của chúng trong 1 transaction, rồi đánh dấu từ COMPLETED.
     replace_ids: nghĩa của lần tạo trước, thôi là nghĩa chính thức (không xoá: bộ từ đang trỏ tới).
@@ -337,7 +347,8 @@ def save_sense(sense_obj, word_id, replace_ids=()):
         AISense.objects.bulk_create(sense_instances)
         if replace_ids:
             AISense.objects.filter(id__in=list(replace_ids), word_id=word_id).update(is_official=False, updated_at=timezone.now())
-        AIWord.objects.filter(id=word_id).update(status='COMPLETED', updated_at=timezone.now())
+        word_update = {'ipas': word_ipas} if word_ipas else {}  # draft không có phát âm thì giữ cái đang có (admin / seeder đã nhập)
+        AIWord.objects.filter(id=word_id).update(status='COMPLETED', updated_at=timezone.now(), **word_update)
 
 async def ai_create_new_word(user, word_instance, language_code, user_language_code, socket_room):
     print('create new word')

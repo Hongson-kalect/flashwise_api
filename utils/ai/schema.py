@@ -113,9 +113,24 @@ word_schema = {
                     "description": "False if the input is gibberish, a typo that doesn't exist, or non-linguistic noise." 
                 },
                 "is_common": { "type": "BOOLEAN" },
-                "language_confidence": { "type": "NUMBER", "description": "0-1 score of how sure AI is about the language" }
+                "language_confidence": { "type": "NUMBER", "description": "0-1 score of how sure AI is about the language" },
+                # Phát âm ở cấp từ (dùng chung cho mọi nghĩa): không bắt AI ghi phát âm từng nghĩa để bớt bịa
+                "ipas": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "value": { "type": "STRING" },
+                            "label": {
+                                "type": "STRING",
+                                "description": "US or UK for English; READING for a reading in another script. Never ROMAN (a copy of the same pronunciation)."
+                            },
+                        },
+                        "required": ["value", "label"]
+                    }
+                },
             },
-            "required": ["should_be_saved", "is_common", "language_confidence"]
+            "required": ["should_be_saved", "is_common", "language_confidence", "ipas"]
         },
         # Đập bỏ "entries", chuyển thẳng thành một mảng phẳng chứa toàn bộ các senses
         "senses": {
@@ -168,20 +183,6 @@ word_schema = {
                         },
                         "description": "Register of this sense; ['neutral'] for an ordinary word."
                     },
-                    "ipas": {
-                        "type": "ARRAY",
-                        "items": {
-                            "type": "OBJECT",
-                            "properties": {
-                                "value": { "type": "STRING" },
-                                "label": {
-                                    "type": "STRING",
-                                    "description": "US or UK for English; READING for a reading in another script. Never ROMAN (a copy of the same pronunciation)."
-                                },
-                            },
-                            "required": ["value", "label"]
-                        }
-                    },
                 },
                 "required": [
                     "pos", # Khóa bảo chứng để Client chạy hàm gom nhóm O(n)
@@ -191,7 +192,6 @@ word_schema = {
                     "is_offensive",
                     "level",
                     "register",
-                    "ipas"
                 ]
             }
         }
@@ -400,7 +400,7 @@ def _build_japanese_schema():
         node["properties"]["roman"] = dict(roman)
         node["required"].append("roman")
     sense_props["usage"]["properties"]["roman"] = dict(roman)  # usage có thể rỗng nên không bắt buộc
-    sense_props["ipas"]["items"]["properties"]["roman"] = dict(roman)
+    schema["properties"]["metadata"]["properties"]["ipas"]["items"]["properties"]["roman"] = dict(roman)
     return schema
 
 

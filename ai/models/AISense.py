@@ -23,7 +23,9 @@ class AISense(BaseModel):
     pos = models.CharField(max_length=20, blank=True, null=True)
     level = models.CharField(max_length=20, blank=True, null=True)
     register = ArrayField(default=list, base_field=models.CharField(max_length=50), blank=True)
-    ipas = models.JSONField(default=list) # {label, audio, value, reading, roman, ruby}
+    # Chỉ điền khi nghĩa này đọc khác cả từ (read, lead, 行...); rỗng thì dùng AIWord.ipas / AIWord.audio
+    ipas = models.JSONField(default=list) # [{label, value, roman}]
+    audio = models.CharField(max_length=1000, null=True, blank=True)
 
     # --- Nguồn gốc nội dung AI (pipeline sinh 2 lần: draft -> refine rồi mới ghi db) ---
     QUALITY_CHOICES = [

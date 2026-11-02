@@ -5,6 +5,7 @@ from utils.redis.client import get_cache_client
 from utils.utils.uuidv7 import generate_uuid7
 
 TTL = 300  # 5 phút
+WORD_FIELDS = ('ipas', 'audio')  # trường cấp từ lưu cùng word trong cache (nghĩa không có thì app dùng của từ)
 
 
 def _has_value(node):
@@ -98,7 +99,8 @@ class WordCacheManager:
             return False, initial_data
 
     # ================= FINAL CACHE =================
-    def cache_word(self, language_code, word_id, word_val, data=[]):
+    def cache_word(self, language_code, word_id, word_val, data=[], word_fields=None):
+        """word_fields: dữ liệu từ (vd AIWordSerializer) để lấy các trường cấp từ WORD_FIELDS (phát âm, âm thanh)."""
         key = self._key(language_code, word_val)
 
         # 2. CHUẨN HÓA ĐẦU VÀO: Biến thành dict chuẩn dạng {sense_id: sense}
@@ -114,12 +116,16 @@ class WordCacheManager:
 
         languages = compute_languages(senses_dict.values(), language_code)
 
+        word_node = {
+            "id": str(word_id),
+            "value": word_val,
+            "language_code": language_code,
+        }
+        for field in WORD_FIELDS:
+            word_node[field] = (word_fields or {}).get(field)
+
         redis_data = {
-            "word": {
-                "id": str(word_id),
-                "value": word_val,
-                "language_code": language_code
-            },
+            "word": word_node,
             "senses": senses_dict,
             "languages": languages, # user_lang nằm trong đây thì get-word trả luôn, không cần dò thiếu bản dịch
             "status": "CACHED",

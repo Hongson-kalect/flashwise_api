@@ -13,10 +13,10 @@ class AISenseSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = AISense
-        fields = ['id', 'word_value', 'metadata', 'contents', 'delta','created_at','is_frozen','is_offensive','pos','level','register','ipas','image_preview','is_official','original','quality_status','ai_pass','voted','devoted','like_count']
+        fields = ['id', 'word_value', 'metadata', 'contents', 'delta','created_at','is_frozen','is_offensive','pos','level','register','ipas','audio','image_preview','is_official','original','quality_status','ai_pass','voted','devoted','like_count']
 
 class AISenseSerializerBasic(serializers.ModelSerializer):
 
     class Meta:
         model = AISense
-        fields = ['id', "word_value", 'preview', 'created_at','updated_at', 'is_offensive', 'pos', 'level','register','ipas','quality_status']
+        fields = ['id', "word_value", 'preview', 'created_at','updated_at', 'is_offensive', 'pos', 'level','register','ipas','audio','quality_status']

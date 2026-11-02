@@ -16,6 +16,9 @@ class AIWord(BaseModel):
     ]
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='PENDING')
     description = models.TextField(null=True, blank=True)
+    # Phát âm chung của từ: AI chỉ sinh ở cấp từ. Nghĩa có ipas / audio riêng thì dùng của nghĩa (sense > word)
+    ipas = models.JSONField(default=list, blank=True) # [{label, value, roman}]
+    audio = models.CharField(max_length=1000, null=True, blank=True) # Đường dẫn file âm thanh; rỗng thì app đọc bằng giọng máy
 
     class Meta:
         db_table = "ai_word"

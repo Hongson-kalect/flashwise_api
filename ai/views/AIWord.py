@@ -141,7 +141,7 @@ def _respond_completed(cache_manager, word_instance, word, language_code, user_l
         queue_translation(word_instance.id, language_code, user_language_code, missing, current_senses)
         return _word_response('Word incomplete.', 206, body)
 
-    cache_manager.cache_word(language_code, word_instance.id, word, senses_by_id)
+    cache_manager.cache_word(language_code, word_instance.id, word, senses_by_id, word_fields=data)
     return _word_response('DATABASE_DATA', 200, body)
 
 

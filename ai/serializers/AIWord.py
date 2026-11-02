@@ -16,7 +16,7 @@ class AIWordSerializer(BaseModelSerializer):
 
     class Meta:
         model = AIWord
-        fields = ['id', 'value', 'language_code', "senses"]
+        fields = ['id', 'value', 'language_code', 'ipas', 'audio', "senses"]
     # contents = serializers.JSONField()
     # class Meta:
     #     model = AIWord

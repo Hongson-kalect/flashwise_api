@@ -45,6 +45,25 @@ def target_author(target_type, target):
     return None
 
 
+def collection_ban(collection):
+    """
+    Lần ban đang có hiệu lực với bộ (ban trực tiếp, hoặc ẩn theo lần ban tác giả có hide_content), None nếu không bị ban.
+    Bộ do tác giả xoá cũng is_active=False nhưng không có lần ban nào, người đã tải vẫn học được.
+    """
+    if collection.is_active is not False:
+        return None
+    last = ModerationAction.objects.filter(target_type='collection', target_id=collection.pk).order_by('-created_at').first()
+    if last is not None and last.action == 'ban':
+        return last
+    profile = UserProfile.objects.filter(user_id=collection.created_by_id).first() if collection.created_by_id else None
+    if profile is None:
+        return None
+    last = ModerationAction.objects.filter(target_type='user', target_id=profile.pk).order_by('-created_at').first()
+    if last is not None and last.action == 'ban' and str(collection.pk) in (last.affected or {}).get('collections', []):
+        return last
+    return None
+
+
 def _clear_word_cache(word):
     if word is not None:
         best_effort(WordCacheManager().cache_word_clear_specific, word.language_code, word.value)

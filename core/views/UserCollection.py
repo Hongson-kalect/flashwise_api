@@ -18,6 +18,7 @@ from core.scores import refresh_collection_scores
 from core.serializers import CollectionDetailSerializer
 from core.models import Collection,CollectionItem, UserCollection
 from core.bundle import build_bundle, load_bundle, make_etag
+from interact.moderation import collection_ban
 from core.queries import current_items, live_items, visible_collections
 from core.serializers.UserCollection import UserCollectionSerializer
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
@@ -28,6 +29,12 @@ from rest_framework.decorators import action
 from django.contrib.auth.models import User
 from django.forms.models import model_to_dict
 from django.db.models import Prefetch, Case, When, F, Value, Func, ExpressionWrapper, IntegerField
+
+def collection_banned_response(collection):
+    """Bộ bị ban: người đã tải cũng không nhận được nội dung nữa, app xoá / ẩn bộ khi gặp mã này."""
+    return Response({"detail": "Collection banned", "errorCode": "collection_banned", "collection_id": str(collection.id)},
+                    status=status.HTTP_403_FORBIDDEN)
+
 
 def visible_items(user_collection, user):
     """Các dòng user này nhìn thấy trong bộ: bản đã phát hành tới version user đang dùng, và dòng nháp của chính user."""
@@ -148,7 +155,8 @@ class UserCollectionViewSet(SoftDeleteViewSet):
     def bundle(self, request, pk=None):
         """
         Gói học offline của 1 bộ (core/bundle.py). Query: user_lang (bắt buộc), etag (gói lần trước).
-        etag khớp thì chỉ trả {etag, unchanged: true}; pending = id nghĩa còn chờ dịch sang user_lang.
+        etag khớp thì chỉ trả {etag, unchanged: true}; pending = id nghĩa còn chờ dịch sang user_lang,
+        banned = id nghĩa bị ban (app xoá bản đã lưu). Bộ bị ban: 403 errorCode collection_banned.
         """
         user_language_code = request.query_params.get('user_lang')
         if not is_lang(user_language_code):
@@ -159,11 +167,14 @@ class UserCollectionViewSet(SoftDeleteViewSet):
         if not user_col.collection:
             return Response({"detail": "Collection not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        collection, items, senses = load_bundle(user_col, request.user)
-        etag = make_etag(user_col, collection, items, senses, user_language_code)
+        if collection_ban(user_col.collection):
+            return collection_banned_response(user_col.collection)
+
+        collection, items, senses, banned = load_bundle(user_col, request.user)
+        etag = make_etag(user_col, collection, items, senses, user_language_code, banned)
         if request.query_params.get('etag') == etag:
             return Response({"etag": etag, "unchanged": True})
-        data = build_bundle(user_col, request.user, user_language_code, collection, items, senses)
+        data = build_bundle(user_col, request.user, user_language_code, collection, items, senses, banned)
         return Response({"etag": etag, "unchanged": False, **data})
     
     # @action(detail=True, methods=['post'], url_path='get-collection')

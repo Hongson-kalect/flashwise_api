@@ -43,6 +43,14 @@ class ModerationTestBase(APITestCase):
     def as_admin(self):
         self.client.force_authenticate(self.admin)
 
+    def ban(self, target_type, target_id, **extra):
+        self.as_admin()
+        return self.client.post('/api/moderation/ban/', {'target_type': target_type, 'target_id': str(target_id), 'reason': 'x', **extra}, format='json')
+
+    def unban(self, target_type, target_id):
+        self.as_admin()
+        return self.client.post('/api/moderation/unban/', {'target_type': target_type, 'target_id': str(target_id)}, format='json')
+
 
 class ReportTests(ModerationTestBase):
     def test_report_dedupes_and_checks_target(self):
@@ -96,14 +104,6 @@ class ReportTests(ModerationTestBase):
 
 
 class BanTests(ModerationTestBase):
-    def ban(self, target_type, target_id, **extra):
-        self.as_admin()
-        return self.client.post('/api/moderation/ban/', {'target_type': target_type, 'target_id': str(target_id), 'reason': 'x', **extra}, format='json')
-
-    def unban(self, target_type, target_id):
-        self.as_admin()
-        return self.client.post('/api/moderation/unban/', {'target_type': target_type, 'target_id': str(target_id)}, format='json')
-
     def test_user_ban_blocks_public_actions_only_and_unban_restores(self):
         collection = Collection.objects.create(name='Bob', language_code='en', released=True, created_by=self.bob)
         frozen = AISense.objects.create(word=self.word, word_value='bank', language_code='en', is_official=False, is_frozen=True, created_by=self.bob, contents={})
@@ -195,3 +195,55 @@ class PromoteAndScoreTests(ModerationTestBase):
         self.assertEqual(Collection.objects.get(pk=trusted.pk).score, 10)  # uy tín chỉ cộng tối đa 10
         names = [c['name'] for c in self.client.get('/api/collections/', {'lang': 'en'}).data['results']]
         self.assertEqual(names[:2], ['Good', 'Trusted'])
+
+
+class BannedContentForDownloadersTests(ModerationTestBase):
+    """Người đã tải bộ cũng không nhận nội dung bị ban nữa (bundle, chọn thẻ học / ôn)."""
+
+    def setUp(self):
+        super().setUp()
+        from core.models import CollectionItem, UserCollection
+        self.collection = Collection.objects.create(name='Bob', language_code='en', released=True, version=1, created_by=self.bob)
+        cat = AIWord.objects.create(value='cat', language_code='en', status='COMPLETED')
+        self.cat = AISense.objects.create(word=cat, word_value='cat', language_code='en', is_official=True, contents={'definition': {'en': 'Cat.'}})
+        for order, sense in enumerate((self.sense, self.cat)):
+            CollectionItem.objects.create(collection=self.collection, sense=sense, original=sense, released=True, version=1,
+                                          value=sense.word_value, display_order=order)
+        self.user_collection = UserCollection.objects.create(user=self.alice, collection=self.collection, version=1)
+
+    def bundle(self):
+        self.client.force_authenticate(self.alice)
+        return self.client.get(f'/api/user-collections/{self.user_collection.id}/bundle/', {'user_lang': 'en'})
+
+    def test_banned_sense_and_word_leave_bundle_and_learning(self):
+        etag = self.bundle().data['etag']
+        self.ban('sense', self.sense.id)
+        data = self.bundle().data
+        self.assertNotEqual(data['etag'], etag)
+        self.assertEqual([i['value'] for i in data['items']], ['cat'])
+        self.assertEqual(data['banned'], [str(self.sense.id)])  # app xoá bản đã lưu
+        res = self.client.get('/api/learn/new/', {'collection_id': str(self.collection.id), 'user_lang': 'en', 'count': 5})
+        self.assertEqual([c['sense_id'] for c in res.data['new']], [self.cat.id])
+
+        self.unban('sense', self.sense.id)
+        self.ban('word', self.cat.word_id)
+        data = self.bundle().data
+        self.assertEqual(([i['value'] for i in data['items']], data['banned']), (['bank'], [str(self.cat.id)]))
+
+    def test_banned_collection_blocks_bundle_but_author_delete_does_not(self):
+        Collection.objects.filter(pk=self.collection.pk).update(is_active=False)  # tác giả xoá: người đã tải vẫn học
+        self.assertEqual(self.bundle().status_code, 200)
+        Collection.objects.filter(pk=self.collection.pk).update(is_active=True)
+
+        self.ban('collection', self.collection.id)
+        res = self.bundle()
+        self.assertEqual((res.status_code, res.data['errorCode']), (403, 'collection_banned'))
+        res = self.client.get('/api/learn/review/', {'collection_id': str(self.collection.id), 'user_lang': 'en'})
+        self.assertEqual(res.status_code, 403)
+        self.unban('collection', self.collection.id)
+        self.assertEqual(self.bundle().status_code, 200)
+
+        self.ban('user', self.profile(self.bob).id, hide_content=True)  # ẩn theo lần ban tác giả
+        self.assertEqual(self.bundle().status_code, 403)
+        self.unban('user', self.profile(self.bob).id)
+        self.assertEqual(self.bundle().status_code, 200)

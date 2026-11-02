@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from django.utils import timezone
 
 from ai.models import AISense
-from ai.queries import hidden_sense_ids
+from ai.queries import banned_sense_ids, hidden_sense_ids
 from core.queries import live_items
 from tracking.fsrs import retrievability
 from tracking.models import UserSenseProgress
@@ -69,9 +69,10 @@ def is_new(progress):
 
 
 def collection_cards(user, user_collection):
-    """Dòng bộ từ user đang thấy, bỏ nghĩa đã ẩn, theo thứ tự hiển thị: {original_key: dòng}."""
+    """Dòng bộ từ user đang thấy, bỏ nghĩa đã ẩn / bị ban, theo thứ tự hiển thị: {original_key: dòng}."""
     items = live_items(user_collection.collection_id, user_collection.version, user)
     hidden = hidden_sense_ids(user, {i.sense_id for i in items} | {i.original_id for i in items if i.original_id})
+    hidden |= banned_sense_ids({i.sense_id for i in items})
     return {original_key(i): i for i in items if str(i.sense_id) not in hidden and str(i.original_id) not in hidden}
 
 
@@ -121,6 +122,7 @@ def pick_review(user, mode, count, user_collection=None, now=None):
     progresses = [p for p in progresses if not is_new(p)]
     if cards is None:
         hidden = hidden_sense_ids(user, [p.original_sense_id for p in progresses])
+        hidden |= banned_sense_ids({p.original_sense_id for p in progresses})
         progresses = [p for p in progresses if str(p.original_sense_id) not in hidden]
 
     min_level = min_level_for(user, mode)

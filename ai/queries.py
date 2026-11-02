@@ -67,6 +67,20 @@ def hidden_sense_ids(user, ids=None):
     return {str(target) for target in rows.values_list('target_id', flat=True)}
 
 
+def banned_sense_ids(ids):
+    """
+    Nghĩa không được đưa tới user nữa dù đã tải / đang học: bị ban (is_active=False), thuộc từ bị ban,
+    hoặc nghĩa riêng dạng delta mà bản gốc bị ban.
+    """
+    ids = [i for i in ids if i]
+    if not ids:
+        return set()
+    rows = AISense.objects.filter(id__in=ids).filter(
+        Q(is_active=False) | Q(word__status='BANNED') | (Q(original__is_active=False) & (Q(contents={}) | Q(contents__isnull=True)))
+    )
+    return {str(i) for i in rows.values_list('id', flat=True)}
+
+
 def user_senses(user, word_id):
     """Nghĩa tuỳ chỉnh của user cho 1 từ, mới nhất trước."""
     return (

@@ -5,9 +5,12 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from ai.models import AISense
+from ai.queries import banned_sense_ids
 from ai.validators import is_lang, is_uuid
 from core.bundle import sense_tables
 from core.models import UserCollection
+from core.views.UserCollection import collection_banned_response
+from interact.moderation import collection_ban
 from tracking.learn import NEW_MODES, REVIEW_MODES, original_key, pick_new, pick_review
 
 
@@ -43,12 +46,18 @@ def _user_collection(request, required):
     ).first()
     if user_collection is None:
         return None, Response({'detail': 'Collection not downloaded'}, status=status.HTTP_404_NOT_FOUND)
+    if collection_ban(user_collection.collection):
+        return None, collection_banned_response(user_collection.collection)
     return user_collection, None
 
 
 def _with_senses(cards, user_language_code):
-    """Thêm bảng words / senses / sense_metadata (như bundle) cho các thẻ; bỏ thẻ mà nghĩa không còn."""
-    senses = list(AISense.objects.filter(id__in=[c['sense_id'] for c in cards]).select_related('word', 'metadata', 'original').order_by('id'))
+    """Thêm bảng words / senses / sense_metadata (như bundle) cho các thẻ; bỏ thẻ mà nghĩa không còn hoặc bị ban."""
+    banned = banned_sense_ids({c['sense_id'] for c in cards})
+    senses = list(
+        AISense.objects.filter(id__in=[c['sense_id'] for c in cards]).exclude(id__in=banned)
+        .select_related('word', 'metadata', 'original').order_by('id')
+    )
     existing = {str(s.id) for s in senses}
     return [c for c in cards if str(c['sense_id']) in existing], sense_tables(senses, user_language_code)
 

@@ -5,6 +5,8 @@ mỗi bảng là danh sách dòng đúng tên cột SQLite phía app (flashwise/
 - Dòng bộ từ: bản user đang thấy (live_items: nháp của chính user thắng bản phát hành tới version user dùng).
 - Nội dung nghĩa chỉ giữ ngôn ngữ gốc + ngôn ngữ của user. Thiếu bản dịch thì đẩy hàng dịch, trả id trong `pending`
   (dịch xong nghĩa đổi updated_at nên etag đổi, app tải lại).
+- Nghĩa bị ban (ai/queries.banned_sense_ids) bị bỏ khỏi gói cùng dòng bộ từ trỏ tới nó, id nằm trong `banned`
+  để app xoá bản đã lưu. Bộ bị ban thì view trả 403 collection_banned, không có gói.
 - etag: băm các mốc cập nhật của mọi thứ trong gói; app gửi lại etag cũ, không đổi thì chỉ nhận {unchanged: true}.
 """
 import hashlib
@@ -13,6 +15,7 @@ from collections import defaultdict
 
 from ai.jobs import queue_translation
 from ai.models import AISense
+from ai.queries import banned_sense_ids
 from ai.serializers.AISense import AISenseSerializer
 from core.queries import live_items
 from utils.utils.sense_handle import get_user_lang_sense
@@ -54,8 +57,8 @@ def _stamp(value):
     return value.isoformat() if value else ''
 
 
-def make_etag(user_collection, collection, items, senses, user_language_code):
-    parts = [
+def make_etag(user_collection, collection, items, senses, user_language_code, banned=()):
+    parts = [list(banned), 
         user_language_code, user_collection.version, _stamp(user_collection.updated_at), _stamp(collection.updated_at),
         [(str(i.id), str(i.sense_id), i.display_order, _stamp(i.updated_at)) for i in items],
         [(str(s.id), _stamp(s.updated_at), _stamp(s.word.updated_at), _stamp(s.metadata.updated_at) if s.metadata else '') for s in senses],
@@ -64,22 +67,28 @@ def make_etag(user_collection, collection, items, senses, user_language_code):
 
 
 def load_bundle(user_collection, user):
-    """Dòng bộ từ đang hiệu lực + nghĩa của chúng (kèm từ, metadata, bản gốc để lấy nội dung cho nghĩa dạng delta)."""
+    """
+    Dòng bộ từ đang hiệu lực + nghĩa của chúng (kèm từ, metadata, bản gốc để lấy nội dung cho nghĩa dạng delta).
+    Trả (collection, items, senses, banned): dòng / nghĩa bị ban đã bị bỏ, banned = id các nghĩa đó.
+    """
     collection = user_collection.collection
     items = live_items(collection.id, user_collection.version, user)
+    banned = banned_sense_ids({item.sense_id for item in items})
+    items = [item for item in items if str(item.sense_id) not in banned]
     senses = list(
         AISense.objects.filter(id__in=[item.sense_id for item in items])
         .select_related('word', 'metadata', 'original').order_by('id')
     )
-    return collection, items, senses
+    return collection, items, senses, sorted(banned)
 
 
-def build_bundle(user_collection, user, user_language_code, collection, items, senses):
+def build_bundle(user_collection, user, user_language_code, collection, items, senses, banned=()):
     return {
         'user_collection': row(user_collection, USER_COLLECTION_COLUMNS),
         'collection': row(collection, COLLECTION_COLUMNS),
         'items': [row(item, ITEM_COLUMNS) for item in items],
         **sense_tables(senses, user_language_code),
+        'banned': list(banned),
     }
 
 

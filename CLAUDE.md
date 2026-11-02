@@ -60,6 +60,7 @@ Thiết kế ở `D:\Code\flashwise\docs\learning-design.md` (học cụm / vu�
 
 ## Lệnh, kiểm tra, commit
 Dùng skill `backend-verify` (check, makemigrations, test trong Docker, commit giữ đúng CRLF/LF).
+- Heredoc dài trong Bash tool (Git Bash) hay lỗi `unexpected EOF while looking for matching ''` (đã gặp nhiều lần với script Python ~100+ dòng có `'''`, backtick, tiếng Việt), không chạy được dòng nào. Script sửa nhiều file: viết ra file trong scratchpad bằng Write rồi chạy `C:/Users/mouse/.fwvenv/Scripts/python <file>`; heredoc chỉ dùng cho đoạn ngắn. `$TEMP` trong Git Bash là đường dẫn Windows (`C:\Users\...`), Write cần đường dẫn tuyệt đối.
 
 ## Còn dở
 - Tiếng Nhật dùng schema phẳng như Latin + `roman` (AI) + `ruby` (fugashi, dạng `[漢字|かな]`); refine đổi văn bản thì `roman` của đoạn đó bị bỏ. zh/ko/... dùng schema phẳng thuần (chưa có reading / pinyin). `nonlatin_schema` cũ không còn dùng.

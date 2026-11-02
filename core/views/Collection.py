@@ -2,6 +2,7 @@ import logging
 import uuid
 
 from django.conf import settings
+from django.core.cache import cache
 from django.db import transaction
 from django.db.models import Count, F, Max, Q
 from rest_framework import status
@@ -30,7 +31,11 @@ from utils.utils.uuidv7 import generate_uuid7
 logger = logging.getLogger(__name__)
 
 MAX_COLLECTION_SENSES = 2000
-COLLECTION_ORDERINGS = ('like_count', '-like_count', 'downloaded_count', '-downloaded_count', 'created_at', '-created_at', 'score', '-score')
+COLLECTION_ORDERINGS = ('like_count', '-like_count', 'downloaded_count', '-downloaded_count', 'created_at', '-created_at', 'score', '-score',
+                        'view_count', '-view_count')
+# Tên dễ nhớ cho app: popular = điểm xếp hạng (core/scores.py), newest = mới nhất
+ORDERING_ALIASES = {'popular': '-score', 'newest': '-created_at'}
+VIEW_DEDUPE_SECONDS = 24 * 3600
 
 
 def best_official_senses(words, language_code):
@@ -88,6 +93,25 @@ def start_pending_words(user, collection_id, to_start, existing, language_code, 
             queue.sadd(f'collection_id:{word}', str(collection_id))
 
 
+def parse_tag_ids(raw):
+    """Query tag=id1,id2 -> danh sách UUID hợp lệ (bỏ giá trị sai)."""
+    return [part for part in (raw or '').split(',') if is_uuid(part.strip())][:20]
+
+
+def count_view(request, collection):
+    """+1 lượt xem, mỗi người (hoặc IP nếu chưa đăng nhập) tính 1 lần / bộ / ngày; tác giả xem bộ mình không tính."""
+    user = request.user
+    if user.is_authenticated and collection.created_by_id == user.pk:
+        return
+    viewer = f'u{user.pk}' if user.is_authenticated else f"ip{request.META.get('HTTP_X_FORWARDED_FOR', '').split(',')[0].strip() or request.META.get('REMOTE_ADDR')}"
+    try:
+        first = cache.add(f'collection_view:{collection.pk}:{viewer}', 1, VIEW_DEDUPE_SECONDS)
+    except Exception:
+        return  # cache lỗi: bỏ đếm, không làm hỏng việc xem bộ
+    if first:
+        Collection.objects.filter(pk=collection.pk).update(view_count=F('view_count') + 1)
+
+
 def _bad_request(message, **extra):
     return Response({"message": message, **extra}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -115,20 +139,24 @@ class CollectionViewSet(SoftDeleteViewSet):
                 queryset = queryset.filter(is_official=params['official'] == 'true')
             if params.get('mine') == 'true' and self.request.user.is_authenticated:
                 queryset = queryset.filter(created_by=self.request.user)
+            tag_ids = parse_tag_ids(params.get('tag'))
+            if tag_ids:
+                queryset = queryset.filter(tags__id__in=tag_ids).distinct()
             q = (params.get('q') or '').strip()[:100]
             if q:
                 queryset = queryset.filter(name__icontains=q)  # có GinIndex trigram trên name nên icontains không quét cả bảng
-            ordering = params.get('ordering')
+            ordering = ORDERING_ALIASES.get(params.get('ordering'), params.get('ordering'))
             if ordering in COLLECTION_ORDERINGS:
                 queryset = queryset.order_by(ordering, '-id')
             else:
                 queryset = queryset.order_by('-score', '-created_at', '-id')  # core/scores.py
             # Số từ của bản đang hiệu lực (item_count, tính lúc tạo / phát hành); đếm thẳng bảng trung gian sẽ cộng cả nháp và mọi version
-            queryset = queryset.annotate(senses_count=F('item_count'))
+            queryset = queryset.annotate(senses_count=F('item_count')).prefetch_related('tags')
         return queryset
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
+        count_view(request, instance)
         if instance.pending_words:
             instance = self._resolve_pending(instance)
         # Bản phát hành mới nhất; người xem có nháp trong bộ (tác giả, người đã tải) thì nháp của họ thắng. Nháp người khác không lộ ra

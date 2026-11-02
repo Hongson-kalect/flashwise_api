@@ -30,7 +30,7 @@ Cần Docker Desktop đang chạy và file `.env`. Dùng project riêng `fwtest`
 ```bash
 docker compose -p fwtest up -d --build db redis web
 MSYS_NO_PATHCONV=1 docker compose -p fwtest exec -T web python manage.py migrate
-MSYS_NO_PATHCONV=1 docker compose -p fwtest exec -T -e DJANGO_DEBUG=True web python manage.py test core.tests ai.tests ai.test_senses user.tests user.test_accounts tracking.tests interact.tests   # nhãn module; app label trần (ai user) bị lỗi trùng tên tests.py
+MSYS_NO_PATHCONV=1 docker compose -p fwtest exec -T -e DJANGO_DEBUG=True web python manage.py test core.tests core.test_discover ai.tests ai.test_senses ai.test_ops user.tests user.test_accounts tracking.tests interact.tests   # nhãn module; app label trần (ai user) bị lỗi trùng tên tests.py
 docker compose -p fwtest stop
 ```
 Muốn DB test sạch: dừng db, xoá `postgres_data/` (chỉ khi chắc đó là DB test), bật lại.

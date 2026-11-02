@@ -4,7 +4,8 @@ from ai.serializers.AISense import AISenseSerializerBasic
 from core.models.Collection import Collection
 from utils.models.Tag import Tag
 
-LIST_FIELDS = ['id', 'name', 'description', 'image_url', 'senses_count', 'is_official', 'language_code', 'like_count', 'downloaded_count']
+LIST_FIELDS = ['id', 'name', 'description', 'image_url', 'senses_count', 'is_official', 'language_code', 'like_count', 'downloaded_count',
+               'view_count', 'tags', 'created_at']
 BASIC_FIELDS = ['id', 'name', 'description', 'image_url', 'is_official', 'item_count', 'language_code', 'version']
 
 
@@ -32,7 +33,8 @@ class CollectionDetailSerializer(BaseModelSerializer):
 
     class Meta:
         model = Collection
-        fields = ['id', 'name', 'description', 'image_url', 'is_official', 'item_count', 'language_code', 'version', 'senses', 'invalid_words', 'pending_words', 'author_id', 'like_count']
+        fields = ['id', 'name', 'description', 'image_url', 'is_official', 'item_count', 'language_code', 'version', 'senses', 'invalid_words', 'pending_words', 'author_id', 'like_count',
+                  'view_count', 'downloaded_count', 'tags']
         read_only_fields = fields
 
     def get_author_id(self, obj):

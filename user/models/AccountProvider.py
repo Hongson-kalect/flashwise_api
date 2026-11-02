@@ -8,6 +8,7 @@ class AccountProvider(BaseModel):
         ('apple', 'Apple'),
         ('github', 'GitHub'),
         ('x', 'X (Twitter)'),
+        ('email', 'Email'),  # provider_user_id = email viết thường, mật khẩu nằm ở auth.User
     ]
 
     user = models.ForeignKey('auth.User', on_delete=models.CASCADE, related_name='providers')
@@ -19,10 +20,12 @@ class AccountProvider(BaseModel):
     
     # URL profile hoặc access token từ bên thứ 3 (Thường dùng để sync lại avatar/friendlist nếu cần)
     profile_url = models.URLField(blank=True, null=True) 
-    access_token = models.TextField(blank=True, null=True) 
+    access_token = models.TextField(blank=True, null=True) # Apple: refresh token để thu hồi khi xoá tài khoản
 
     class Meta:
         db_table = 'account_provider'
+        # 1 tài khoản Google / Apple / email chỉ gắn với 1 user
+        constraints = [models.UniqueConstraint(fields=['provider', 'provider_user_id'], name='uniq_provider_identity')]
         # Một user không được liên kết 2 tài khoản Google khác nhau
         unique_together = ('user', 'provider') 
         indexes = [

@@ -210,6 +210,8 @@ REST_FRAMEWORK = {
         'user': os.getenv('THROTTLE_USER', '300/minute'),
         'word_generate': os.getenv('THROTTLE_WORD_GENERATE', '60/hour'),
         'feedback': os.getenv('THROTTLE_FEEDBACK', '20/day'),
+        'auth': os.getenv('THROTTLE_AUTH', '20/minute'), # đăng nhập / đăng ký / quên mật khẩu, theo IP
+        'export': os.getenv('THROTTLE_EXPORT', '5/day'), # tải toàn bộ dữ liệu của mình
     },
 }
 
@@ -284,3 +286,29 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # Phiên bản app: dưới APP_MIN_VERSION thì app buộc người dùng cập nhật (GET /api/app-config/)
 APP_MIN_VERSION = int(os.getenv('APP_MIN_VERSION', '1'))
 APP_LATEST_VERSION = int(os.getenv('APP_LATEST_VERSION', '1'))
+
+# Đăng nhập bằng tài khoản thật (user/providers.py). Thiếu key thì cách đăng nhập đó trả 503 provider_not_configured,
+# thêm key vào .env là dùng được, không cần sửa code.
+# Google: client id OAuth của từng nền tảng (web / iOS / Android), id token phải có aud là 1 trong các id này
+GOOGLE_CLIENT_IDS = _env_list('GOOGLE_CLIENT_IDS', '')
+# Apple: bundle id của app (và service id nếu đăng nhập trên web), là aud của identity token
+APPLE_CLIENT_IDS = _env_list('APPLE_CLIENT_IDS', '')
+# Apple: key "Sign in with Apple" để đổi authorization code lấy refresh token và thu hồi khi xoá tài khoản
+# (Apple yêu cầu). Thiếu thì vẫn đăng nhập được, chỉ bỏ bước thu hồi.
+APPLE_TEAM_ID = os.getenv('APPLE_TEAM_ID', '').strip()
+APPLE_KEY_ID = os.getenv('APPLE_KEY_ID', '').strip()
+APPLE_PRIVATE_KEY = os.getenv('APPLE_PRIVATE_KEY', '').replace('\\n', '\n').strip() # nội dung file .p8, xuống dòng viết \n
+
+# Gửi mail (mã đặt lại mật khẩu). Không có EMAIL_HOST: DEBUG thì in mail ra log, không DEBUG thì quên mật khẩu trả 503.
+EMAIL_HOST = os.getenv('EMAIL_HOST', '').strip()
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True').lower() in ('1', 'true', 'yes')
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', EMAIL_HOST_USER or 'no-reply@flashwise.local')
+EMAIL_BACKEND = (
+    'django.core.mail.backends.smtp.EmailBackend' if EMAIL_HOST
+    else 'django.core.mail.backends.console.EmailBackend'
+)
+EMAIL_ENABLED = bool(EMAIL_HOST) or DEBUG
+PASSWORD_RESET_CODE_MINUTES = int(os.getenv('PASSWORD_RESET_CODE_MINUTES', '15'))

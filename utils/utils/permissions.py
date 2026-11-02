@@ -84,9 +84,22 @@ class WordGenerateThrottle(SimpleRateThrottle):
         return self.cache_format % {"scope": self.scope, "ident": ident}
 
 
+class AuthThrottle(SimpleRateThrottle):
+    """Đăng nhập / đăng ký / quên mật khẩu: giới hạn theo IP (chặn dò mật khẩu). Rate: DEFAULT_THROTTLE_RATES['auth']."""
+    scope = "auth"
+
+    def get_cache_key(self, request, view):
+        return self.cache_format % {"scope": self.scope, "ident": self.get_ident(request)}
+
+
 class FeedbackThrottle(WordGenerateThrottle):
     """Giới hạn gửi báo cáo / góp ý (chặn spam). Rate: DEFAULT_THROTTLE_RATES['feedback']."""
     scope = "feedback"
+
+
+class ExportThrottle(WordGenerateThrottle):
+    """Tải toàn bộ dữ liệu của mình (nặng). Rate: DEFAULT_THROTTLE_RATES['export']."""
+    scope = "export"
 
 
 def active_ban(user):

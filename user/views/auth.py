@@ -53,6 +53,32 @@ def _token_response(tokens, user):
     })
 
 
+def _device_info(data):
+    return {
+        "os": (data.get("os") or "unknown")[:50],
+        "app_version": (data.get("app_version") or "")[:50],
+        "device_name": data.get("device_name"),
+        "push_token": data.get("push_token"),
+    }
+
+
+def _device_for(user, data):
+    """Thiết bị (user, device_id) cho lần đăng nhập tài khoản thật; cập nhật thông tin gửi kèm. Trả (device, Response lỗi)."""
+    device_id = (data.get("device_id") or "").strip()
+    if not device_id or len(device_id) > 255:
+        return None, Response({"detail": "Missing device_id", "errorCode": "device_id_missing"}, status=status.HTTP_400_BAD_REQUEST)
+    info = _device_info(data)
+    device = Device.objects.filter(user=user, device_id=device_id).first()
+    if device is None:
+        return Device.objects.create(user=user, device_id=device_id, **info), None
+    for field, value in info.items():
+        if value and (field != "os" or value != "unknown"):
+            setattr(device, field, value)
+    device.is_deleted = False
+    device.save()
+    return device, None
+
+
 def _read_refresh_token(request):
     # App gửi camelCase (refreshToken), giữ thêm snake_case cho client khác
     return request.data.get("refreshToken") or request.data.get("refresh_token")
@@ -73,12 +99,7 @@ def device_login(request):
     if not device_id or len(device_id) > 255:
         return Response({"detail": "Missing device_id", "errorCode": "device_id_missing"}, status=status.HTTP_400_BAD_REQUEST)
 
-    device_info = {
-        "os": (request.data.get("os") or "unknown")[:50],
-        "app_version": (request.data.get("app_version") or "")[:50],
-        "device_name": request.data.get("device_name"),
-        "push_token": request.data.get("push_token"),
-    }
+    device_info = _device_info(request.data)
 
     device = Device.objects.select_related("user").filter(device_id=device_id, is_deleted=False).order_by("-last_seen_at").first()
 
@@ -92,7 +113,8 @@ def device_login(request):
 
     user = device.user
     profile = UserProfile.objects.filter(user=user).first()
-    if not user.is_active or (profile and not profile.is_active):
+    # Bị ban (profile.is_active=False) vẫn đăng nhập để học tiếp, chỉ bị chặn việc công khai (NotBanned)
+    if not user.is_active:
         return Response({"detail": "Account disabled", "errorCode": "account_disabled"}, status=status.HTTP_403_FORBIDDEN)
 
     if profile is None or profile.tier != "guest":
@@ -130,7 +152,10 @@ def refresh_token(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def logout(request):
-    """Body: refreshToken (không bắt buộc). Có token thì đóng phiên đó, không có thì đóng mọi phiên của user."""
+    """
+    Body: refreshToken (không bắt buộc). Có token thì đóng phiên đó, không có thì đóng mọi phiên của user.
+    Thiết bị của phiên bị đóng thôi nhận thông báo đẩy (xoá push_token).
+    """
     raw = _read_refresh_token(request)
     sessions = UserSession.objects.filter(user=request.user, is_active=True)
     if raw:
@@ -138,7 +163,9 @@ def logout(request):
             sessions = sessions.filter(refresh_token_jti=RefreshToken(raw)["jti"])
         except TokenError:
             pass
+    device_ids = list(sessions.values_list("device_id", flat=True))
     sessions.update(is_active=False)
+    Device.objects.filter(pk__in=device_ids).update(push_token=None)
     return Response(status=status.HTTP_204_NO_CONTENT)
 
 

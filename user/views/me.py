@@ -77,4 +77,6 @@ def device(request):
 @throttle_classes([AnonRateThrottle])
 def app_config(request):
     """App gọi lúc mở: dưới min_version thì bắt cập nhật."""
-    return Response({'min_version': settings.APP_MIN_VERSION, 'latest_version': settings.APP_LATEST_VERSION})
+    # media_base_url + khoá file (image_preview, audio, image_url...) = URL đầy đủ; giá trị đã là http(s) thì dùng nguyên
+    return Response({'min_version': settings.APP_MIN_VERSION, 'latest_version': settings.APP_LATEST_VERSION,
+                     'media_base_url': settings.MEDIA_PUBLIC_URL})

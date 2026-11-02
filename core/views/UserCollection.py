@@ -19,6 +19,7 @@ from core.serializers import CollectionDetailSerializer
 from core.models import Collection,CollectionItem, UserCollection
 from core.bundle import build_bundle, load_bundle, make_etag
 from interact.moderation import collection_ban
+from asset.media import clean_media_param
 from core.queries import current_items, live_items, visible_collections
 from core.serializers.UserCollection import UserCollectionSerializer
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
@@ -238,11 +239,12 @@ class UserCollectionViewSet(SoftDeleteViewSet):
 
         delta = request.data.get('delta') or {}
         metadata = request.data.get('metadata')
-        image = request.data.get('image')
         if not isinstance(delta, dict) or len(json.dumps(delta)) > MAX_DELTA_CHARS:
             return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "Invalid delta"})
-        if image is not None and (not isinstance(image, str) or len(image) > 1000):
-            return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "Invalid image"})
+        image, error = clean_media_param(user, request.data.get('image'), 'image')
+        audio, audio_error = clean_media_param(user, request.data.get('audio'), 'audio')
+        if error or audio_error:
+            return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": error or audio_error})
 
         with transaction.atomic():
             user_collection = get_object_or_404(self.get_queryset().select_for_update(), id=user_collection_id)
@@ -250,7 +252,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
             if item.is_deleted:
                 return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "Item is deleted"})
 
-            new_sense = apply_sense_edit(user, item.sense, delta, metadata, image)
+            new_sense = apply_sense_edit(user, item.sense, delta, metadata, image, audio)
 
             if item.released:
                 draft = CollectionItem.objects.filter(
@@ -563,6 +565,9 @@ class UserCollectionViewSet(SoftDeleteViewSet):
             value = request.data.get(key)
             if value is not None and (not isinstance(value, str) or len(value) > limit):
                 return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": f"Invalid {key}"})
+        _, image_error = clean_media_param(current_user, request.data.get('image'), 'image')  # ảnh bộ: khoá file đã tải lên hoặc URL
+        if image_error:
+            return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": image_error})
 
         with transaction.atomic():
             user_collection = get_object_or_404(

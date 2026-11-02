@@ -40,8 +40,32 @@ def delete_account(user):
             'kept_public_collections': kept_collections,
             'apple_revoked': all(revoked) if revoked else None,
         }
+        orphan_media = _unused_media(user)
         user.delete()
+    # File lưu ngoài DB: xoá sau khi giao dịch xong (lỗi xoá file không làm hỏng việc xoá tài khoản)
+    result['deleted_media'] = sum(_delete_file(media) for media in orphan_media)
     return result
+
+
+def _unused_media(user):
+    """File user tải lên mà nội dung công khai còn giữ lại (nghĩa đóng băng, bộ đã phát hành) không dùng tới."""
+    from asset.models import MediaFile
+    used = set()
+    for sense in AISense.objects.filter(created_by=user).only('audio', 'image_preview'):
+        used.update(filter(None, (sense.audio, sense.image_preview)))
+    for collection in Collection.objects.filter(created_by=user, released=True).only('image_url', 'metadatas'):
+        used.add(collection.image_url)
+        used.update(meta.get('image') for meta in collection.metadatas or [] if isinstance(meta, dict))
+    return list(MediaFile.objects.filter(created_by=user).exclude(key__in=[k for k in used if k]))
+
+
+def _delete_file(media):
+    from asset.media import delete_media
+    try:
+        delete_media(media)
+        return 1
+    except Exception:
+        return 0
 
 
 def _rows(queryset, exclude=()):
@@ -53,6 +77,8 @@ def export_data(user):
     from interact.models import Feedback, LearnSession, Report, UserInteraction, UserNote
     from core.models import UserCollection
     from tracking.models import DayLearnLog, ReviewLog, UserSenseProgress
+    from asset.models import MediaFile
+    from core.storages import media_url
     from user.models import Device, UserProfile, UserSetting
 
     # Uy tín là chỉ số ẩn (user/reputation.py) nên không xuất
@@ -75,4 +101,5 @@ def export_data(user):
         'interactions': _rows(UserInteraction.objects.filter(user=user)),
         'reports': _rows(Report.objects.filter(user=user), exclude=('weight',)),
         'feedback': _rows(Feedback.objects.filter(user=user)),
+        'media': [{**row, 'url': media_url(row['key'])} for row in _rows(MediaFile.objects.filter(created_by=user))],
     }

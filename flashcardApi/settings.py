@@ -298,6 +298,21 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 APP_MIN_VERSION = int(os.getenv('APP_MIN_VERSION', '1'))
 APP_LATEST_VERSION = int(os.getenv('APP_LATEST_VERSION', '1'))
 
+# Lưu file (core/storages.py): có đủ R2_* thì lưu lên Cloudflare R2, không thì lưu đĩa (MEDIA_ROOT).
+# DB chỉ lưu khoá tương đối (vd images/v1/a.webp, media/<user>/<id>.webp); app ghép MEDIA_PUBLIC_URL (trả trong app-config)
+# nên đổi nơi lưu chỉ cần chép file + đổi env, không phải sửa dữ liệu.
+R2_ACCOUNT_ID = os.getenv('R2_ACCOUNT_ID', '').strip()
+R2_ACCESS_KEY_ID = os.getenv('R2_ACCESS_KEY_ID', '').strip()
+R2_SECRET_ACCESS_KEY = os.getenv('R2_SECRET_ACCESS_KEY', '').strip()
+R2_BUCKET = os.getenv('R2_BUCKET', '').strip()
+R2_PUBLIC_URL = os.getenv('R2_PUBLIC_URL', '').strip() # domain công khai của bucket (r2.dev hoặc domain riêng)
+R2_ENABLED = all((R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET, R2_PUBLIC_URL))
+MEDIA_PUBLIC_URL = (R2_PUBLIC_URL if R2_ENABLED else os.getenv('MEDIA_PUBLIC_URL', 'http://localhost:8000' + MEDIA_URL)).rstrip('/') + '/'
+MEDIA_IMAGE_MAX_BYTES = int(os.getenv('MEDIA_IMAGE_MAX_BYTES', str(5 * 1024 * 1024)))
+MEDIA_AUDIO_MAX_BYTES = int(os.getenv('MEDIA_AUDIO_MAX_BYTES', str(2 * 1024 * 1024)))
+MEDIA_IMAGE_MAX_SIDE = int(os.getenv('MEDIA_IMAGE_MAX_SIDE', '1280')) # ảnh user tải lên được thu nhỏ + đổi sang WebP (bỏ EXIF)
+MEDIA_UPLOADS_PER_DAY = int(os.getenv('MEDIA_UPLOADS_PER_DAY', '50'))
+
 # Đăng nhập bằng tài khoản thật (user/providers.py). Thiếu key thì cách đăng nhập đó trả 503 provider_not_configured,
 # thêm key vào .env là dùng được, không cần sửa code.
 # Google: client id OAuth của từng nền tảng (web / iOS / Android), id token phải có aud là 1 trong các id này

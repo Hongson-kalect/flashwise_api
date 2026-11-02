@@ -23,6 +23,7 @@ from interact.likes import set_like
 from interact.models import UserInteraction
 from ai.serializers.AISense import AISenseSerializer
 from ai.validators import MAX_DELTA_CHARS, METADATA_FIELDS, clean_contents, clean_metadata, is_lang, is_uuid
+from asset.media import clean_media_param
 from utils.utils.permissions import IsAdminOrReadOnly, NotBanned
 from user.reputation import record
 from utils.redis.word_init import WordCacheManager
@@ -266,12 +267,16 @@ class AISenseViewSet(SoftDeleteViewSet):
         contents = clean_contents(request.data.get('contents'))
         if not contents.get('definition', {}).get(word_instance.language_code):
             return _bad_request("Missing definition")
+        audio, error = clean_media_param(user, request.data.get('audio'), 'audio')
+        image, image_error = clean_media_param(user, request.data.get('image'), 'image')
+        if error or image_error:
+            return _bad_request(error or image_error)
 
         with transaction.atomic():
             metadata = AISenseMetadata.objects.create(**clean_metadata(raw_metadata), created_by=user)
             sense_instance = AISense.objects.create(
                 word=word_instance, word_value=word_instance.value, metadata=metadata,
-                is_frozen=None, contents=contents, created_by=user,
+                is_frozen=None, contents=contents, created_by=user, audio=audio or None, image_preview=image or None,
                 language_code=word_instance.language_code, is_official=False, is_ai_created=False,
             )
 
@@ -300,14 +305,15 @@ class AISenseViewSet(SoftDeleteViewSet):
             return _bad_request("Invalid sense_id or user_lang")
         if not isinstance(delta, dict) or len(json.dumps(delta)) > MAX_DELTA_CHARS:
             return _bad_request("Invalid delta")
-        image = request.data.get('image')
-        if image is not None and (not isinstance(image, str) or len(image) > 1000):
-            return _bad_request("Invalid image")
+        image, error = clean_media_param(user, request.data.get('image'), 'image')
+        audio, audio_error = clean_media_param(user, request.data.get('audio'), 'audio')
+        if error or audio_error:
+            return _bad_request(error or audio_error)
 
         sense = self.get_queryset().filter(id=sense_id).first()
         if not sense:
             return Response({"message": "Sense not found"}, status=status.HTTP_404_NOT_FOUND)
-        sense = apply_sense_edit(user, sense, delta, raw_metadata, image)
+        sense = apply_sense_edit(user, sense, delta, raw_metadata, image, audio)
 
         data = AISenseSerializer(sense).data
         data['contents'] = self._user_contents(sense, user_language_code)

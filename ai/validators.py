@@ -12,6 +12,12 @@ MAX_DELTA_CHARS = 20000
 
 LANG_RE = re.compile(r'^[A-Za-z]{2,3}([_-][A-Za-z0-9]{2,8})?$')
 
+# Nội dung nâng cao do user / admin / seeder gõ tay (AI không sinh), đa ngôn ngữ như definition: {lang: {value}}
+ADVANCED_KEYS = ('pro_tip', 'cultural_note', 'etymology', 'grammar_note', 'explanation')
+# Từ liên quan của riêng nghĩa này, viết bằng ngôn ngữ của từ: danh sách chuỗi
+RELATED_KEYS = ('synonyms', 'antonyms', 'related')
+MAX_RELATED = 20
+
 # Các trường client được phép đặt trên AISenseMetadata
 METADATA_FIELDS = ('image_link', 'advanced', 'tags', 'image_keywords', 'image_metadata')
 
@@ -54,11 +60,14 @@ def _clean_by_lang(node):
 
 
 def clean_contents(contents):
-    """contents của nghĩa: definition, usage (mỗi cái theo ngôn ngữ), examples (danh sách), translations (ngôn ngữ -> danh sách từ)."""
+    """
+    contents của nghĩa: definition, usage, các khoá nâng cao ADVANCED_KEYS (mỗi cái theo ngôn ngữ), examples (danh sách),
+    translations (ngôn ngữ -> danh sách từ), synonyms / antonyms / related (danh sách từ cùng ngôn ngữ với từ đang tra).
+    """
     if not isinstance(contents, dict):
         return {}
     out = {}
-    for key in ('definition', 'usage'):
+    for key in ('definition', 'usage', *ADVANCED_KEYS):
         langs = _clean_by_lang(contents.get(key))
         if langs:
             out[key] = langs
@@ -77,6 +86,12 @@ def clean_contents(contents):
                     translations[lang] = words
         if translations:
             out['translations'] = translations
+
+    for key in RELATED_KEYS:
+        if isinstance(contents.get(key), list):
+            words = [w.strip()[:100] for w in contents[key][:MAX_RELATED] if isinstance(w, str) and w.strip()]
+            if words:
+                out[key] = words
     return out
 
 

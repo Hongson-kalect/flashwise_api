@@ -30,7 +30,7 @@ Sync push / pull (`tracking/sync.py`) đã nhận / trả các trường mới. 
 - **Cần làm, theo thứ tự**:
   1. ~~Gói học offline `GET user-collections/{id}/bundle` + pull `user_collection`~~ (xong 2026-11-02; `collection_items` đi theo bundle, không sync từng dòng).
   1b. ~~`AISense.global_difficulty` / `learner_count` + seed key setting ở app~~ (xong 2026-11-02). Tiếp theo phía app: `fsrsService`, `gradeMapper`, `levelPolicy`, `sessionBuilder` (learning-design.md mục 6).
-  2. Cho admin / seeder nhập nội dung cấp cao: quy ước key trong `AISense.contents` (`pro_tip`, `cultural_note`, `etymology`, `grammar_note`, `explanation`, đa ngôn ngữ như definition), kiểm tra `update-sense` / Django admin cho phép các key này.
+  2. ~~Nội dung cấp cao: key trong `AISense.contents`~~ (xong 2026-11-02: `pro_tip`, `cultural_note`, `etymology`, `grammar_note`, `explanation`, `synonyms`, `antonyms`, `related`; xem CLAUDE.md).
   3. AI đánh dấu vị trí từ trong câu ví dụ (cho bài điền chỗ trống với từ biến đổi `runs`, `ran`).
   4. Sau: tối ưu tham số FSRS riêng từng user từ `review_log` (`is_fsrs=1`), chấm phát âm trả phí (VIP), thống kê phương pháp theo `mode`.
 

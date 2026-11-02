@@ -27,6 +27,7 @@ urlpatterns = [
     path('api/', include('ai.urls')),
     path('api/', include('tracking.urls')),
     path('api/', include('interact.urls')),
+    path('api/', include('asset.urls')),
 ]
 
 if settings.DEBUG:

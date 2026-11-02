@@ -6,6 +6,7 @@ django.setup()
 import asyncio
 import json
 import logging
+import socket
 from django.utils import timezone
 from asgiref.sync import sync_to_async
 
@@ -26,13 +27,25 @@ from utils.ai.translate import ai_create_translate_sema
 from utils.celery.fetch_image import get_image_by_keyword
 from utils.utils.sense_handle import merge_translations
 from ai.queries import load_word
+from django.conf import settings
+from utils.ai.rate_limit import COOLDOWN_KEY
 
 # --- CẤU HÌNH ---
 REDIS_URL = 'redis://redis:6379/0'
-WORD_SEMA_LIMIT = 5 
-COLLECTION_WORD_SEMA_LIMIT = 5 
-IMAGE_SEMA_LIMIT = 10 
-TRANS_SEMA_LIMIT = 20
+WORD_SEMA_LIMIT = settings.WORD_SEMA_LIMIT
+COLLECTION_WORD_SEMA_LIMIT = settings.COLLECTION_WORD_SEMA_LIMIT
+IMAGE_SEMA_LIMIT = 10
+TRANS_SEMA_LIMIT = settings.TRANS_SEMA_LIMIT
+
+# Hàng đợi tin cậy: job lấy ra được chuyển sang list "đang làm" riêng của worker (BLMOVE), làm xong mới xoá.
+# Worker chết thì heartbeat hết hạn, worker còn sống trả các job đang làm dở về đầu hàng đợi (tối đa JOB_MAX_REQUEUES lần).
+WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
+HEARTBEAT_KEY = "worker:alive:{}"
+HEARTBEAT_SECONDS = 30
+REAP_INTERVAL = 30
+# Hàng đợi gọi Claude: đang bị giới hạn (ai_cooldown:anthropic) thì tạm không nhận job mới
+QUEUE_PROVIDER = {"redis_word": "anthropic", "redis_collection_word": "anthropic"}
+TERMINAL_WORD_STATUS = ('COMPLETED', 'REJECTED', 'BANNED')
 BATCH_SIZE = 500
 FLUSH_INTERVAL = 3 
 # Cấu hình danh sách các hàng đợi mà Flusher cần quét qua
@@ -53,11 +66,25 @@ def save_to_postgres_sync(batch_data, task_type):
     # Thực tế: Model.objects.bulk_create(...) hoặc bulk_update(...)
 
 # --- TẦNG XỬ LÝ LOGIC WORKER ---
-async def handle_task(job, sema, task_type):
-    """Xử lý core logic task, đảm bảo giải phóng semaphore ở khối finally"""
+def processing_key(queue, worker_id=WORKER_ID):
+    return f"{queue}:processing:{worker_id}"
+
+
+def word_already_done(job):
+    """Job tạo từ mà từ đã xong (job bị đẩy trùng / được trả về sau khi worker chết): bỏ qua, trừ khi đang tạo lại."""
+    if job.get('replace_sense_ids') or not job.get('word_id'):
+        return False
+    return AIWord.objects.filter(id=job['word_id'], status__in=TERMINAL_WORD_STATUS).exists()
+
+
+async def handle_task(job, sema, task_type, raw=None, queue=None):
+    """Xử lý core logic task, đảm bảo giải phóng semaphore và xác nhận job (xoá khỏi list đang làm) ở khối finally"""
     time_start = timezone.now()
     try:
         if task_type == 'word':
+            if await sync_to_async(word_already_done)(job):
+                logger.info(f"[WORD] Bỏ qua job {job.get('value')}: từ đã xong")
+                return
             await ai_create_new_word_sema(job)
         elif task_type == 'image':
             await get_image_by_keyword(job)
@@ -107,6 +134,11 @@ async def handle_task(job, sema, task_type):
     finally:
         # CHÌA KHÓA VÀNG: Trả lại ghế trống cho consumer nhặt việc tiếp
         sema.release()
+        if raw is not None and queue:
+            try:
+                await redis_client.lrem(processing_key(queue), 1, raw)
+            except Exception as e:
+                logger.warning(f"[ACK] Không xoá được job khỏi list đang làm {queue}: {e}")
 
 def save_translated_contents(senses, source_language):
     """
@@ -153,22 +185,84 @@ async def consume_queue(queue_name, sema, task_type):
             # Chặn tại đây, nếu hết ghế trống tiến trình sẽ dừng lại không spam Redis
             await sema.acquire()
 
-            # Nhặt việc từ Redis với timeout chống treo
-            raw_data = await redis_client.blpop(queue_name, timeout=5)
-            if not raw_data:
+            # Nhà cung cấp AI đang báo hết hạn mức: chờ hết thời gian nghỉ rồi mới nhận job mới
+            provider = QUEUE_PROVIDER.get(queue_name)
+            if provider:
+                wait_ms = await redis_client.pttl(COOLDOWN_KEY.format(provider))
+                if wait_ms and wait_ms > 0:
+                    sema.release()
+                    logger.info(f"[COOLDOWN] {provider} đang bị giới hạn, {queue_name} tạm dừng {wait_ms / 1000:.1f}s")
+                    await asyncio.sleep(min(wait_ms / 1000, 30))
+                    continue
+
+            # Nhặt việc sang list đang làm của worker này (làm xong mới xoá), timeout chống treo
+            raw = await redis_client.blmove(queue_name, processing_key(queue_name), 5, "LEFT", "RIGHT")
+            if not raw:
                 sema.release() # Trả lại ghế nếu hàng chờ trống
                 continue
 
             logger.info(f"[CONSUMER-LOOP] Chạy vòng lặp {queue_name}")
 
-            job = json.loads(raw_data[1])
-            
+            try:
+                job = json.loads(raw)
+            except ValueError:
+                logger.error(f"[BAD-JOB] {queue_name}: job không phải JSON, bỏ: {raw[:200]}")
+                await redis_client.lrem(processing_key(queue_name), 1, raw)
+                sema.release()
+                continue
+
             # Tạo task chạy ngầm độc lập
-            asyncio.create_task(handle_task(job, sema, task_type))
+            asyncio.create_task(handle_task(job, sema, task_type, raw, queue_name))
 
         except Exception as e:
             logger.error(f"[LOOP-ERROR] Lỗi vòng lặp Consumer {queue_name}: {e}")
             await asyncio.sleep(1)
+
+async def heartbeat():
+    """Báo worker còn sống; hết hạn (worker chết / bị tắt) thì worker khác thu hồi job đang làm dở."""
+    while True:
+        try:
+            await redis_client.set(HEARTBEAT_KEY.format(WORKER_ID), 1, ex=HEARTBEAT_SECONDS)
+        except Exception as e:
+            logger.warning(f"[HEARTBEAT] lỗi: {e}")
+        await asyncio.sleep(HEARTBEAT_SECONDS / 3)
+
+
+async def requeue_orphans(client=None):
+    """
+    Trả job đang làm dở của worker đã chết về đầu hàng đợi. Mỗi lần trả tăng _requeued; quá JOB_MAX_REQUEUES thì bỏ
+    (job có thể chính là thứ làm sập worker). Trả số job đã trả về.
+    """
+    client = client or redis_client
+    moved = 0
+    async for key in client.scan_iter(match="*:processing:*"):
+        queue, worker_id = key.split(":processing:", 1)
+        if worker_id == WORKER_ID or await client.exists(HEARTBEAT_KEY.format(worker_id)):
+            continue
+        while (raw := await client.rpop(key)) is not None:
+            try:
+                job = json.loads(raw)
+            except ValueError:
+                continue
+            job["_requeued"] = job.get("_requeued", 0) + 1
+            if job["_requeued"] > settings.JOB_MAX_REQUEUES:
+                logger.error(f"[REQUEUE] Bỏ job {queue} sau {job['_requeued'] - 1} lần trả về: {str(job)[:200]}")
+                continue
+            await client.lpush(queue, json.dumps(job, default=str))
+            moved += 1
+    if moved:
+        logger.warning(f"[REQUEUE] Trả {moved} job của worker đã dừng về hàng đợi")
+    return moved
+
+
+async def reaper():
+    while True:
+        try:
+            await requeue_orphans()
+        except Exception as e:
+            logger.error(f"[REQUEUE] lỗi: {e}", exc_info=True)
+        await asyncio.sleep(REAP_INTERVAL)
+
 
 async def flush_buffer_to_db(redis_client, batch_size=BATCH_SIZE):
     """Worker tổng quát: Một mình cân hết tất cả các loại bảng và hành động ghi DB"""
@@ -366,6 +460,8 @@ async def main():
         
         # Flusher quản lý trút DB ngầm (Bật lên khi Sơn đưa cấu hình lưu kết quả vào redis)
         flush_buffer_to_db(redis_client),
+        heartbeat(),
+        reaper(),
     ]
 
     logger.info("--- ⚡ FLASHWISE ASYNC WORKER ONLINE VÀ SẴN SÀNG ⚡ ---")

@@ -387,7 +387,12 @@ async def request_refinement(prompt):
     Gọi Claude (tắt thinking, độ kỹ AI_REFINE_EFFORT), thử lần lượt AI_REFINE_MODELS.
     Trả {'data': dict, 'model': str}, hoặc None nếu mọi model đều lỗi / quá hạn.
     """
-    for model in settings.AI_REFINE_MODELS:
+    from utils.ai.rate_limit import is_rate_limited, wait_before_retry
+
+    models = list(settings.AI_REFINE_MODELS)
+    limited = 0
+    while models:
+        model = models[0]
         try:
             async with claude.client() as client:
                 response = await asyncio.wait_for(
@@ -403,6 +408,7 @@ async def request_refinement(prompt):
                 )
             if response.stop_reason in ('refusal', 'max_tokens'):
                 logger.warning('Refine %s dừng vì %s', model, response.stop_reason)
+                models.pop(0)
                 continue
             text = next((block.text for block in response.content if block.type == 'text'), '')
             data = json.loads(text)
@@ -411,10 +417,16 @@ async def request_refinement(prompt):
             logger.warning('Refine %s trả về sai cấu trúc', model)
         except Exception as e:
             logger.warning('Refine lỗi với %s: %s', model, e)
+            # Hết hạn mức thì chờ rồi thử lại cùng model (quá hạn thời gian thì không chờ, sang model kế tiếp)
+            if is_rate_limited(e):
+                limited += 1
+                if await wait_before_retry(e, limited, 'anthropic'):
+                    continue
+        models.pop(0)
     return None
 
 
-async def refine_word(word_value, language_code, senses, refinement, *, draft_model=None, socket_room=None, cache=None):
+async def refine_word(word_value, language_code, senses, refinement, *, draft_model=None, socket_room=None, cache=None, base_languages=None):
     """
     Áp kết quả refine, làm lại bản dịch / metadata cho phần đã sửa, báo socket cho người đang chờ.
     Không bao giờ ném lỗi: refine hỏng thì giữ nguyên draft (quality_status = draft) để từ vẫn được lưu.
@@ -469,6 +481,7 @@ async def refine_word(word_value, language_code, senses, refinement, *, draft_mo
                     "user_language_code": langs,
                     "missing_translate": jobs,
                     "current_senses": [by_id[j['id']] for j in jobs],
+                    "base_languages": base_languages,
                 }))
             # Metadata (đồng nghĩa, thành ngữ, từ khoá ảnh...) sinh từ nghĩa + loại từ nên chỉ làm lại khi một trong hai đổi
             meta_senses = [by_id[c['id']] for c in report['changed'] if {'definition', 'pos'} & set(c['fields'])] + [by_id[a['id']] for a in report['added']]

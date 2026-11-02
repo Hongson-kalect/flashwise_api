@@ -1,29 +1,19 @@
-import asyncio
 import logging
 from functools import wraps
 
 logger = logging.getLogger(__name__)
 
-def retry_async(max_retries=4, initial_delay=2, backoff_factor=2):
+
+def retry_async(provider='gemini'):
+    """
+    Thử lại hàm async khi nhà cung cấp AI báo lỗi tạm thời (429 / 503 / mất kết nối...), chờ theo
+    utils/ai/rate_limit.py (retry-after hoặc luỹ thừa 2, tối đa AI_RATE_LIMIT_RETRIES lần, 429 thì đặt thời gian nghỉ chung).
+    Lỗi logic (400, 401, 404...) và quá hạn thời gian (AI_GEMINI_TIMEOUT, đã thử hết model) ném ngay.
+    """
     def decorator(func):
         @wraps(func)
         async def wrapper(*args, **kwargs):
-            delay = initial_delay
-            for attempt in range(1, max_retries + 1):
-                try:
-                    return await func(*args, **kwargs)
-                except Exception as e:
-                    # Kiểm tra nếu là lỗi 503 hoặc các lỗi mạng tạm thời
-                    if "503" in str(e) or "quota" in str(e).lower() or attempt == max_retries:
-                        if attempt == max_retries:
-                            logger.error(f"Thất bại sau {max_retries} lần thử. Lỗi: {e}")
-                            raise e
-                        
-                        logger.warning(f"Lần thử {attempt} thất bại (503). Đang đợi {delay}s để thử lại...")
-                        await asyncio.sleep(delay)
-                        delay *= backoff_factor # Đợi 2s, 4s, 8s...
-                    else:
-                        # Nếu là lỗi logic (404, 401...) thì raise luôn không retry
-                        raise e
+            from utils.ai.rate_limit import call_with_backoff
+            return await call_with_backoff(lambda: func(*args, **kwargs), provider, retry_timeouts=False)
         return wrapper
     return decorator

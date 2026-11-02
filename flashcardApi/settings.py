@@ -149,6 +149,17 @@ AI_REFINE_TIMEOUT = int(os.getenv('AI_REFINE_TIMEOUT', '60')) # giây cho mỗi 
 AI_BACKGROUND_TIMEOUT = int(os.getenv('AI_BACKGROUND_TIMEOUT', '90')) # giây tối đa chờ dịch / metadata của bước 1 trước khi lưu
 AI_GEMINI_TIMEOUT = int(os.getenv('AI_GEMINI_TIMEOUT', '25')) # giây tối đa cho 1 lần gọi Gemini dịch / metadata; quá hạn thì thử model kế tiếp (đo thật có từ treo 30-96s)
 # Từ ở trạng thái PROCESSING quá lâu mà không có cache (worker chết) thì coi như lỗi và tạo lại
+# Gặp 429 / quá tải / lỗi máy chủ AI (utils/ai/rate_limit.py): thử lại tối đa AI_RATE_LIMIT_RETRIES lần, chờ base * 2^n giây (có trần)
+# hoặc theo retry-after; 429 thì worker tạm ngừng nhận từ mới trong thời gian chờ
+AI_RATE_LIMIT_RETRIES = int(os.getenv('AI_RATE_LIMIT_RETRIES', '4'))
+AI_BACKOFF_BASE_SECONDS = float(os.getenv('AI_BACKOFF_BASE_SECONDS', '2'))
+AI_BACKOFF_MAX_SECONDS = float(os.getenv('AI_BACKOFF_MAX_SECONDS', '60'))
+# Số job chạy cùng lúc trên mỗi bản worker (utils/celery/worker.py). Seed: nâng WORD_SEMA_LIMIT 25-30, xem CLAUDE.md
+WORD_SEMA_LIMIT = int(os.getenv('WORD_SEMA_LIMIT', '5'))
+COLLECTION_WORD_SEMA_LIMIT = int(os.getenv('COLLECTION_WORD_SEMA_LIMIT', '5'))
+TRANS_SEMA_LIMIT = int(os.getenv('TRANS_SEMA_LIMIT', '20'))
+# Job đang chạy mà worker chết: worker khác trả job về hàng đợi; quá số lần này thì bỏ (job làm sập worker)
+JOB_MAX_REQUEUES = int(os.getenv('JOB_MAX_REQUEUES', '3'))
 WORD_PROCESSING_STALE_SECONDS = int(os.getenv('WORD_PROCESSING_STALE_SECONDS', '600'))
 WORD_ERROR_RETRY_SECONDS = int(os.getenv('WORD_ERROR_RETRY_SECONDS', '60')) # tạo từ lỗi: get-word trả 500 trong khoảng này rồi cho tạo lại
 

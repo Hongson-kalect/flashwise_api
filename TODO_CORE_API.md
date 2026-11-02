@@ -6,7 +6,7 @@ Ghi từ buổi phân tích ngày 2026-11-01. Mục A, B, C, lưu ý thiết k�
 ## Chưa làm
 
 - [ ] `lower()` làm mất chữ hoa có nghĩa (danh từ tiếng Đức, `US` / `us`): phải đổi cùng lúc với `normalizeWord` của app (room socket).
-- [ ] Worker chết giữa chừng mất job (`BLPOP` không xác nhận), chỉ có mốc stale 600s cứu.
+- [x] Worker chết giữa chừng mất job: đã chuyển sang BLMOVE + list đang làm + heartbeat, worker khác trả job về hàng đợi.
 - [ ] Ảnh: `image_preview` là đường dẫn tương đối, chỉ phục vụ khi DEBUG (cần host / CDN); Pixabay ~100 request/phút/key, seed cần giới hạn hoặc tắt ảnh; chưa lấy bù ảnh cho từ cũ (job `redis_image` {sense_id, keywords} đã có, chưa ai đẩy).
 - [ ] Sync `user_collection` / `collection_items` với app (sync push / pull) cho phần học từ vựng.
 - [ ] Dấu nháy cong (`don’t` / `don't`) là 2 từ khác nhau, muốn gộp phải sửa cả app.

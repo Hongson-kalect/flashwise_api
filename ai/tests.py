@@ -1209,6 +1209,8 @@ class BrokenStreamTests(PipelineBase):
             mock.patch('utils.ai.word_render.ai_create_metadata', self.fake_metadata),
             mock.patch('utils.ai.word_render.request_refinement', AsyncMock(return_value=None)),
             mock.patch('utils.ai.word_render.socket_message', socket),
+            mock.patch('utils.ai.rate_limit.asyncio.sleep', AsyncMock()),  # model cuối đứt kết nối thì chờ rồi thử lại
+            mock.patch('utils.ai.rate_limit.set_cooldown'),
         ]
         for p in patches:
             p.start()

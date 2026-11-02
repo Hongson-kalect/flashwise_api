@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 from utils.ai.schema import word_schema, nonlatin_schema, complex_schema
 from utils.ai.prompt import render_word_prompt, WORD_SYSTEM_PROMPT
 from utils.celery.fetch_image import fetch_sense_image
+from utils.ai.rate_limit import is_rate_limited, is_transient, wait_before_retry
 from utils.ai.translate import ai_create_translate_sema
 from utils.ai.metadata import ai_create_metadata
 from utils.utils.normalize import normalize_lookup
@@ -77,10 +78,11 @@ async def _close_word(word_id, word_value, language_code, socket_room, cache, st
         logger.warning('Không gửi được socket %s cho %s: %s', event, word_value, e)
 
 
-async def _metadata_then_image(props, sense, socket_room):
+async def _metadata_then_image(props, sense, socket_room, with_image=True):
     """Metadata của 1 nghĩa rồi ảnh minh hoạ theo image_keywords vừa sinh (lỗi ảnh không ảnh hưởng metadata)."""
     await ai_create_metadata(props)
-    await fetch_sense_image(sense, socket_room)
+    if with_image:
+        await fetch_sense_image(sense, socket_room)
 
 
 async def ai_create_new_word_sema(word_info):
@@ -126,6 +128,7 @@ async def ai_create_new_word_sema(word_info):
         marks = {'start': time.monotonic()}
 
         attempts = 0
+        transient_retries = 0
         while not ai_trunks and attempts < len(models):
             model = models[attempts]
             attempts += 1
@@ -218,7 +221,7 @@ async def ai_create_new_word_sema(word_info):
                                     "word_value": word_value,
                                     "language_code": language_code,
                                     "current_senses": single_sense_list
-                                }, processed_contents, socket_room))
+                                }, processed_contents, socket_room, with_image=not word_info.get('no_image')))
                                 background_tasks.add(meta_task)
                                 meta_task.add_done_callback(background_tasks.discard)
 
@@ -227,7 +230,8 @@ async def ai_create_new_word_sema(word_info):
                                     "language_code": language_code,
                                     "user_language_code": redis_user_language_code,
                                     "missing_translate": single_sense_list,
-                                    "current_senses": single_sense_list
+                                    "current_senses": single_sense_list,
+                                    "base_languages": word_info.get('base_languages'),
                                 }))
                                 background_tasks.add(trans_task)
                                 trans_task.add_done_callback(background_tasks.discard)
@@ -248,6 +252,12 @@ async def ai_create_new_word_sema(word_info):
                         except Exception as socket_error:
                             logger.warning('Gửi socket SENSE_REMOVED lỗi: %s', socket_error)
                     ai_trunks, sense_objs, valid, draft_model = [], [], False, None
+                    # 429 / quá tải: chờ (đặt thời gian nghỉ chung) rồi thử lại đúng model này.
+                    # Lỗi tạm thời khác (đứt kết nối, 5xx): sang model kế tiếp như cũ, hết model mới chờ rồi thử lại.
+                    if is_rate_limited(e) or (is_transient(e) and attempts >= len(models)):
+                        transient_retries += 1
+                        if await wait_before_retry(e, transient_retries, 'anthropic'):
+                            attempts -= 1
 
         marks['stream_end'] = time.monotonic()
 
@@ -287,7 +297,7 @@ async def ai_create_new_word_sema(word_info):
 
         sense_objs = await refine_word(
             word_value, language_code, sense_objs, refinement,
-            draft_model=draft_model, socket_room=socket_room, cache=cache,
+            draft_model=draft_model, socket_room=socket_room, cache=cache, base_languages=word_info.get('base_languages'),
         )
         marks['applied'] = time.monotonic()
 

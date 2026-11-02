@@ -28,6 +28,7 @@ class LearnSession(BaseModel):
     time = models.PositiveIntegerField(default=0)  # tổng thời gian (giây)
     type = models.CharField(max_length=20, choices=TYPE_CHOICES, default="learn")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="completed")
+    mode = models.CharField(max_length=20, default="normal") # Kiểu học / ôn (tracking/learn.py NEW_MODES, REVIEW_MODES): normal, quick...
     collection_id = models.UUIDField(null=True, blank=True) # Bộ từ đang học (null = học từ lẻ / hàng đợi ôn chung)
     methods = models.JSONField(default=list, blank=True) # Mã phương pháp đã bật trong phiên, vd ["write", "cloze", "listen"]
     new_count = models.PositiveIntegerField(default=0) # Số từ mới

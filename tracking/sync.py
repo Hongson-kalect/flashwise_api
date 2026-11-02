@@ -262,7 +262,7 @@ SESSION_SPEC = {
     'type': ('choice', {c[0] for c in LearnSession.TYPE_CHOICES}),
     'start_at': ('time',), 'end_at': ('time', True),
     'time': (int, 0, 86400), 'sense_count': (int, 0, 10**4), 'is_deleted': ('bool',),
-    'status': ('choice', {c[0] for c in LearnSession.STATUS_CHOICES}),
+    'status': ('choice', {c[0] for c in LearnSession.STATUS_CHOICES}), 'mode': ('text', 20),
     'new_count': (int, 0, 10**4), 'review_count': (int, 0, 10**4),
     'correct_count': (int, 0, 10**5), 'wrong_count': (int, 0, 10**5), 'xp_earned': (int, 0, 10**6),
 }
@@ -521,7 +521,7 @@ PULL_TABLES = {
         'id', 'date', 'words_learned', 'words_relearned', 'learn_time', 'app_time', 'xp_earned', 'sessions_count',
         'created_at', 'updated_at']),
     'learn_session': (LearnSession, 'updated_at', [
-        'id', 'type', 'status', 'collection_id', 'methods', 'start_at', 'end_at', 'time', 'senses', 'sense_count',
+        'id', 'type', 'status', 'mode', 'collection_id', 'methods', 'start_at', 'end_at', 'time', 'senses', 'sense_count',
         'new_count', 'review_count', 'correct_count', 'wrong_count', 'xp_earned', 'is_deleted', 'created_at', 'updated_at']),
     'user_note': (UserNote, 'updated_at', [
         'id', 'sense_id', 'content', 'version', 'is_deleted', 'created_at', 'updated_at']),

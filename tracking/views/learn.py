@@ -100,3 +100,31 @@ def learn_review(request):
         'mode': mode, 'collection_id': user_collection.collection_id if user_collection else None,
         'due': cards, 'due_count': due_count, 'due_total': due_total, 'day_ends_at': cutoff, **tables,
     })
+
+
+def _complete(request, kind):
+    from tracking.session import SessionError, complete_session
+    try:
+        result = complete_session(request.user, kind, request.data.get('mode', 'normal'), request.data)
+    except SessionError as e:
+        return _bad(f'invalid:{e}')
+    return Response(result, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def learn_new_complete(request):
+    """
+    Xác nhận phiên học mới (tracking/session.py). Body: {mode: normal, session: {id, start_at, end_at, time, collection_id, methods},
+    cards: [{sense_id, original_sense_id, log_id, rating (1-4) | known: true, mode, hint_count, attempts, duration_ms, reviewed_at,
+    steps: [{id, rating, mode, hint_count, attempts, duration_ms, reviewed_at}]}]}.
+    Trả {duplicate, session, progress: [dòng user_sense_progress], rejected: [{sense_id, reason}]}.
+    """
+    return _complete(request, 'learn')
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def learn_review_complete(request):
+    """Xác nhận phiên ôn tập, body như học mới (không có known), mode normal | quick."""
+    return _complete(request, 'review')

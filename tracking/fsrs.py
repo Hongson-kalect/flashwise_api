@@ -1,13 +1,12 @@
 """
-Phần FSRS server cần (app mới là nơi tính lịch ôn bằng ts-fsrs, xem flashwise/docs/learning-design.md).
-Tham số mặc định FSRS-6; app và server phải dùng cùng bộ khi so độ khó.
+FSRS phía server: thư viện `fsrs` (py-fsrs, cùng nhóm tác giả với ts-fsrs của app), tham số mặc định FSRS-6.
+Server tính lịch ôn khi xác nhận phiên học (tracking/session.py); app dùng ts-fsrs cùng tham số khi offline.
 """
 import math
 
-DEFAULT_W = (
-    0.212, 1.2931, 2.3065, 8.2956, 6.4133, 0.8334, 3.0194, 0.001, 1.8722, 0.1666, 0.796,
-    1.4835, 0.0614, 0.2629, 1.6483, 0.6014, 1.8729, 0.5425, 0.0912, 0.0658, 0.1542,
-)
+from fsrs import Scheduler
+
+DEFAULT_W = tuple(Scheduler().parameters)
 
 AGAIN, HARD, GOOD, EASY = 1, 2, 3, 4
 

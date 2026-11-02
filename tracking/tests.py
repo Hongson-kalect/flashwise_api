@@ -519,3 +519,121 @@ class LearnReviewTests(LearnTestBase):
         self.client.force_authenticate(self.other)
         self.assertEqual(self.get('review', collection_id=str(self.collection.id)).status_code, 404)
         self.assertEqual(self.get('review').data['due'], [])
+
+
+class CompleteSessionTests(LearnTestBase):
+    """POST /api/learn/new/complete/ và /api/learn/review/complete/ (tracking/session.py)."""
+
+    def setUp(self):
+        super().setUp()
+        from unittest import mock
+        patcher = mock.patch('tracking.session.ENABLE_FUZZING', False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def card(self, name, rating=3, steps=0, **extra):
+        sense = self.senses[name]
+        body = {'sense_id': str(sense.id), 'original_sense_id': str(sense.id), 'log_id': str(uuid7()), 'rating': rating,
+                'mode': 'learn:write', 'steps': [{'id': str(uuid7()), 'rating': 3, 'mode': 'learn:choose'} for _ in range(steps)], **extra}
+        if extra.get('known'):
+            body.pop('rating')
+        return body
+
+    def complete(self, kind, cards, session_id=None, **extra):
+        session = {'id': session_id or str(uuid7()), 'time': 120, 'collection_id': str(self.collection.id), 'methods': ['write']}
+        return self.client.post(f'/api/learn/{kind}/complete/', {'session': session, 'cards': cards, **extra}, format='json')
+
+    def test_new_session_initialises_progress(self):
+        from tracking.fsrs import initial_difficulty
+        res = self.complete('new', [self.card('cat1', 3, steps=2), self.card('dog', 4), self.card('bird', 1), self.card('fish', known=True)])
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['rejected'], [])
+        progress = {str(p.original_sense_id): p for p in UserSenseProgress.objects.filter(user=self.user)}
+        cat = progress[str(self.senses['cat1'].id)]
+        self.assertEqual((cat.level, cat.state, cat.repetitions, round(cat.difficulty, 3)), (1, 1, 1, round(initial_difficulty(3), 3)))
+        self.assertAlmostEqual((cat.next_review_at - cat.last_reviewed_at).total_seconds(), 6 * 3600, delta=5)  # ôn lại cùng ngày sau 6h
+        self.assertEqual(progress[str(self.senses['dog'].id)].level, 2)  # Easy
+        self.assertEqual(progress[str(self.senses['bird'].id)].level, 0)  # Again
+        self.assertEqual(progress[str(self.senses['fish'].id)].level, 5)  # Đã biết
+
+        logs = ReviewLog.objects.filter(user=self.user)
+        self.assertEqual((logs.filter(is_fsrs=True).count(), logs.filter(is_fsrs=False).count()), (4, 2))
+        self.assertEqual(logs.get(is_fsrs=True, original_sense_id=self.senses['fish'].id).mode, 'learn:write')
+
+        session = LearnSession.objects.get(user=self.user)
+        self.assertEqual((session.type, session.status, session.new_count, session.sense_count, session.xp_earned), ('learn', 'completed', 4, 4, 32))
+        day = DayLearnLog.objects.get(user=self.user)
+        self.assertEqual((day.words_learned, day.learn_time, day.sessions_count, day.xp_earned), (4, 120, 1, 32))
+        from core.models import UserCollection
+        self.assertEqual(UserCollection.objects.get(user=self.user).learned_count, 4)
+        self.senses['cat1'].refresh_from_db()
+        self.assertEqual(self.senses['cat1'].learner_count, 1)  # thống kê chung của nghĩa
+
+    def test_difficulty_mixes_with_server_difficulty(self):
+        from tracking.fsrs import initial_difficulty
+        AISense.objects.filter(id=self.senses['cat1'].id).update(global_difficulty=8.0, learner_count=20)
+        self.complete('new', [self.card('cat1', 3)])
+        weight = 0.3 * 20 / 40
+        expected = (1 - weight) * initial_difficulty(3) + weight * 8.0
+        self.assertAlmostEqual(UserSenseProgress.objects.get(user=self.user).difficulty, expected, places=4)
+
+        AISense.objects.filter(id=self.senses['dog'].id).update(global_difficulty=8.0, learner_count=3)  # ít người học: bỏ qua
+        self.complete('new', [self.card('dog', 3)])
+        self.assertAlmostEqual(UserSenseProgress.objects.get(original_sense_id=self.senses['dog'].id).difficulty, initial_difficulty(3), places=4)
+
+    def test_resend_same_session_is_not_applied_twice(self):
+        session_id = str(uuid7())
+        cards = [self.card('cat1', 3)]
+        first = self.complete('new', cards, session_id)
+        again = self.complete('new', cards, session_id)
+        self.assertTrue(again.data['duplicate'])
+        self.assertEqual(again.data['progress'][0]['repetitions'], 1)
+        self.assertEqual((ReviewLog.objects.count(), DayLearnLog.objects.get().sessions_count), (1, 1))
+        self.assertEqual(first.data['session']['id'], again.data['session']['id'])
+
+    def test_new_rejects_learned_and_wrong_cards(self):
+        self.progress('dog')
+        bad_original = {**self.card('cat1'), 'original_sense_id': str(self.senses['fish'].id)}
+        res = self.complete('new', [self.card('dog'), bad_original, {'sense_id': 'x'}, self.card('bird'), self.card('bird')])
+        reasons = sorted(r['reason'] for r in res.data['rejected'])
+        self.assertEqual(reasons, ['already_learned', 'duplicate_card', 'sense', 'sense_id'])
+        self.assertEqual(len(res.data['progress']), 1)
+
+    def test_review_moves_fsrs_and_level(self):
+        progress = self.progress('fish', level=3, stability=5, last_reviewed_at=timezone.now() - timedelta(days=5))
+        res = self.complete('review', [self.card('fish', 3)])
+        progress.refresh_from_db()
+        self.assertEqual((progress.level, progress.repetitions, progress.state), (4, 4, 2))
+        self.assertGreater(progress.stability, 5)
+        self.assertEqual(res.data['session']['type'], 'review')
+
+        self.complete('review', [self.card('fish', 1)])
+        progress.refresh_from_db()
+        self.assertEqual((progress.level, progress.forget_count, progress.state, progress.streak_correct), (2, 1, 3, 0))  # Again: -2, học lại
+        self.assertEqual(DayLearnLog.objects.get().words_relearned, 2)
+
+    def test_quick_review_caps_level_and_uses_higher_retention(self):
+        a = self.progress('fish', level=5, stability=5)
+        b = self.progress('bird', level=5, stability=5)
+        self.complete('review', [self.card('fish', 3)], mode='quick')
+        self.complete('review', [self.card('bird', 3)])
+        a.refresh_from_db()
+        b.refresh_from_db()
+        self.assertEqual((a.level, b.level), (5, 6))  # vuốt không đưa quá cấp 5
+        self.assertLess(a.scheduled_days, b.scheduled_days)  # mục tiêu nhớ 0,93: khoảng ôn ngắn hơn
+
+    def test_review_rejects_unlearned_and_stale(self):
+        self.progress('fish', last_reviewed_at=timezone.now())
+        res = self.complete('review', [self.card('dog'), self.card('fish', reviewed_at=iso(-60))])
+        self.assertEqual(sorted(r['reason'] for r in res.data['rejected']), ['not_learned', 'stale'])
+
+    def test_validation(self):
+        self.assertEqual(self.client.post('/api/learn/new/complete/', {'cards': []}, format='json').status_code, 400)
+        self.assertEqual(self.complete('new', [], mode='quick').status_code, 400)
+        self.assertEqual(self.complete('review', 'x').status_code, 400)
+        mine = str(uuid7())
+        self.complete('new', [self.card('cat1')], mine)
+        self.client.force_authenticate(self.other)
+        self.assertEqual(self.complete('new', [], mine).status_code, 400)  # id phiên của người khác
+        self.client.force_authenticate(None)
+        self.assertEqual(self.complete('new', []).status_code, 401)

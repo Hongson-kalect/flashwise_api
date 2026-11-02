@@ -754,3 +754,79 @@ class UserCollectionEditFlowTests(APITestCase):
         self.assertEqual(names(official='true'), ['Animals JA'])
         self.create_collection(self.one)
         self.assertEqual(names(mine='true'), ['Mine'])
+
+
+@override_settings(CACHES=LOCMEM_CACHE)
+class BundleTests(APITestCase):
+    """GET user-collections/{id}/bundle: gói học offline theo cột SQLite của app."""
+
+    def setUp(self):
+        django_cache.clear()
+        self.alice = User.objects.create_user('alice')
+        self.bob = User.objects.create_user('bob')
+        self.client.force_authenticate(self.alice)
+        self.collection = Collection.objects.create(name='C', language_code='en', is_official=True, version=1)
+        self.word, self.done = make_word_with_sense('cat')
+        self.word.ipas = [{'value': '/kæt/', 'label': 'US'}]
+        self.word.save()
+        self.done.contents = {
+            'definition': {'en': {'value': 'A small animal.'}, 'vi': {'value': 'Con mèo.'}, 'fr': {'value': 'Un chat.'}},
+            'examples': [{'en': {'value': 'The cat sleeps.'}, 'vi': {'value': 'Mèo ngủ.'}, 'fr': {'value': 'Le chat dort.'}}],
+            'translations': {'vi': ['mèo'], 'fr': ['chat']},
+        }
+        self.done.save()
+        _, self.todo = make_word_with_sense('dog')
+        for sense in (self.done, self.todo):
+            CollectionItem.objects.create(collection=self.collection, sense=sense, original=sense, released=True, version=1, value=sense.word_value)
+        _, extra = make_word_with_sense('bird')
+        CollectionItem.objects.create(collection=self.collection, sense=extra, original=extra, released=False, created_by=self.bob)  # nháp của bob
+        self.user_collection = UserCollection.objects.create(user=self.alice, collection=self.collection, version=1)
+        self.queue = mock.patch('core.bundle.queue_translation').start()
+        self.addCleanup(mock.patch.stopall)
+
+    def bundle(self, **params):
+        return self.client.get(f'/api/user-collections/{self.user_collection.id}/bundle/', {'user_lang': 'vi', **params})
+
+    def test_bundle_has_rows_for_offline_learning(self):
+        res = self.bundle()
+        self.assertEqual(res.status_code, 200)
+        data = res.data
+        self.assertFalse(data['unchanged'])
+        self.assertEqual(sorted(i['value'] for i in data['items']), ['cat', 'dog'])  # nháp của người khác không lọt
+        self.assertEqual(data['user_collection']['collection_id'], self.collection.id)
+        word = next(w for w in data['words'] if w['value'] == 'cat')
+        self.assertEqual(word['ipas'], [{'value': '/kæt/', 'label': 'US'}])
+
+        sense = next(s for s in data['senses'] if s['id'] == self.done.id)
+        self.assertEqual(set(sense['contents']['definition']), {'en', 'vi'})  # chỉ ngôn ngữ gốc + của user
+        self.assertEqual(set(sense['contents']['examples'][0]), {'en', 'vi'})
+        self.assertEqual(sense['contents']['translations'], {'vi': ['mèo']})
+        for column in ('original_id', 'delta', 'audio', 'global_difficulty', 'learner_count'):
+            self.assertIn(column, sense)
+
+        # Nghĩa thiếu bản dịch: đẩy hàng dịch 1 lần cho từ đó, app biết để tải lại sau
+        self.assertEqual(data['pending'], [str(self.todo.id)])
+        self.assertEqual(self.queue.call_count, 1)
+        self.assertEqual(self.queue.call_args.args[0], self.todo.word_id)
+
+    def test_etag_skips_unchanged_bundle(self):
+        etag = self.bundle().data['etag']
+        self.assertEqual(dict(self.bundle(etag=etag).data), {'etag': etag, 'unchanged': True})
+        self.assertNotEqual(self.client.get(f'/api/user-collections/{self.user_collection.id}/bundle/', {'user_lang': 'fr'}).data['etag'], etag)
+
+        self.todo.contents = {**self.todo.contents, 'definition': {'en': {'value': 'x'}, 'vi': {'value': 'y'}}}
+        self.todo.save()  # dịch bù xong
+        self.assertFalse(self.bundle(etag=etag).data['unchanged'])
+
+    def test_bundle_validation(self):
+        self.assertEqual(self.client.get(f'/api/user-collections/{self.user_collection.id}/bundle/').status_code, 400)
+        theirs = UserCollection.objects.create(user=self.bob, collection=self.collection)
+        self.assertEqual(self.client.get(f'/api/user-collections/{theirs.id}/bundle/', {'user_lang': 'vi'}).status_code, 404)
+        self.assertEqual(self.client.get('/api/user-collections/not-a-uuid/bundle/', {'user_lang': 'vi'}).status_code, 404)
+
+    def test_download_returns_user_collection_id(self):
+        other = Collection.objects.create(name='D', language_code='en', is_official=True)
+        res = self.client.post(f'/api/user-collections/{other.id}/download/')
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data['id'], UserCollection.objects.get(user=self.alice, collection=other).id)
+        self.assertEqual(self.client.post(f'/api/user-collections/{other.id}/download/').data['id'], res.data['id'])

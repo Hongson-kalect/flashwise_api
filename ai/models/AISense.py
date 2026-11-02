@@ -57,8 +57,11 @@ class AISense(BaseModel):
     like_count = models.IntegerField(default=0)
     main_count = models.IntegerField(default=0)
 
-    global_forget_count = models.IntegerField(default=0)   # Tổng số lần TẤT CẢ user bấm "Quên" từ này khi học
-    global_remember_count = models.IntegerField(default=0) # Tổng số lần TẤT CẢ user bấm "Thuộc/Nhớ" từ này
+    # Thống kê học của mọi user, cộng dồn khi push review_log (tracking/stats.py), ghi trên mọi bản cùng original
+    global_forget_count = models.IntegerField(default=0)   # Số lần chấm FSRS là Again
+    global_remember_count = models.IntegerField(default=0) # Số lần chấm FSRS là Hard / Good / Easy
+    global_difficulty = models.FloatField(default=0) # Trung bình độ khó FSRS ban đầu (1-10) theo lần chấm đầu tiên của từng user, 0 = chưa ai học
+    learner_count = models.IntegerField(default=0) # Số user đã học nghĩa này (đã có lần chấm FSRS đầu tiên)
 
     class Meta:
         db_table = "ai_sense"

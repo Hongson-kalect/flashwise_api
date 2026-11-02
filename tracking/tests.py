@@ -353,3 +353,52 @@ class LikeAndFeedbackTests(SyncTestBase):
         self.assertEqual(self.client.post('/api/feedback/', {'message': ''}, format='json').status_code, 400)
         self.client.force_authenticate(None)
         self.assertEqual(self.client.post('/api/feedback/', {'message': 'x'}, format='json').status_code, 401)
+
+
+class ReviewStatsTests(SyncTestBase):
+    """Thống kê chung của nghĩa cộng dồn khi push review_log (tracking/stats.py)."""
+
+    def log(self, rating, minutes=0, is_fsrs=True, sense=None):
+        return {'id': str(uuid7()), 'original_sense_id': str((sense or self.sense).id), 'rating': rating,
+                'is_fsrs': is_fsrs, 'reviewed_at': iso(minutes)}
+
+    def stats(self, sense=None):
+        sense = sense or self.sense
+        sense.refresh_from_db()
+        return sense.global_forget_count, sense.global_remember_count, sense.learner_count, round(sense.global_difficulty, 3)
+
+    def test_first_rating_sets_difficulty_and_resend_is_not_counted(self):
+        from tracking.fsrs import initial_difficulty
+        custom = AISense.objects.create(word=self.sense.word, word_value='bank', language_code='en', original=self.sense, is_official=False, contents={})
+        logs = [self.log(3, -10), self.log(1, -5), self.log(3, -1, is_fsrs=False)]
+        self.assertEqual(self.push(review_log=logs).status_code, 200)
+        good = round(initial_difficulty(3), 3)
+        self.assertEqual(self.stats(), (1, 1, 1, good))  # bước trong phiên (is_fsrs=0) không tính
+        self.assertEqual(self.stats(custom), (1, 1, 1, good))  # mọi bản cùng original mang cùng số liệu
+
+        self.push(review_log=logs)  # gửi lại khi mạng chập chờn
+        self.assertEqual(self.stats(), (1, 1, 1, good))
+
+        self.client.force_authenticate(self.other)
+        self.push(review_log=[self.log(1)])
+        self.assertEqual(self.stats(), (2, 1, 2, round((initial_difficulty(3) + initial_difficulty(1)) / 2, 3)))
+
+    def test_only_first_review_of_a_user_counts_as_learner(self):
+        self.push(review_log=[self.log(4, -60)])
+        self.push(review_log=[self.log(2, -1), self.log(3)])
+        forget, remember, learners, _ = self.stats()
+        self.assertEqual((forget, remember, learners), (0, 3, 1))
+
+    def test_initial_difficulty_follows_fsrs(self):
+        from tracking.fsrs import initial_difficulty
+        values = [initial_difficulty(r) for r in (1, 2, 3, 4)]
+        self.assertEqual(values, sorted(values, reverse=True))  # Again khó nhất
+        self.assertTrue(all(1 <= v <= 10 for v in values))
+
+    def test_pull_user_collections(self):
+        from core.models import UserCollection
+        collection = Collection.objects.create(name='C', language_code='en', is_official=True)
+        mine = UserCollection.objects.create(user=self.user, collection=collection, version=2)
+        UserCollection.objects.create(user=self.other, collection=collection)
+        rows = self.client.get('/api/sync/pull/', {'tables': 'user_collection'}).data['tables']['user_collection']['items']
+        self.assertEqual([(str(r['id']), str(r['collection_id']), r['version']) for r in rows], [(str(mine.id), str(collection.id), 2)])

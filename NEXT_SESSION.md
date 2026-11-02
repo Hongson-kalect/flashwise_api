@@ -26,16 +26,16 @@ Sync push / pull (`tracking/sync.py`) đã nhận / trả các trường mới. 
 
 ## API cho phần học
 - **Đã có, dùng được ngay**: `POST /api/sync/push/`, `GET /api/sync/pull/` cho progress, review_log, learn_session, day_learn_log, user_settings, user_note. App tự chọn thẻ, chấm, tính FSRS (ts-fsrs) rồi đẩy lên.
+- **Luồng học đã chốt ngày 2026-11-02**: `D:\Code\flashwise\docs\learning-design.md` mục 5 (độ khó ban đầu 7 phần phiên / 3 phần toàn server, bước theo cấp, ôn cùng ngày, vuốt `request_retention` 0,93, không giới hạn thẻ / ngày, "Đã biết" lên cấp 5) và mục 6 (danh sách việc backend / app).
 - **Cần làm, theo thứ tự**:
-  1. Sync `user_collection` / `collection_items` (để chọn bộ từ học được trên mọi máy, offline). Có thể chỉ cần app tải qua `GET user-collections/{id}` + pull theo `updated_at`.
+  1. ~~Gói học offline `GET user-collections/{id}/bundle` + pull `user_collection`~~ (xong 2026-11-02; `collection_items` đi theo bundle, không sync từng dòng).
+  1b. ~~`AISense.global_difficulty` / `learner_count` + seed key setting ở app~~ (xong 2026-11-02). Tiếp theo phía app: `fsrsService`, `gradeMapper`, `levelPolicy`, `sessionBuilder` (learning-design.md mục 6).
   2. Cho admin / seeder nhập nội dung cấp cao: quy ước key trong `AISense.contents` (`pro_tip`, `cultural_note`, `etymology`, `grammar_note`, `explanation`, đa ngôn ngữ như definition), kiểm tra `update-sense` / Django admin cho phép các key này.
   3. AI đánh dấu vị trí từ trong câu ví dụ (cho bài điền chỗ trống với từ biến đổi `runs`, `ran`).
   4. Sau: tối ưu tham số FSRS riêng từng user từ `review_log` (`is_fsrs=1`), chấm phát âm trả phí (VIP), thống kê phương pháp theo `mode`.
 
 ## Chưa chốt (hỏi user trước khi làm)
-- Đổi kết quả học cụm sang điểm FSRS (đề xuất: không gợi ý = Good, có gợi ý / sai 1 ký tự = Hard, phải hiện đáp án / sai 2 lần = Again).
-- Luật lên / xuống cấp 0–7 và ngưỡng cấp cho từng phương pháp; từ ôn lại đi qua mấy bước.
-- Có cho học tiếp phiên dở không (cột `snapshot` đã sẵn).
+- Các con số tạm (trọng số độ khó theo số người học, luật cấp, bước ôn `6h`) chỉnh khi test app thật.
 
 ## Lệnh hay dùng
 - Test backend: skill `backend-verify` (hoặc `$TEMP/fw/runtests.sh`); commit giữ CRLF/LF: `$TEMP/fw/commit.sh`.

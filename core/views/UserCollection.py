@@ -16,6 +16,7 @@ from ai.validators import MAX_DELTA_CHARS, is_lang, is_uuid
 from utils.utils.permissions import consume_daily_quota
 from core.serializers import CollectionDetailSerializer
 from core.models import Collection,CollectionItem, UserCollection
+from core.bundle import build_bundle, load_bundle, make_etag
 from core.queries import current_items, live_items, visible_collections
 from core.serializers.UserCollection import UserCollectionSerializer
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
@@ -134,11 +135,34 @@ class UserCollectionViewSet(SoftDeleteViewSet):
             defaults={'name': collection.name, 'description': collection.description, 'created_by': request.user, 'version': collection.version},
         )
         
+        # id của UserCollection để app gọi tiếp bundle
         if not created:
-            return Response({"detail": "Bạn đã sở hữu bộ sưu tập này rồi."}, status=200)
+            return Response({"detail": "Bạn đã sở hữu bộ sưu tập này rồi.", "id": user_col.id}, status=200)
 
         Collection.objects.filter(pk=collection.pk).update(downloaded_count=F('downloaded_count') + 1)
-        return Response({"detail": "Tải bộ sưu tập thành công."}, status=201)
+        return Response({"detail": "Tải bộ sưu tập thành công.", "id": user_col.id}, status=201)
+
+    @action(detail=True, methods=['get'], url_path='bundle')
+    def bundle(self, request, pk=None):
+        """
+        Gói học offline của 1 bộ (core/bundle.py). Query: user_lang (bắt buộc), etag (gói lần trước).
+        etag khớp thì chỉ trả {etag, unchanged: true}; pending = id nghĩa còn chờ dịch sang user_lang.
+        """
+        user_language_code = request.query_params.get('user_lang')
+        if not is_lang(user_language_code):
+            return Response({"detail": "user_lang is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if not is_uuid(pk):
+            return Response(status=status.HTTP_404_NOT_FOUND)
+        user_col = get_object_or_404(self.get_queryset().select_related('collection'), id=pk)
+        if not user_col.collection:
+            return Response({"detail": "Collection not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        collection, items, senses = load_bundle(user_col, request.user)
+        etag = make_etag(user_col, collection, items, senses, user_language_code)
+        if request.query_params.get('etag') == etag:
+            return Response({"etag": etag, "unchanged": True})
+        data = build_bundle(user_col, request.user, user_language_code, collection, items, senses)
+        return Response({"etag": etag, "unchanged": False, **data})
     
     # @action(detail=True, methods=['post'], url_path='get-collection')
     # def get_user_collection_detail(self, request, pk=None):

@@ -3,17 +3,20 @@
 
 Push: app gửi các dòng đã đổi, mỗi bảng có luật gộp riêng (idempotent, gửi lại vẫn an toàn):
   - user_sense_progress: 1 dòng / (user, original_sense_id), bản có client_updated_at mới hơn thắng
-  - review_log: chỉ thêm, trùng id thì bỏ qua
+  - review_log: chỉ thêm, trùng id thì bỏ qua; dòng is_fsrs mới cộng vào thống kê chung của nghĩa (tracking/stats.py)
   - day_learn_log: 1 dòng / ngày, mỗi bộ đếm lấy giá trị lớn hơn (bộ đếm chỉ tăng)
   - learn_session, user_note, user_settings: ghi đè, ghi chú / cài đặt so client_updated_at
   - user_profile: chỉ các trường trong PROFILE_WRITABLE
 Pull: phân trang theo con trỏ (thời điểm, id) từng bảng, kèm dòng đã xoá mềm (is_deleted) để app xoá theo.
+  user_collection chỉ pull (thêm / xoá bộ qua API bộ từ).
 """
 import json
 import re
+import uuid
 from datetime import timedelta
 from zoneinfo import ZoneInfo, available_timezones
 
+from django.db import connection, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime, parse_time
@@ -21,7 +24,9 @@ from django.utils.dateparse import parse_date, parse_datetime, parse_time
 from ai.models import AISense
 from ai.validators import is_lang, is_uuid
 from interact.models import LearnSession, UserNote
+from core.models import UserCollection
 from tracking.models import DayLearnLog, ReviewLog, UserSenseProgress
+from tracking.stats import apply_review_stats
 from user.models import UserProfile, UserSetting
 
 MAX_ITEMS = 500
@@ -30,6 +35,7 @@ MAX_NOTE = 10000
 MAX_SESSION_SENSES = 500
 MAX_SETTING_BYTES = 2000
 SETTING_KEY_RE = re.compile(r'^[A-Za-z0-9_.-]{1,100}$')
+REVIEW_LOCK_NAMESPACE = 7301  # pg_advisory_xact_lock(namespace, user_id) cho push review_log
 
 
 # ---------------------------------------------------------------- làm sạch giá trị
@@ -203,8 +209,17 @@ def push_review_logs(user, items):
             continue
         seen.add(str(item['id']))
         rows.append(ReviewLog(id=item['id'], user=user, original_sense_id=item['original_sense_id'], **data))
-    # Chỉ thêm, trùng id (gửi lại) bỏ qua
-    ReviewLog.objects.bulk_create(rows, ignore_conflicts=True)
+    if not rows:
+        return result
+    with transaction.atomic():
+        # Khoá theo user: 2 lần push cùng lúc (gửi lại khi mạng chập chờn) không cùng thấy 1 dòng là "mới" rồi cộng thống kê 2 lần
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT pg_advisory_xact_lock(%s, %s)', [REVIEW_LOCK_NAMESPACE, user.pk])
+        existing = set(ReviewLog.objects.filter(id__in=[row.id for row in rows]).values_list('id', flat=True))
+        # Chỉ thêm, trùng id (gửi lại) bỏ qua
+        ReviewLog.objects.bulk_create(rows, ignore_conflicts=True)
+        fresh = [row for row in rows if uuid.UUID(str(row.id)) not in existing and row.is_fsrs]
+        apply_review_stats(user, fresh)
     result['accepted'] = len(rows)
     return result
 
@@ -511,6 +526,10 @@ PULL_TABLES = {
     'user_note': (UserNote, 'updated_at', [
         'id', 'sense_id', 'content', 'version', 'is_deleted', 'created_at', 'updated_at']),
     'user_settings': (UserSetting, 'updated_at', ['id', 'key', 'value', 'is_deleted', 'created_at', 'updated_at']),
+    # Chỉ danh sách bộ từ của user (chỉ pull); dòng từ + nội dung lấy qua GET user-collections/{id}/bundle (có etag)
+    'user_collection': (UserCollection, 'updated_at', [
+        'id', 'collection_id', 'name', 'description', 'learned_count', 'version', 'is_active', 'is_deleted',
+        'created_at', 'updated_at']),
 }
 
 

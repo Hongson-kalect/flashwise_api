@@ -10,7 +10,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from ai.generation import GenerationError, start_word_generation
+from ai.bulk import best_official_senses, clean_words, sort_words, start_words
 from ai.models import AISense, AIWord
 from ai.queries import visible_senses
 from ai.validators import is_lang, is_uuid
@@ -20,9 +20,7 @@ from interact.likes import liked_versions, set_like, version_like_counts
 from core.serializers.Collection import (
     CollectionBasicSerializer, CollectionDetailSerializer, CollectionListSerializer, CollectionSerializer,
 )
-from utils.redis.client import get_queue_client
-from utils.redis.word_init import WordCacheManager
-from utils.utils.normalize import normalize, normalize_lookup, is_lookup_word  # noqa: F401  (nhiều nơi vẫn import normalize từ module này)
+from utils.utils.normalize import lookup_entry_problem, normalize, normalize_lookup, is_lookup_word  # noqa: F401  (nhiều nơi vẫn import normalize từ module này)
 from utils.utils.permissions import IsOwnerOrAdmin, NotBanned, consume_daily_quota
 from core.scores import refresh_collection_scores
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
@@ -38,15 +36,6 @@ ORDERING_ALIASES = {'popular': '-score', 'newest': '-created_at'}
 VIEW_DEDUPE_SECONDS = 24 * 3600
 
 
-def best_official_senses(words, language_code):
-    """Nghĩa chính thức có điểm cao nhất của mỗi từ trong ngôn ngữ đó (không lấy nghĩa tuỳ chỉnh của ai)."""
-    return (
-        AISense.objects.filter(is_official=True, language_code=language_code, word_value__in=list(words))
-        .exclude(is_deleted=True).exclude(is_active=False)
-        .order_by('word_value', '-score', 'id').distinct('word_value')
-    )
-
-
 def make_items(collection_id, senses, start=0, created_by=None):
     # original_id luôn trỏ về nghĩa gốc ổn định: tiến độ học của user gắn với id này nên nghĩa chính thức (không có original) chính là gốc của nó
     return [
@@ -56,41 +45,6 @@ def make_items(collection_id, senses, start=0, created_by=None):
         )
         for index, sense in enumerate(senses)
     ]
-
-
-def clean_words(words):
-    """Danh sách từ client gửi -> từ đã chuẩn hoá (giống get-word / worker, không bỏ ký tự), bỏ trùng, giữ thứ tự."""
-    return list(dict.fromkeys(w for w in (normalize_lookup(w) for w in words if isinstance(w, str)) if is_lookup_word(w)))
-
-
-def sort_words(words, language_code):
-    """
-    Chia từ thành: found {từ: nghĩa chính thức tốt nhất}, invalid (bị từ chối), pending (chờ AI),
-    to_start (cần đẩy AI tạo: chưa có bản ghi hoặc lần trước lỗi), existing {từ: AIWord}.
-    """
-    found = {sense.word_value: sense for sense in best_official_senses(words, language_code)}
-    missing = [w for w in words if w not in found]
-    existing = {w.value: w for w in AIWord.objects.filter(value__in=missing, language_code=language_code).exclude(is_deleted=True)} if missing else {}
-    invalid = [w for w in missing if w in existing and existing[w].status in ('REJECTED', 'INVALID', 'BANNED')]
-    pending = [w for w in missing if w not in invalid]
-    to_start = [w for w in pending if w not in existing or existing[w].status == 'FAILED']
-    return found, invalid, pending, to_start, existing
-
-
-def start_pending_words(user, collection_id, to_start, existing, language_code, user_language_code):
-    """Đẩy AI tạo các từ chưa có (gọi sau khi DB đã commit); tạo xong worker / retrieve thêm vào bộ qua pending_words."""
-    cache_manager = WordCacheManager()
-    queue = get_queue_client()
-    for word in to_start:
-        try:
-            state, _ = start_word_generation(
-                cache_manager, word, language_code, user_language_code, lambda: user,
-                existing=existing.get(word), queue='redis_collection_word',
-            )
-        except GenerationError:
-            continue  # từ này ở lại pending, lần sau tạo lại
-        if state == 'started':
-            queue.sadd(f'collection_id:{word}', str(collection_id))
 
 
 def parse_tag_ids(raw):
@@ -347,7 +301,7 @@ class CollectionViewSet(SoftDeleteViewSet):
             CollectionItem.objects.bulk_create(make_items(collection.id, [found[w] for w in cleaned if w in found], 0, user))
 
         # Gọi AI sau khi DB đã commit
-        start_pending_words(user, collection.id, to_start, existing, language_code, user_language_code)
+        start_words(user, to_start, existing, language_code, user_language_code, collection_id=collection.id)
 
         return Response(
             {"user_collection": user_collection.id, **CollectionBasicSerializer(collection).data, "pending_words": pending, "invalid_words": invalid},

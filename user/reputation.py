@@ -15,6 +15,8 @@ POINTS = {
     'report_rejected': 0, # Bác thì chỉ hạ độ tin cậy, không trừ điểm: tránh làm user ngại report
     'report_spam': -5,
     'sense_promoted': 20,
+    'sense_accepted': 10, # Đề xuất nghĩa mới được chấp nhận làm nghĩa chính thức (cổng AI hoặc admin duyệt)
+    'sense_abuse': -5, # Đề xuất nghĩa mới có nội dung chèn lệnh / spam / xấu
     'content_banned': -10,
     'content_unbanned': 10,
     'user_banned': -50,

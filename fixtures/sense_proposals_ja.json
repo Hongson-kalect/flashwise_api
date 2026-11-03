@@ -1,0 +1,4 @@
+[
+  {"case": "ja 1. Nghĩa thật còn thiếu", "word": "犬", "language": "ja", "pos": "noun", "definition": "Người làm mật thám, chỉ điểm cho cảnh sát (nghĩa xấu, khinh miệt).", "expect": "accept"},
+  {"case": "ja 2. Trùng nghĩa", "word": "猫", "language": "ja", "pos": "noun", "definition": "Con vật nhỏ nuôi trong nhà, kêu meo meo.", "expect": "duplicate"}
+]

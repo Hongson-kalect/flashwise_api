@@ -98,6 +98,7 @@ Kết quả `{detail, status, data}`:
 | 202 | Đang tạo (người khác khởi tạo) | trạng thái cache, có `stage`: `draft` / `refine` → mở socket chờ |
 | 404 | Từ không hợp lệ / bị từ chối / bị ban | `{value, language_code}` |
 | 429 | Tra từ mới quá nhiều (`word_generate_throttled`, 60 / giờ) | |
+| 400 | Chuỗi không phải mục từ (`errorCode: not_a_dictionary_entry`, `reason`: `sentence` / `too_long`): chỉ tra từ đơn, cụm từ, thành ngữ, tục ngữ; câu bất kỳ bị từ chối ngay, không tốn lượt AI (từ đã có trong DB vẫn trả bình thường). AI cũng từ chối câu ở bước tạo từ (về app như 404) | `{detail, errorCode, reason}` |
 | 500 | Lần tạo vừa lỗi | `{retry_after}` giây sau thử lại |
 | 503 | Hàng đợi / DB lỗi | |
 
@@ -117,6 +118,8 @@ Kết quả `{detail, status, data}`:
 
 Từ khác:
 - `GET /api/ai-words/search/?q&lang&limit` (≤50): gợi ý khi gõ, chỉ từ đã có. Trả `[{id, value, language_code}]`.
+- `POST /api/ai-words/bulk-create/` `{lang, user_lang, words}` (cần token): tạo nhiều từ cùng lúc (từ mới được AI tạo dần). Câu / chuỗi quá dài vào `invalid` ngay; từ mới tính vào hạn mức `bulk_words` theo ngày (429 `bulk_quota_exceeded`, không tạo từ nào). Trả `{results: {từ chuẩn hoá: {status, reason?}}}`, `status`: `exists` | `processing` | `rejected` | `invalid` (`reason`: `sentence` / `too_long` / `not_a_word`) | `unknown`. Bộ từ (`collections/bulk-create`, `user-collections/{id}/add-words`) gọi lại cùng các hàm trong `ai/bulk.py`.
+- `POST /api/ai-words/check/` `{lang, words (≤ 20)}` (cần token): hỏi tiến độ các từ, chỉ đọc (không tạo, không tính hạn mức), kết quả như bulk-create. App hỏi lại mỗi vài giây cho tới khi hết `processing`.
 - Nghĩa (object trong `senses`) có: `id, word_id, original_id, pos, level, register, ipas, audio, image_preview, contents, delta, is_official, like_count, global_difficulty, learner_count, ...`.
   `contents`: `definition`, `usage` (`{lang: {value, ruby?, roman?}}`), `examples` (`[{lang: {value}}]`), `translations` (`{lang: [từ]}`), nội dung nâng cao (mục 5).
   Phát âm: `sense.ipas` rỗng thì `word.ipas`; âm thanh `sense.audio` > `word.audio` > giọng máy (TTS).
@@ -134,6 +137,9 @@ Từ khác:
 | `GET ai-senses/mine/?word_id` | Nghĩa riêng + id đang ẩn (`hidden`) + đang thích (`liked`) |
 | `POST/DELETE ai-senses/{id}/like/` | `{liked, sense_id, like_count}` |
 | `GET ai-senses/top/?lang&by=forgot\|forget_rate\|learned\|liked&limit&user_lang` | Nghĩa nổi bật toàn hệ thống (cache 10 phút) |
+| `POST ai-senses/propose/` | Đề xuất nghĩa mới cho 1 từ, chỉ cần gõ định nghĩa. Body `{word_id, user_lang, definition (8-500 ký tự), pos?}`; chạy đồng bộ ~3-6s (đặt timeout request >= 30s). Cổng AI: Claude chấm + viết nội dung / bản dịch / metadata, Gemini kiểm chéo song song; Claude xong mà Gemini chưa về thì không chờ. Trả `{result}`: `official` (201, nghĩa chính thức ngay, có `sense`), `pending` (201, chờ admin duyệt, chỉ tác giả thấy, kèm `reasons`: `no_second_opinion`, `low_confidence`, `claude_uncertain`, `gemini_*`, `translation_problem`), `duplicate` (200, kèm nghĩa đã có trong `sense`), `rejected` (200, `reason` ngắn bằng tiếng Anh, `abuse` true nếu chèn lệnh / spam, bị trừ uy tín). Lỗi: 400 (tham số; từ tiếng Nhật được hỗ trợ: AI trả thêm `roman`, furigana `ruby` do server sinh), 403 `account_required` (tài khoản khách; đổi bằng `SENSE_PROPOSE_ALLOW_GUEST`) / `user_banned`, 404 từ chưa có, 429 (10 lần / giờ), 503 `ai_unavailable`. Sau `official` / `pending` app làm mới get-word (server đã xoá cache) |
+| `GET ai-senses/proposals/?status=pending\|approved&limit` (admin) | Hàng chờ duyệt nghĩa người dùng đề xuất, kèm phán quyết từng lớp AI. Duyệt: `POST ai-senses/{id}/promote/`; từ chối: `DELETE ai-senses/{id}/` |
+| `GET ai-senses/community/?word_id&user_lang&ordering=popular\|newest&limit` | Gợi ý nghĩa của cộng đồng cho 1 từ (không cần token). Chỉ nghĩa tuỳ chỉnh người khác đã phát hành (đóng băng, nằm trong bộ đã phát hành), bỏ nghĩa xấu / bị flag; có token thì bỏ nghĩa của mình và nghĩa đã ẩn, báo `liked`. `popular` xếp theo `rank` = 3·ln(1+like) + 2·ln(1+số bản tách từ nghĩa này) + uy tín tác giả/10 (kẹp -5..10) + 3 nếu verified. Mỗi dòng: `id, pos, level, ipas, image_preview, contents` (đã gộp delta lên nghĩa gốc, chỉ ngôn ngữ của từ + `user_lang`), `metadata{advanced,tags}`, `like_count, adopted_count, quality_status, liked, author{id,name,reputation}, rank`. Chưa ai phát hành thì `senses` rỗng. App chọn 1 nghĩa thì chỉ điền các ô đang trống (không ghi đè) |
 
 Nội dung nâng cao trong `contents` (user / admin gõ, AI không sinh): `pro_tip`, `cultural_note`, `etymology`, `grammar_note`,
 `explanation` dạng `{lang: {value}}`; `synonyms`, `antonyms`, `related` là danh sách từ (≤20). Thiếu thì app dùng kiểu thẻ cơ bản.

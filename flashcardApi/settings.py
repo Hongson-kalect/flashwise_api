@@ -147,6 +147,11 @@ AI_REFINE_ALLOW_ADD = os.getenv('AI_REFINE_ALLOW_ADD', 'False').lower() in ('1',
 AI_REFINE_MAX_ADD = int(os.getenv('AI_REFINE_MAX_ADD', '3')) # số nghĩa tối đa được bổ sung cho 1 từ khi bật
 AI_REFINE_TIMEOUT = int(os.getenv('AI_REFINE_TIMEOUT', '60')) # giây cho mỗi model, quá hạn thì thử model kế tiếp rồi giữ bản draft
 AI_BACKGROUND_TIMEOUT = int(os.getenv('AI_BACKGROUND_TIMEOUT', '90')) # giây tối đa chờ dịch / metadata của bước 1 trước khi lưu
+# Đề xuất nghĩa mới của người dùng (utils/ai/sense_gate.py): Claude chấm + viết, Gemini kiểm chéo song song từ đầu.
+# Claude xong mà Gemini chưa về thì không chờ: chốt thành chờ admin duyệt.
+SENSE_PROPOSE_AUTO_CONFIDENCE = float(os.getenv('SENSE_PROPOSE_AUTO_CONFIDENCE', '0.8')) # accept dưới mức này thì admin duyệt
+SENSE_PROPOSE_ALLOW_GUEST = os.getenv('SENSE_PROPOSE_ALLOW_GUEST', 'False').lower() in ('1', 'true', 'yes') # nghĩa chính thức ảnh hưởng mọi người nên mặc định chỉ tài khoản thật
+SENSE_PROPOSE_TIMEOUT = int(os.getenv('SENSE_PROPOSE_TIMEOUT', '60')) # giây tối đa cho lần gọi Claude
 AI_GEMINI_TIMEOUT = int(os.getenv('AI_GEMINI_TIMEOUT', '25')) # giây tối đa cho 1 lần gọi Gemini dịch / metadata; quá hạn thì thử model kế tiếp (đo thật có từ treo 30-96s)
 # Từ ở trạng thái PROCESSING quá lâu mà không có cache (worker chết) thì coi như lỗi và tạo lại
 # Gặp 429 / quá tải / lỗi máy chủ AI (utils/ai/rate_limit.py): thử lại tối đa AI_RATE_LIMIT_RETRIES lần, chờ base * 2^n giây (có trần)
@@ -220,6 +225,7 @@ REST_FRAMEWORK = {
         'anon': os.getenv('THROTTLE_ANON', '60/minute'),
         'user': os.getenv('THROTTLE_USER', '300/minute'),
         'word_generate': os.getenv('THROTTLE_WORD_GENERATE', '60/hour'),
+        'sense_propose': os.getenv('THROTTLE_SENSE_PROPOSE', '10/hour'), # đề xuất nghĩa mới: mỗi lần là 1 lần gọi Claude + Gemini
         'feedback': os.getenv('THROTTLE_FEEDBACK', '20/day'),
         'auth': os.getenv('THROTTLE_AUTH', '20/minute'), # đăng nhập / đăng ký / quên mật khẩu, theo IP
         'export': os.getenv('THROTTLE_EXPORT', '5/day'), # tải toàn bộ dữ liệu của mình

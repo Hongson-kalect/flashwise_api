@@ -130,3 +130,12 @@ class NotBanned(BasePermission):
             from rest_framework.exceptions import PermissionDenied
             raise PermissionDenied({'detail': 'Account is banned', 'errorCode': 'user_banned', **ban})
         return True
+
+
+class SenseProposeThrottle(SimpleRateThrottle):
+    """Giới hạn số lần 1 người đề xuất nghĩa mới (mỗi lần gọi Claude + Gemini). Rate: DEFAULT_THROTTLE_RATES['sense_propose']."""
+    scope = "sense_propose"
+
+    def get_cache_key(self, request, view):
+        ident = request.user.pk if request.user and request.user.is_authenticated else self.get_ident(request)
+        return self.cache_format % {"scope": self.scope, "ident": ident}

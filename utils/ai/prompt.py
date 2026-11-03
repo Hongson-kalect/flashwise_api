@@ -26,7 +26,7 @@ def render_word_prompt(word, language_code):
     return f"""Write the dictionary entry for the {language_name} word '{word}'.
 
 <rules>
-- Validity: if '{word}' is a typo, gibberish or not a real {language_name} word, set should_be_saved to false and return no senses.
+- Validity: set should_be_saved to false and return no senses if '{word}' is a typo, gibberish, not a real {language_name} word or expression, OR an ordinary sentence or question that someone just wrote. Save only a single word, a compound, a phrasal verb or other fixed multi-word expression, an idiom, a proverb or saying, or a common set phrase that dictionaries list.
 - Senses: cover the meanings a learner dictionary (Oxford, Cambridge, Longman) lists for the word, most common first, each with its own pos. Include standard everyday and scientific meanings; skip rare, archaic, slang and idiom-only ones. One sense = one meaning: never merge two unrelated meanings, never split one into near-duplicates.
 - Language: definition, usage and examples in {language_name}; pos, level and register in English.
 - pos: lowercase English term (noun, verb, adjective, adverb, ...). A noun used before another noun (kitchen table) stays a noun: no adjective sense for it.

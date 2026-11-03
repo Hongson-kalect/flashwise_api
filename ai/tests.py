@@ -938,6 +938,76 @@ class GetWordApiTests(APITestCase):
         AISense.objects.create(metadata=metadata, **sense)
         return w
 
+    def test_sentences_are_not_dictionary_entries(self):
+        for text in ('I went to the bank yesterday and then I forgot my wallet at home', 'This is great. I love it', 'where did you put my keys and why are they gone?'):
+            res = self.get(text)
+            self.assertEqual(res.status_code, 400, text)
+            self.assertEqual(res.data['errorCode'], 'not_a_dictionary_entry')
+        self.assertFalse(AIWord.objects.exists())  # không tạo bản ghi, không tốn lượt AI
+
+    def test_words_idioms_and_proverbs_are_still_looked_up(self):
+        for text in ('bank', 'ice cream', 'break the ice', 'a bird in the hand is worth two in the bush', "what's up?", 'etc.'):
+            self.assertEqual(self.get(text).status_code, 201, text)
+
+    def test_existing_long_entry_is_still_served(self):
+        self.make_completed('a rolling stone gathers no moss and then some more words here ok yes no')
+        self.assertEqual(self.get('a rolling stone gathers no moss and then some more words here ok yes no').status_code, 200)
+
+    def post_check(self, words, **extra):
+        return self.client.post('/api/ai-words/check/', {'lang': 'en', 'words': words, **extra}, format='json')
+
+    def post_bulk(self, words, **extra):
+        return self.client.post('/api/ai-words/bulk-create/', {'lang': 'en', 'user_lang': 'vi', 'words': words, **extra}, format='json')
+
+    def test_check_words_in_batch_without_creating(self):
+        self.client.force_authenticate(User.objects.create_user('checker'))
+        self.make_completed('zzcheckok')
+        AIWord.objects.create(value='zzcheckbad', language_code='en', status='REJECTED')
+        AIWord.objects.create(value='zzcheckwip', language_code='en', status='PROCESSING')
+        res = self.post_check(['ZZCheckOK', 'zzcheckbad', 'zzcheckwip', 'zzchecknew', 'this is a whole sentence. And another one', '!!!', 'zzcheckok'])
+        self.assertEqual(res.status_code, 200, res.data)
+        r = res.data['results']
+        self.assertEqual(r['zzcheckok'], {'status': 'exists'})  # chuẩn hoá + bỏ trùng
+        self.assertEqual(r['zzcheckbad'], {'status': 'rejected'})
+        self.assertEqual(r['zzcheckwip'], {'status': 'processing'})
+        self.assertEqual(r['zzchecknew'], {'status': 'unknown'})
+        self.assertEqual(r['this is a whole sentence. and another one'], {'status': 'invalid', 'reason': 'sentence'})
+        self.assertEqual(r['!!!'], {'status': 'invalid', 'reason': 'not_a_word'})
+        self.assertFalse(AIWord.objects.filter(value='zzchecknew').exists())  # check chỉ đọc, không tạo
+
+    def test_bulk_create_starts_only_new_valid_words(self):
+        self.client.force_authenticate(User.objects.create_user('checker3'))
+        self.words.update({'zzmake1', 'zzmake2'})
+        self.make_completed('zzhave')
+        res = self.post_bulk(['zzhave', 'zzmake1', 'zzmake2', 'I went to the bank yesterday and forgot to pay the bill on time ok'])
+        self.assertEqual(res.status_code, 200, res.data)
+        r = res.data['results']
+        self.assertEqual(r['zzhave'], {'status': 'exists'})
+        self.assertEqual(r['zzmake1'], {'status': 'processing'})
+        self.assertEqual(r['zzmake2'], {'status': 'processing'})
+        self.assertEqual(sum(1 for v in r.values() if v['status'] == 'invalid'), 1)  # câu bị loại, không tạo
+        self.assertEqual(sorted(AIWord.objects.filter(status='PROCESSING').values_list('value', flat=True)), ['zzmake1', 'zzmake2'])
+        # gọi lại: từ đang tạo không tạo trùng
+        again = self.post_bulk(['zzmake1'])
+        self.assertEqual(again.data['results']['zzmake1'], {'status': 'processing'})
+        self.assertEqual(AIWord.objects.filter(value='zzmake1').count(), 1)
+
+    def test_bulk_create_over_quota_creates_nothing(self):
+        self.client.force_authenticate(User.objects.create_user('checker4'))
+        with self.settings(BULK_WORDS_PER_DAY=1):
+            res = self.post_bulk(['zzq1', 'zzq2'])
+        self.assertEqual(res.status_code, 429)
+        self.assertEqual(res.data['errorCode'], 'bulk_quota_exceeded')
+        self.assertFalse(AIWord.objects.filter(value__in=['zzq1', 'zzq2']).exists())
+
+    def test_check_words_validation_and_login(self):
+        self.assertIn(self.post_check(['a']).status_code, (401, 403))
+        self.client.force_authenticate(User.objects.create_user('checker2'))
+        self.assertEqual(self.post_check([]).status_code, 400)
+        self.assertEqual(self.post_check(['w%d' % i for i in range(21)]).status_code, 400)
+        self.assertEqual(self.client.post('/api/ai-words/bulk-create/', {'lang': 'en', 'words': ['a']}, format='json').status_code, 400)  # bulk-create cần user_lang
+        self.assertIn(self.client.post('/api/ai-words/bulk-create/', {}, format='json').status_code, (400,))
+
     def test_word_key_matches_worker_and_app_room(self):
         self.words.update({'ice cream', 'c++'})
         self.assertEqual(self.get('  Ice   Cream ').status_code, 201)

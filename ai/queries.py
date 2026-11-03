@@ -3,6 +3,7 @@ from django.db.models import Prefetch
 
 from ai.models.AISense import AISense
 from ai.models.AIWord import AIWord
+from utils.utils.sense_handle import deep_merge
 
 
 def official_senses():
@@ -40,12 +41,18 @@ def published_sense_ids():
     )
 
 
+def not_pending_proposal_q():
+    """Không phải nghĩa đề xuất đang chờ duyệt. Khoá JSON vắng thì so sánh ra NULL nên phải xét isnull riêng (~Q một mình sẽ loại cả nghĩa thường)."""
+    return Q(ai_review__proposal__status__isnull=True) | ~Q(ai_review__proposal__status='pending')
+
+
 def visible_sense_q(user):
     """
     Điều kiện nghĩa user này được thấy: nghĩa chính thức, nghĩa của chính mình, và nghĩa đã đóng băng trong bộ đã phát hành
     (nghĩa người khác đã upload). Nghĩa tuỳ chỉnh chưa phát hành của người khác thì không.
     """
-    visible = Q(is_official=True) | Q(is_frozen=True, id__in=published_sense_ids())
+    # Nghĩa người dùng đề xuất đang chờ admin duyệt chỉ tác giả thấy, kể cả khi đã nằm trong bộ phát hành
+    visible = Q(is_official=True) | (Q(is_frozen=True, id__in=published_sense_ids()) & not_pending_proposal_q())
     if user is not None and user.is_authenticated:
         visible |= Q(created_by=user)
     return visible
@@ -114,6 +121,18 @@ def personalize_word(data, user):
         if not item.get('contents'):
             base = senses.get(str(custom.original_id)) if custom.original_id else None
             item['contents'] = (base or {}).get('contents') or (custom.original.contents if custom.original else {})
+            delta = custom.delta if isinstance(custom.delta, dict) else {}
+            if delta:
+                # Áp delta ngay để app nhận nghĩa đã sửa; definition / usage user sửa chỉ giữ ngôn ngữ có trong delta
+                merged_contents = deep_merge(delta, item['contents'])
+                for key in ('definition', 'usage'):
+                    if isinstance(delta.get(key), dict):
+                        merged_contents[key] = dict(delta[key])
+                item['contents'] = merged_contents
+        if custom.original:  # bản tách cũ có thể chưa kế thừa các trường này
+            for field in ('pos', 'level', 'register', 'ipas'):
+                if not item.get(field):
+                    item[field] = getattr(custom.original, field)
         merged[str(custom.id)] = item
     replaced = {str(custom.original_id) for custom in customs if custom.original_id}
     for sense_id, sense in senses.items():

@@ -324,7 +324,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
         Chỉ tác giả bộ (từ đang chờ được thêm vào nháp của tác giả); người đã tải dùng get-word rồi add-senses.
         Body: words, user_lang.
         """
-        from core.views.Collection import clean_words, sort_words, start_pending_words
+        from ai.bulk import clean_words, sort_words, start_words
 
         user = request.user
         words, user_language_code = request.data.get('words'), request.data.get('user_lang')
@@ -356,7 +356,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
             locked.invalid_words = list(dict.fromkeys([*(locked.invalid_words or []), *invalid]))
             locked.save(update_fields=['pending_words', 'invalid_words', 'updated_at'])
 
-        start_pending_words(user, collection.id, to_start, existing, collection.language_code, user_language_code)
+        start_words(user, to_start, existing, collection.language_code, user_language_code, collection_id=collection.id)
         return Response({"added": added, "pending_words": pending, "invalid_words": invalid})
 
     @action(detail=True, methods=['post'], url_path='reorder')

@@ -9,7 +9,7 @@ from django.db.models.functions import Length
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import action
-from rest_framework.permissions import IsAdminUser
+from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 
 from ai.models.AISense import AISense
@@ -17,14 +17,16 @@ from ai.models.AISenseContent import AISenseContent
 from ai.models.AISenseMetadata import AISenseMetadata
 from ai.models.AIWord import AIWord
 from ai.models.TranslateLog import TranslateLog
+from ai.bulk import clean_words, describe_words, sort_words, start_words
 from ai.generation import GenerationError, start_word_generation
 from ai.jobs import queue_translation
 from ai.queries import load_word, official_senses, personalize_word
 from ai.serializers.AIWord import AIWordSerializer
 from core.models import Collection, CollectionItem, ImageContext, ImageLibrary, ImageLibraryContext
 from utils.redis.word_init import WordCacheManager
-from utils.utils.normalize import is_lookup_word, normalize_lookup
-from utils.utils.permissions import IsAdminOrReadOnly, WordGenerateThrottle, get_request_user
+from utils.utils.normalize import is_lookup_word, lookup_entry_problem, normalize_lookup
+from ai.validators import is_lang
+from utils.utils.permissions import IsAdminOrReadOnly, WordGenerateThrottle, consume_daily_quota, get_request_user
 from utils.utils.sense_handle import get_user_lang_content
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 
@@ -158,6 +160,12 @@ def _join_processing(cache_manager, word_instance, word, language_code, user_lan
 
 def _start_generation(request, cache_manager, word, language_code, user_language_code, existing):
     """Từ chưa có (hoặc lần tạo trước lỗi / treo): đẩy job tạo từ cho worker. existing là bản ghi AIWord cũ nếu có."""
+    problem = lookup_entry_problem(word, language_code)
+    if problem:  # câu bất kỳ không phải mục từ: từ chối ngay, không tốn lượt AI (từ đã có trong DB vẫn được trả ở các nhánh trước)
+        return Response(
+            {'detail': 'Only words, phrases, idioms and proverbs can be looked up', 'errorCode': 'not_a_dictionary_entry', 'reason': problem},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     try:
         # Mỗi từ mới là 2 lần gọi AI (draft + refine) cộng dịch / metadata, nên giới hạn theo người dùng / IP
         # Từ còn nghĩa chính thức (lần tạo lại trước bị treo / lỗi giữa chừng): bản mới thay hẳn, không cộng dồn
@@ -178,6 +186,9 @@ def _start_generation(request, cache_manager, word, language_code, user_language
             status=status.HTTP_429_TOO_MANY_REQUESTS,
         )
     return _word_response('PROCESSING', 201, {**init_data['word'], "senses": init_data.get('senses')})
+
+
+MAX_CHECK_WORDS = 20
 
 
 class AIWordViewSet(SoftDeleteViewSet):
@@ -235,6 +246,38 @@ class AIWordViewSet(SoftDeleteViewSet):
                     return _join_processing(cache_manager, word_instance, word, language_code, user_language_code)
 
         return _start_generation(request, cache_manager, word, language_code, user_language_code, word_instance)
+
+    @action(detail=False, methods=['post'], url_path='bulk-create', permission_classes=[IsAuthenticated])
+    def bulk_create(self, request):
+        """
+        Tạo nhiều từ cùng lúc (từ chưa có được AI tạo dần, không cần đăng nhập vào bộ nào). Body: {lang, user_lang, words}.
+        Chỉ nhận từ đơn, cụm từ, thành ngữ, tục ngữ: câu bất kỳ vào invalid ngay, không tốn lượt AI. Từ mới tính vào hạn mức
+        `bulk_words` theo ngày (429 bulk_quota_exceeded, không tạo từ nào). Bộ từ gọi lại các hàm trong ai/bulk.py.
+        Trả {results: {từ chuẩn hoá: {status, reason?}}}: exists | processing | rejected | invalid | unknown.
+        Hỏi lại tiến độ bằng ai-words/check (chỉ đọc) cho tới khi hết processing.
+        """
+        language_code, user_language_code, words = request.data.get('lang'), request.data.get('user_lang'), request.data.get('words')
+        if not is_lang(language_code) or not is_lang(user_language_code) or not isinstance(words, list) or not words:
+            return Response({'detail': 'lang, user_lang and words are required'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(words) > settings.BULK_MAX_WORDS_PER_REQUEST:
+            return Response({'detail': 'At most %s words per request' % settings.BULK_MAX_WORDS_PER_REQUEST}, status=status.HTTP_400_BAD_REQUEST)
+
+        found, invalid, pending, to_start, existing = sort_words(clean_words(words), language_code)
+        if to_start and not consume_daily_quota(request.user, 'bulk_words', len(to_start), settings.BULK_WORDS_PER_DAY):
+            return Response({'detail': 'Daily new-word limit reached', 'errorCode': 'bulk_quota_exceeded'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        started = start_words(request.user, to_start, existing, language_code, user_language_code)
+        return Response({'results': describe_words(words, language_code, found, invalid, pending, to_start, existing, started)})
+
+    @action(detail=False, methods=['post'], url_path='check', permission_classes=[IsAuthenticated])
+    def check(self, request):
+        """Tiến độ của nhiều từ (chỉ đọc, không tạo, không tính hạn mức). Body: {lang, words (≤ 20)}. Kết quả như bulk-create."""
+        language_code, words = request.data.get('lang'), request.data.get('words')
+        if not is_lang(language_code) or not isinstance(words, list) or not words:
+            return Response({'detail': 'lang and words are required'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(words) > MAX_CHECK_WORDS:
+            return Response({'detail': f'At most {MAX_CHECK_WORDS} words'}, status=status.HTTP_400_BAD_REQUEST)
+        found, invalid, pending, to_start, existing = sort_words(clean_words(words), language_code)
+        return Response({'results': describe_words(words, language_code, found, invalid, pending, to_start, existing)})
 
     @action(detail=False, methods=['get'], url_path='search')
     def search(self, request):

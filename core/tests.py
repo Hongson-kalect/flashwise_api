@@ -195,7 +195,7 @@ class BulkCreateTests(APITestCase):
         self.redis = FakeRedis()
         for target, replacement in (
             ('ai.generation.push_job', self.queue.push_job),
-            ('core.views.Collection.get_queue_client', lambda: self.redis),
+            ('ai.bulk.get_queue_client', lambda: self.redis),
         ):
             patcher = mock.patch(target, replacement)
             patcher.start()
@@ -698,7 +698,7 @@ class UserCollectionEditFlowTests(APITestCase):
         AIWord.objects.create(value='zzbad', language_code='en', status='REJECTED')
         queue, redis = FakeQueue(), FakeRedis()
         self.addCleanup(WordCacheManager().cache_word_clear_specific, 'en', 'zznew')
-        with mock.patch('ai.generation.push_job', queue.push_job), mock.patch('core.views.Collection.get_queue_client', lambda: redis):
+        with mock.patch('ai.generation.push_job', queue.push_job), mock.patch('ai.bulk.get_queue_client', lambda: redis):
             res = self.client.post(f'/api/user-collections/{mine.id}/add-words/', {'words': ['Two', 'one', 'zzbad', 'zznew'], 'user_lang': 'vi'}, format='json')
         self.assertEqual(res.status_code, 200)
         self.assertEqual((res.data['added'], res.data['pending_words'], res.data['invalid_words']), (['two'], ['zznew'], ['zzbad']))

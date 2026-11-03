@@ -1,21 +1,26 @@
 import json
 import logging
+import re
 
+from asgiref.sync import async_to_sync
+from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
-from django.db.models import ExpressionWrapper, F, FloatField, Q
-from django.db.models.functions import Cast
+from django.db.models import Case, Count, ExpressionWrapper, F, FloatField, IntegerField, OuterRef, Q, Subquery, Value, When
+from django.db.models.functions import Cast, Coalesce, Greatest, Least, Ln
 from rest_framework import status
 from rest_framework.decorators import action
-from rest_framework.permissions import IsAdminUser, IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import UserRateThrottle
 
 from ai.jobs import queue_translation
 from ai.sense_edit import apply_sense_edit
 from ai.models.AISense import AISense
 from ai.models.AISenseMetadata import AISenseMetadata
 from ai.models.AIWord import AIWord
-from ai.queries import visible_sense_q
+from ai.proposals import create_proposed_sense, duplicate_sense, existing_senses_of
+from ai.queries import not_pending_proposal_q, published_sense_ids, visible_sense_q
 from core.bundle import pick_languages
 from core.models import CollectionItem
 from django.utils import timezone
@@ -24,7 +29,8 @@ from interact.models import UserInteraction
 from ai.serializers.AISense import AISenseSerializer
 from ai.validators import MAX_DELTA_CHARS, METADATA_FIELDS, clean_contents, clean_metadata, is_lang, is_uuid
 from asset.media import clean_media_param
-from utils.utils.permissions import IsAdminOrReadOnly, NotBanned
+from utils.ai import sense_gate
+from utils.utils.permissions import IsAdminOrReadOnly, NotBanned, SenseProposeThrottle
 from user.reputation import record
 from utils.redis.word_init import WordCacheManager
 from utils.utils.best_effort import best_effort
@@ -86,6 +92,69 @@ def top_sense_row(sense, language_code, user_language_code):
         'global_forget_count': forgot, 'global_remember_count': remembered,
         'forget_rate': round(forgot / (forgot + remembered), 4) if forgot + remembered else 0.0,
         'learner_count': sense.learner_count, 'like_count': sense.like_count, 'global_difficulty': sense.global_difficulty,
+    }
+
+
+COMMUNITY_MAX = 50
+COMMUNITY_ORDERS = ('popular', 'newest')
+AUTHOR_MIN, AUTHOR_MAX = -50, 100  # như core/scores.py: kẹp uy tín tác giả rồi chia 10 (cộng / trừ rất nhẹ)
+
+
+def community_senses(word_id, user):
+    """
+    Nghĩa tuỳ chỉnh người khác đã phát hành cho 1 từ (đóng băng và nằm trong bộ đã phát hành, như visible_sense_q),
+    bỏ nghĩa của chính mình, nghĩa mình đã ẩn, nghĩa bị đánh dấu xấu. Kèm `rank`:
+      3·ln(1+like) + 2·ln(1+số bản được tách từ nghĩa này) + uy tín tác giả/10 (kẹp -5..10) + 3 nếu đã verified.
+    """
+    from user.models import UserProfile
+
+    reputation = Coalesce(
+        Subquery(UserProfile.objects.filter(user_id=OuterRef('created_by_id')).values('reputation')[:1]), Value(0),
+    )
+    adopted = Coalesce(
+        Subquery(
+            AISense.objects.filter(previous_id=OuterRef('pk')).exclude(is_deleted=True)
+            .values('previous_id').annotate(n=Count('pk')).values('n')[:1]
+        ),
+        Value(0),
+    )
+    queryset = (
+        AISense.objects.filter(word_id=word_id, is_official=False, is_frozen=True, id__in=published_sense_ids())
+        .exclude(is_deleted=True).exclude(is_active=False).exclude(is_offensive=True).exclude(quality_status='flagged')
+        .filter(not_pending_proposal_q())
+        .select_related('metadata')
+        .annotate(
+            adopted_count=Cast(adopted, IntegerField()),
+            author_rep=reputation,
+        )
+        .annotate(
+            rank=Value(3.0) * Ln(Greatest(F('like_count'), Value(0)) + Value(1.0))
+            + Value(2.0) * Ln(F('adopted_count') + Value(1.0))
+            + Least(Greatest(F('author_rep'), Value(AUTHOR_MIN)), Value(AUTHOR_MAX)) / Value(10.0)
+            + Case(When(quality_status='verified', then=Value(3.0)), default=Value(0.0), output_field=FloatField()),
+        )
+    )
+    if user is not None and user.is_authenticated:
+        hidden = UserInteraction.objects.filter(user=user, target_type='sense', interaction_type='hide', status=True).values('target_id')
+        queryset = queryset.exclude(created_by=user).exclude(id__in=hidden)
+    return queryset
+
+
+def community_row(sense, langs, liked_ids):
+    """Một dòng gợi ý: nội dung đã gộp delta + chỉ các ngôn ngữ cần, kèm tín hiệu xếp hạng và tác giả."""
+    from user.models import UserProfile
+
+    profile = UserProfile.objects.filter(user_id=sense.created_by_id).only('id', 'full_name').first() if sense.created_by_id else None
+    metadata = sense.metadata
+    return {
+        'id': str(sense.id), 'word_id': str(sense.word_id), 'word_value': sense.word_value,
+        'pos': sense.pos, 'level': sense.level, 'ipas': sense.ipas, 'image_preview': sense.image_preview,
+        'contents': pick_languages(promoted_contents(sense), langs),
+        'metadata': {'advanced': metadata.advanced, 'tags': metadata.tags} if metadata else None,
+        'like_count': sense.like_count, 'adopted_count': sense.adopted_count, 'quality_status': sense.quality_status,
+        'liked': str(sense.id) in liked_ids,
+        'author': {'id': str(profile.id), 'name': profile.full_name or None, 'reputation': sense.author_rep} if profile else None,
+        'rank': round(sense.rank, 3), 'created_at': sense.created_at,
     }
 
 
@@ -168,6 +237,9 @@ class AISenseViewSet(SoftDeleteViewSet):
             sense.is_frozen = True
             sense.quality_status = 'verified'
             sense.updated_by = request.user
+            proposal = (sense.ai_review or {}).get('proposal')
+            if proposal and proposal.get('status') == 'pending':
+                sense.ai_review = {**sense.ai_review, 'proposal': {**proposal, 'status': 'approved', 'approved_by': request.user.pk}}
             sense.save()
             replaced = None
             if replace and original is not None and original.is_official:
@@ -202,6 +274,144 @@ class AISenseViewSet(SoftDeleteViewSet):
             rows = [top_sense_row(sense, language_code, user_language_code) for sense in top_senses(language_code, by)[:TOP_MAX]]
             cache.set(key, rows, TOP_CACHE_SECONDS)
         return Response({'by': by, 'lang': language_code, 'senses': rows[:limit]})
+
+    PROPOSE_TEXT = (8, 500)
+
+    @action(
+        detail=False, methods=['post'], url_path='propose', permission_classes=[IsAuthenticated, NotBanned],
+        throttle_classes=[UserRateThrottle, SenseProposeThrottle],
+    )
+    def propose(self, request):
+        """
+        Đề xuất nghĩa mới cho 1 từ: chỉ cần gõ định nghĩa. Cổng AI (utils/ai/sense_gate.py) quyết định:
+          official  -> nghĩa chính thức ngay (Claude accept >= SENSE_PROPOSE_AUTO_CONFIDENCE VÀ Gemini accept, bản dịch ổn)
+          duplicate -> đã có nghĩa tương tự, trả nghĩa đó (không tạo gì)
+          rejected  -> từ chối kèm lý do ngắn (nội dung chèn lệnh / spam / xấu còn bị trừ uy tín)
+          pending   -> chờ admin duyệt (Claude không chắc, hai lớp bất đồng, hoặc Gemini chưa kịp về khi Claude xong); tác giả vẫn thấy riêng
+        Body: word_id, user_lang, definition (8-500 ký tự), pos (tuỳ chọn). Trả {result, sense?, reason?}. Chạy đồng bộ (vài giây).
+        Lỗi: 400 (tham số), 403 account_required (khách) / user_banned, 404 từ chưa có, 429 (throttle), 503 ai_unavailable.
+        """
+        user = request.user
+        word_id, user_language_code = request.data.get('word_id'), request.data.get('user_lang')
+        definition = request.data.get('definition')
+        pos = request.data.get('pos') or ''
+        if not is_uuid(word_id) or not is_lang(user_language_code):
+            return _bad_request("Invalid word_id or user_lang")
+        if not isinstance(definition, str) or not isinstance(pos, str):
+            return _bad_request("definition must be a string")
+        definition = re.sub(r'\s+', ' ', definition).strip()
+        low, high = self.PROPOSE_TEXT
+        if not low <= len(definition) <= high:
+            return _bad_request("definition must be %d-%d characters" % (low, high))
+        pos = re.sub(r'[^a-zA-Z ]', '', pos).strip().lower()[:20]
+
+        from user.models import UserProfile
+        tier = UserProfile.objects.filter(user=user).values_list('tier', flat=True).first()
+        if tier in (None, 'guest') and not user.is_staff and not settings.SENSE_PROPOSE_ALLOW_GUEST:
+            return Response({"detail": "Register an account to propose senses", "errorCode": "account_required"}, status=status.HTTP_403_FORBIDDEN)
+
+        word = AIWord.objects.filter(id=word_id, status='COMPLETED').exclude(is_deleted=True).exclude(is_active=False).first()
+        if not word:
+            return Response({"message": "Word not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            result = async_to_sync(sense_gate.evaluate_proposal)(
+                word.value, word.language_code, user_language_code, pos, existing_senses_of(word), definition,
+            )
+        except Exception:
+            logger.exception('Cổng AI đề xuất nghĩa lỗi (từ %s)', word.value)
+            return Response({"detail": "AI service unavailable, try again later", "errorCode": "ai_unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        decision, claude = result['decision'], result['claude']
+        logger.info('Đề xuất nghĩa [%s] %s: %s %s (Claude %s %.2f, Gemini %s)', word.value, user.pk, decision, result['reasons'],
+                    claude['verdict'], claude['confidence'], result['gemini_status'])
+
+        if decision == 'reject':
+            if result['abuse']:
+                record(user, 'sense_abuse', 'word', word.id)
+            return Response({'result': 'rejected', 'reason': claude['reason'], 'abuse': result['abuse']})
+
+        if decision == 'duplicate':
+            existing = duplicate_sense(result)
+            data = AISenseSerializer(existing).data if existing else None
+            if existing:
+                data['contents'] = self._user_contents(existing, user_language_code)
+            return Response({'result': 'duplicate', 'reason': claude['reason'], 'sense': data})
+
+        sense = create_proposed_sense(user, word, result, definition, user_language_code)
+        data = AISenseSerializer(sense).data
+        data['contents'] = promoted_contents(sense)
+        if decision == 'official':
+            record(user, 'sense_accepted', 'sense', sense.id)
+            return Response({'result': 'official', 'sense': data}, status=status.HTTP_201_CREATED)
+        return Response({'result': 'pending', 'reasons': result['reasons'], 'sense': data}, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['get'], url_path='proposals', permission_classes=[IsAdminUser])
+    def proposals(self, request):
+        """
+        Admin: hàng chờ duyệt nghĩa người dùng đề xuất (status=pending mặc định | approved), mới nhất trước, <= 100.
+        Duyệt bằng POST ai-senses/{id}/promote/ (thành chính thức), từ chối bằng DELETE ai-senses/{id}/.
+        """
+        wanted = request.query_params.get('status', 'pending')
+        if wanted not in ('pending', 'approved'):
+            return _bad_request("status must be pending or approved")
+        try:
+            limit = min(max(int(request.query_params.get('limit', 50)), 1), 100)
+        except ValueError:
+            return _bad_request("Invalid limit")
+        senses = (
+            AISense.objects.filter(ai_review__proposal__status=wanted).exclude(is_deleted=True)
+            .select_related('metadata', 'created_by').order_by('-id')[:limit]
+        )
+        rows = []
+        for sense in senses:
+            rows.append({
+                'id': str(sense.id), 'word_id': str(sense.word_id), 'word_value': sense.word_value, 'pos': sense.pos, 'level': sense.level,
+                'language_code': sense.language_code, 'contents': promoted_contents(sense), 'is_official': sense.is_official,
+                'proposal': sense.ai_review.get('proposal'), 'author': sense.created_by.username if sense.created_by_id else None,
+                'created_at': sense.created_at,
+            })
+        return Response({'status': wanted, 'senses': rows})
+
+    @action(detail=False, methods=['get'], url_path='community', permission_classes=[AllowAny])
+    def community(self, request):
+        """
+        Gợi ý nghĩa của cộng đồng cho 1 từ (để điền nhanh form thêm / sửa nghĩa), xếp theo `rank` (xem community_senses).
+        Query: word_id (bắt buộc), user_lang (kèm nội dung ngôn ngữ đó, không đẩy dịch bù), ordering (popular mặc định | newest),
+        limit (<= 50, mặc định 10). Có token thì bỏ nghĩa của mình / đã ẩn và báo `liked`. Chỉ nghĩa đã phát hành mới có mặt,
+        chưa ai phát hành thì `senses` rỗng.
+        """
+        params = request.query_params
+        word_id, user_language_code = params.get('word_id'), params.get('user_lang')
+        ordering = params.get('ordering', 'popular')
+        if not is_uuid(word_id):
+            return _bad_request("word_id is required")
+        if user_language_code is not None and not is_lang(user_language_code):
+            return _bad_request("user_lang must be a language code")
+        if ordering not in COMMUNITY_ORDERS:
+            return _bad_request("ordering must be one of: %s" % ', '.join(COMMUNITY_ORDERS))
+        try:
+            limit = min(max(int(params.get('limit', 10)), 1), COMMUNITY_MAX)
+        except ValueError:
+            return _bad_request("Invalid limit")
+
+        word = AIWord.objects.filter(id=word_id).exclude(is_deleted=True).first()
+        if not word:
+            return Response({"message": "Word not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        queryset = community_senses(word.id, request.user)
+        queryset = queryset.order_by('-rank', '-id') if ordering == 'popular' else queryset.order_by('-id')
+        senses = list(queryset[:limit])
+
+        liked = set()
+        if request.user.is_authenticated and senses:
+            liked = {
+                str(target) for target in UserInteraction.objects.filter(
+                    user=request.user, target_type='sense', interaction_type='like', status=True, target_id__in=[s.id for s in senses],
+                ).values_list('target_id', flat=True)
+            }
+        langs = {word.language_code, user_language_code} - {None}
+        return Response({'word_id': str(word.id), 'ordering': ordering, 'senses': [community_row(sense, langs, liked) for sense in senses]})
 
     @action(detail=False, methods=['get'], url_path='mine', permission_classes=[IsAuthenticated])
     def mine(self, request):

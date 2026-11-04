@@ -172,6 +172,7 @@ WORD_ERROR_RETRY_SECONDS = int(os.getenv('WORD_ERROR_RETRY_SECONDS', '60')) # t�
 BULK_MAX_WORDS_PER_REQUEST = int(os.getenv('BULK_MAX_WORDS_PER_REQUEST', '200'))
 SENSE_ITEMS_MAX_WORDS = int(os.getenv('SENSE_ITEMS_MAX_WORDS', '10')) # số từ tối đa mỗi lượt thêm vào danh sách nghĩa
 SENSE_ITEMS_MAX_TOTAL = int(os.getenv('SENSE_ITEMS_MAX_TOTAL', '50')) # số từ tối đa của 1 danh sách đồng nghĩa / trái nghĩa / liên quan trong 1 nghĩa
+FORM_EXAMPLES_PER_DAY = int(os.getenv('FORM_EXAMPLES_PER_DAY', '40')) # ví dụ mới theo dạng biến cách / người dùng / ngày
 BULK_WORDS_PER_DAY = int(os.getenv('BULK_WORDS_PER_DAY', '500')) # số từ mới / người dùng / ngày
 
 REDIS_HOST = os.getenv('REDIS_HOST', 'redis')

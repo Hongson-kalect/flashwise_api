@@ -19,6 +19,8 @@ from ai.sense_edit import apply_sense_edit
 from ai.models.AISense import AISense
 from ai.models.AISenseMetadata import AISenseMetadata
 from ai.models.AIWord import AIWord
+from ai.models import SenseFormExample
+from ai import form_examples
 from ai.proposals import create_proposed_sense, duplicate_sense, existing_senses_of
 from ai.queries import not_pending_proposal_q, published_sense_ids, visible_sense_q
 from core.bundle import pick_languages
@@ -432,6 +434,57 @@ class AISenseViewSet(SoftDeleteViewSet):
                 metadata.advanced = advanced
                 metadata.save(update_fields=['advanced', 'updated_at'])
         return Response({'added': added, 'rejected': rejected, 'existing': existing})
+
+    @action(detail=False, methods=['post'], url_path='form-example', permission_classes=[IsAuthenticated, NotBanned])
+    def form_example(self, request):
+        """
+        Ví dụ 1 câu riêng của 1 dạng biến cách (buying) dưới nghĩa của từ gốc (buy). Có sẵn thì trả ngay; chưa có thì Claude Haiku
+        viết 1 câu, chỉ lưu khi câu chứa đúng dạng đó (ai/form_examples.py), dùng chung cho mọi người. Mỗi người tối đa
+        FORM_EXAMPLES_PER_DAY lần tạo mới / ngày.
+        Body: sense_id, form, user_lang. Trả {form, text, translate, created}.
+        Lỗi: 400 (kể cả dạng không thuộc từ này), 403 account_required, 404, 422 no_example (AI không viết được câu hợp lệ),
+        429 (hết lượt trong ngày), 503 ai_unavailable.
+        """
+        sense_id, form, user_lang = request.data.get('sense_id'), request.data.get('form'), request.data.get('user_lang')
+        if not is_uuid(sense_id) or not isinstance(form, str) or not form.strip() or len(form) > 100 or not is_lang(user_lang):
+            return _bad_request("sense_id, form and user_lang are required")
+        sense = self.get_queryset().filter(id=sense_id).first()
+        if not sense:
+            return Response({"message": "Sense not found"}, status=status.HTTP_404_NOT_FOUND)
+        form = normalize_lookup(form).casefold()
+        if not form_examples.form_is_known(sense, form):
+            return _bad_request("Not a form of this word")
+
+        def reply(row, created):
+            return Response({
+                'form': row.form, 'text': row.text, 'created': created,
+                'translate': (row.translations or {}).get(user_lang) if user_lang != row.language_code else None,
+            })
+
+        row = SenseFormExample.objects.filter(sense=sense, form=form).first()
+        if row and (user_lang == row.language_code or user_lang in (row.translations or {})):
+            return reply(row, False)
+
+        from user.models import UserProfile
+        tier = UserProfile.objects.filter(user=request.user).values_list('tier', flat=True).first()
+        if tier in (None, 'guest') and not request.user.is_staff and not settings.SENSE_PROPOSE_ALLOW_GUEST:
+            return Response({"detail": "Register an account to add examples", "errorCode": "account_required"}, status=status.HTTP_403_FORBIDDEN)
+        key = 'form_example:%s:%s' % (request.user.pk, timezone.localdate())
+        used = cache.get(key, 0)
+        if used >= settings.FORM_EXAMPLES_PER_DAY:
+            return Response({"detail": "Daily limit reached", "errorCode": "daily_limit"}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        cache.set(key, used + 1, 86400)
+
+        contents = promoted_contents(sense)
+        definition = (contents.get('definition') or {}).get(sense.language_code, {}).get('value', '')
+        try:
+            row, created = form_examples.get_form_example(sense, form, definition, user_lang)
+        except Exception:
+            logger.exception('Tạo ví dụ dạng lỗi (nghĩa %s, dạng %s)', sense.id, form)
+            return Response({"detail": "AI service unavailable, try again later", "errorCode": "ai_unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        if row is None:
+            return Response({"detail": "No valid example", "errorCode": "no_example"}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        return reply(row, created)
 
     @action(detail=False, methods=['get'], url_path='proposals', permission_classes=[IsAdminUser])
     def proposals(self, request):

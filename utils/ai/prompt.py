@@ -32,7 +32,7 @@ def render_word_prompt(word, language_code):
 - pos: lowercase English term (noun, verb, adjective, adverb, ...). A noun used before another noun (kitchen table) stays a noun: no adjective sense for it.
 - definition: one clear sentence, in simpler words than '{word}'; never use '{word}' or its forms in it.
 - usage: a short note on grammar patterns, prepositions / particles, collocations or register, e.g. "Usually plural; used with 'in'". About this sense only, never an example sentence. Only write what you are sure of: a wrong note is worse than none, so use "" if there is nothing useful.
-- examples: 1-2 natural sentences at the sense's level that show exactly this sense (not another one), each containing '{word}' or an inflected form. Never reuse an example in another sense.
+- examples: 1-2 natural sentences at the sense's level that show exactly this sense (not another one), each ONE sentence containing '{word}' or an inflected form. With two examples use a different form of '{word}' in each when it sounds natural (e.g. base form in one, -ing or past in the other); never force it. Never reuse an example in another sense.
 - level: CEFR A1-C2 (TOPIK1-6 for Korean).
 - register: ["neutral"] unless the sense is marked.{ipa_rule}
 </rules>{extra_rules}"""

@@ -139,3 +139,4 @@ def personalize_word(data, user):
         if sense_id not in replaced and sense_id not in hidden:
             merged[sense_id] = sense
     return {**data, 'senses': merged}
+

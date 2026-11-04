@@ -4,12 +4,12 @@ from urllib.parse import unquote
 
 from django.conf import settings
 from django.contrib.postgres.search import TrigramSimilarity
-from django.db.models import Prefetch
+from django.db.models import F, Prefetch
 from django.db.models.functions import Length
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import action
-from rest_framework.permissions import IsAdminUser, IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 
 from ai.models.AISense import AISense
@@ -20,12 +20,14 @@ from ai.models.TranslateLog import TranslateLog
 from ai.bulk import clean_words, describe_words, sort_words, start_words
 from ai.generation import GenerationError, start_word_generation
 from ai.jobs import queue_translation
+from ai.forms import form_of_payload, forms_of, resolve_form
+from ai.models import WordForm
 from ai.queries import load_word, official_senses, personalize_word
 from ai.serializers.AIWord import AIWordSerializer
 from core.models import Collection, CollectionItem, ImageContext, ImageLibrary, ImageLibraryContext
 from utils.redis.word_init import WordCacheManager
 from utils.utils.normalize import is_lookup_word, lookup_entry_problem, normalize_lookup
-from ai.validators import is_lang
+from ai.validators import is_lang, is_uuid
 from utils.utils.permissions import IsAdminOrReadOnly, WordGenerateThrottle, consume_daily_quota, get_request_user
 from utils.utils.sense_handle import get_user_lang_content
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
@@ -233,6 +235,16 @@ class AIWordViewSet(SoftDeleteViewSet):
 
         word_instance = load_word(value=word, language_code=language_code)
 
+        if word_instance is None:
+            # Chưa có mục riêng: nếu là dạng biến cách (số nhiều, quá khứ...) của từ đã có thì trả từ gốc kèm form_of
+            candidates = resolve_form(word, language_code)
+            if candidates:
+                lemma = load_word(id=candidates[0].word.id)
+                response = _respond_completed(cache_manager, lemma, lemma.value, language_code, user_language_code)
+                if isinstance(response.data.get('data'), dict):
+                    response.data['data']['form_of'] = form_of_payload(word, candidates, own_entry=False)
+                return _personal(request, response)
+
         if word_instance is not None:
             state = word_instance.status
             if state in ('REJECTED', 'BANNED'):
@@ -246,6 +258,26 @@ class AIWordViewSet(SoftDeleteViewSet):
                     return _join_processing(cache_manager, word_instance, word, language_code, user_language_code)
 
         return _start_generation(request, cache_manager, word, language_code, user_language_code, word_instance)
+
+    @action(detail=False, methods=['get'], url_path='forms', permission_classes=[AllowAny])
+    def forms(self, request):
+        """
+        Dạng biến cách của 1 từ cho phần "Biến thể" của trang từ. Query: word_id.
+        Trả {forms: [{form, pos, tag, irregular}], also_form_of: {form, lemma, pos, tag, own_entry, candidates} | null}:
+        also_form_of có khi từ này cũng là dạng biến cách của từ khác (saw: quá khứ của see). Tách khỏi get-word để đường tra nóng
+        không tốn thêm truy vấn; dạng chưa có thì dựng lười bằng thư viện biến cách (ai/forms.py).
+        """
+        word_id = request.GET.get('word_id')
+        if not is_uuid(word_id):
+            return Response({'detail': 'word_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        word = AIWord.objects.filter(id=word_id, status='COMPLETED').exclude(is_deleted=True).exclude(is_active=False).first()
+        if word is None:
+            return Response({'detail': 'Word not found'}, status=status.HTTP_404_NOT_FOUND)
+        others = resolve_form(word.value, word.language_code, analyze=False)
+        return Response({
+            'forms': forms_of(word),
+            'also_form_of': form_of_payload(word.value, others, own_entry=True) if others else None,
+        })
 
     @action(detail=False, methods=['post'], url_path='bulk-create', permission_classes=[IsAuthenticated])
     def bulk_create(self, request):
@@ -277,7 +309,18 @@ class AIWordViewSet(SoftDeleteViewSet):
         if len(words) > MAX_CHECK_WORDS:
             return Response({'detail': f'At most {MAX_CHECK_WORDS} words'}, status=status.HTTP_400_BAD_REQUEST)
         found, invalid, pending, to_start, existing = sort_words(clean_words(words), language_code)
-        return Response({'results': describe_words(words, language_code, found, invalid, pending, to_start, existing)})
+        results = describe_words(words, language_code, found, invalid, pending, to_start, existing)
+        # Dạng biến cách đã biết của từ có sẵn (bought -> buy) mở được ngay nên cũng là "đã có"; form_of cho app biết từ gốc
+        unknown = [key for key, r in results.items() if r['status'] == 'unknown']
+        if unknown:
+            lemma_of = {}
+            for row in WordForm.objects.filter(
+                language_code=language_code, form__in=unknown, word__status='COMPLETED', word__is_deleted=False, word__is_active=True,
+            ).exclude(word__value=F('form')).select_related('word'):
+                lemma_of.setdefault(row.form, row.word.value)
+            for key, lemma in lemma_of.items():
+                results[key] = {'status': 'exists', 'form_of': lemma}
+        return Response({'results': results})
 
     @action(detail=False, methods=['get'], url_path='search')
     def search(self, request):

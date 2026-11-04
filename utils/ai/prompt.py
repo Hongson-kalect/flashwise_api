@@ -51,7 +51,6 @@ Senses (key: (pos) definition):
 For each sense key, about THAT sense only:
 - synonyms / antonyms: {language_name} words with the same / opposite meaning.
 - relateds: closely related {language_name} words (same topic or word family).
-- forms: inflected or derived forms of '{word}' (plural, past tense, comparative...).
 - collocations: common phrases containing '{word}', e.g. "heavy rain".
 - idioms: idioms or fixed expressions with '{word}' in this sense.
 - tags: 1-5 short lowercase English topic tags, e.g. "finance", "nature".

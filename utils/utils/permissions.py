@@ -139,3 +139,12 @@ class SenseProposeThrottle(SimpleRateThrottle):
     def get_cache_key(self, request, view):
         ident = request.user.pk if request.user and request.user.is_authenticated else self.get_ident(request)
         return self.cache_format % {"scope": self.scope, "ident": ident}
+
+
+class SenseItemsThrottle(SimpleRateThrottle):
+    """Giới hạn số lần thêm từ vào danh sách nghĩa (mỗi lần gọi Claude + Gemini). Rate: DEFAULT_THROTTLE_RATES['sense_items']."""
+    scope = "sense_items"
+
+    def get_cache_key(self, request, view):
+        ident = request.user.pk if request.user and request.user.is_authenticated else self.get_ident(request)
+        return self.cache_format % {"scope": self.scope, "ident": ident}

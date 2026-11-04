@@ -211,7 +211,6 @@ def render_enhanced_schema(sense_ids):
                 "collocations": {"type": "ARRAY", "items": {"type": "STRING"}},
                 "idioms": {"type": "ARRAY", "items": {"type": "STRING"}},
                 "relateds": {"type": "ARRAY", "items": {"type": "STRING"}},
-                "forms": {"type": "ARRAY", "items": {"type": "STRING"}},
                 "synonyms": {"type": "ARRAY", "items": {"type": "STRING"}},
                 "antonyms": {"type": "ARRAY", "items": {"type": "STRING"}},
                 "tags": {"type": "ARRAY", "items": {"type": "STRING"}},
@@ -293,12 +292,6 @@ nonlatin_schema = {
                                         "relateds": {
                                             "type": "ARRAY",
                                             "items": { "type": "STRING" }
-                                        },
-
-                                        "forms": {
-                                            "type": "ARRAY",
-                                            "items": { "type": "STRING" },
-                                            "description": "Word forms (plural, past tense, etc.)"
                                         },
                                         "tags":{
                                             "type":"ARRAY",

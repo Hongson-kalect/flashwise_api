@@ -170,6 +170,8 @@ WORD_ERROR_RETRY_SECONDS = int(os.getenv('WORD_ERROR_RETRY_SECONDS', '60')) # t�
 
 # Tạo bộ từ hàng loạt: mỗi từ chưa có sẽ tốn nhiều lần gọi AI
 BULK_MAX_WORDS_PER_REQUEST = int(os.getenv('BULK_MAX_WORDS_PER_REQUEST', '200'))
+SENSE_ITEMS_MAX_WORDS = int(os.getenv('SENSE_ITEMS_MAX_WORDS', '10')) # số từ tối đa mỗi lượt thêm vào danh sách nghĩa
+SENSE_ITEMS_MAX_TOTAL = int(os.getenv('SENSE_ITEMS_MAX_TOTAL', '50')) # số từ tối đa của 1 danh sách đồng nghĩa / trái nghĩa / liên quan trong 1 nghĩa
 BULK_WORDS_PER_DAY = int(os.getenv('BULK_WORDS_PER_DAY', '500')) # số từ mới / người dùng / ngày
 
 REDIS_HOST = os.getenv('REDIS_HOST', 'redis')
@@ -226,6 +228,7 @@ REST_FRAMEWORK = {
         'user': os.getenv('THROTTLE_USER', '300/minute'),
         'word_generate': os.getenv('THROTTLE_WORD_GENERATE', '60/hour'),
         'sense_propose': os.getenv('THROTTLE_SENSE_PROPOSE', '10/hour'), # đề xuất nghĩa mới: mỗi lần là 1 lần gọi Claude + Gemini
+        'sense_items': os.getenv('THROTTLE_SENSE_ITEMS', '30/hour'), # thêm từ vào danh sách nghĩa: mỗi lần là 1 lần gọi Claude + Gemini
         'feedback': os.getenv('THROTTLE_FEEDBACK', '20/day'),
         'auth': os.getenv('THROTTLE_AUTH', '20/minute'), # đăng nhập / đăng ký / quên mật khẩu, theo IP
         'export': os.getenv('THROTTLE_EXPORT', '5/day'), # tải toàn bộ dữ liệu của mình

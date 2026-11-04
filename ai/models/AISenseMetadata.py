@@ -7,7 +7,7 @@ class AISenseMetadata(BaseModel):
     image_link = models.URLField(max_length=1000, null=True, blank=True)
     
     # Giữ nguyên cấu trúc JSON linh hoạt cho Server
-    advanced = models.JSONField(default=dict, null=True, blank=True) # collocation, idiom, synonyms, antonyms, relateds, forms
+    advanced = models.JSONField(default=dict, null=True, blank=True) # collocations, idioms, synonyms, antonyms, relateds (biến cách nằm ở bảng word_form, không còn ở đây)
     tags = models.JSONField(default=list, blank=True)
     image_keywords = models.JSONField(null=True, blank=True, default=list)
     image_metadata = models.JSONField(default=dict, null=True, blank=True)  # {width, height, size, format}

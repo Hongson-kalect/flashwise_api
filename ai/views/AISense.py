@@ -29,8 +29,9 @@ from interact.models import UserInteraction
 from ai.serializers.AISense import AISenseSerializer
 from ai.validators import MAX_DELTA_CHARS, METADATA_FIELDS, clean_contents, clean_metadata, is_lang, is_uuid
 from asset.media import clean_media_param
-from utils.ai import sense_gate
-from utils.utils.permissions import IsAdminOrReadOnly, NotBanned, SenseProposeThrottle
+from utils.ai import items_gate, sense_gate
+from utils.utils.normalize import is_lookup_word, lookup_entry_problem, normalize_lookup
+from utils.utils.permissions import IsAdminOrReadOnly, NotBanned, SenseItemsThrottle, SenseProposeThrottle
 from user.reputation import record
 from utils.redis.word_init import WordCacheManager
 from utils.utils.best_effort import best_effort
@@ -345,6 +346,92 @@ class AISenseViewSet(SoftDeleteViewSet):
             record(user, 'sense_accepted', 'sense', sense.id)
             return Response({'result': 'official', 'sense': data}, status=status.HTTP_201_CREATED)
         return Response({'result': 'pending', 'reasons': result['reasons'], 'sense': data}, status=status.HTTP_201_CREATED)
+
+    ITEM_KINDS = ('synonyms', 'antonyms', 'relateds')
+
+    @action(
+        detail=False, methods=['post'], url_path='add-items', permission_classes=[IsAuthenticated, NotBanned],
+        throttle_classes=[UserRateThrottle, SenseItemsThrottle],
+    )
+    def add_items(self, request):
+        """
+        Thêm từ vào danh sách đồng nghĩa / trái nghĩa / liên quan của 1 nghĩa. Chỉ thêm, không xoá. Không tạo từ mới:
+        Claude Haiku và Gemini (utils/ai/items_gate.py) cùng kiểm tra từ có phải mục từ thật và đúng quan hệ với nghĩa này,
+        chỉ từ cả hai accept mới được ghi thẳng vào metadata của nghĩa (dữ liệu chính thức, mọi người thấy).
+        Body: sense_id, kind (synonyms | antonyms | relateds), words (<= SENSE_ITEMS_MAX_WORDS).
+        Trả {added: [từ], rejected: [{word, reason}], existing: [từ đã có trong danh sách]}.
+        Lỗi: 400, 403 account_required / user_banned, 404, 429, 503 ai_unavailable (một trong hai AI lỗi: không thêm gì).
+        """
+        user = request.user
+        sense_id, kind, words = request.data.get('sense_id'), request.data.get('kind'), request.data.get('words')
+        if not is_uuid(sense_id) or kind not in self.ITEM_KINDS or not isinstance(words, list) or not words:
+            return _bad_request("sense_id, kind and words are required")
+        if len(words) > settings.SENSE_ITEMS_MAX_WORDS:
+            return _bad_request("At most %s words per request" % settings.SENSE_ITEMS_MAX_WORDS)
+
+        from user.models import UserProfile
+        tier = UserProfile.objects.filter(user=user).values_list('tier', flat=True).first()
+        if tier in (None, 'guest') and not user.is_staff and not settings.SENSE_PROPOSE_ALLOW_GUEST:
+            return Response({"detail": "Register an account to add items", "errorCode": "account_required"}, status=status.HTTP_403_FORBIDDEN)
+
+        sense = self.get_queryset().filter(id=sense_id).first()
+        if not sense:
+            return Response({"message": "Sense not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        language_code = sense.language_code
+        current = ((sense.metadata.advanced or {}).get(kind) or []) if sense.metadata else []
+        have = {str(w).strip().lower() for w in current} | {(sense.word_value or '').lower()}
+        existing, rejected, candidates = [], [], []
+        for raw in dict.fromkeys(w for w in words if isinstance(w, str)):
+            word = normalize_lookup(raw)
+            problem = lookup_entry_problem(word, language_code) if is_lookup_word(word) else 'not_a_word'
+            if problem:
+                rejected.append({'word': word or raw, 'reason': problem})
+            elif word.lower() in have:
+                existing.append(word)
+            elif word.lower() in {c.lower() for c in candidates}:
+                continue  # trùng với từ khác trong lượt này (khác hoa thường)
+            elif len(current) + len(candidates) >= settings.SENSE_ITEMS_MAX_TOTAL:
+                rejected.append({'word': word, 'reason': 'list_full'})
+            else:
+                candidates.append(word)
+
+        added = []
+        if candidates:
+            contents = promoted_contents(sense)
+            definition = (contents.get('definition') or {}).get(language_code, {}).get('value', '')
+            examples = contents.get('examples') or [{}]
+            example = ((examples[0] or {}).get(language_code) or {}).get('value', '')
+            try:
+                verdicts = async_to_sync(items_gate.evaluate_items)(
+                    sense.word_value, language_code, sense.pos, definition, example, kind, candidates, [str(w) for w in current],
+                )
+            except Exception:
+                logger.exception('Cổng AI danh sách lỗi (nghĩa %s)', sense.id)
+                return Response({"detail": "AI service unavailable, try again later", "errorCode": "ai_unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            logger.info('Thêm vào %s của nghĩa %s: %s seconds=%s', kind, sense.id,
+                        {c: (verdicts[c]['claude'], verdicts[c]['gemini']) for c in candidates}, verdicts['_seconds'])
+            for word in candidates:
+                if verdicts[word]['ok']:
+                    added.append(word)
+                else:
+                    rejected.append({'word': word, 'reason': verdicts[word]['reason'] or 'rejected'})
+
+        if added:
+            with transaction.atomic():
+                metadata = AISenseMetadata.objects.select_for_update().get(pk=sense.metadata_id) if sense.metadata_id else None
+                if metadata is None:
+                    metadata = AISenseMetadata.objects.create(created_by=user)
+                    sense.metadata = metadata
+                    sense.save(update_fields=['metadata', 'updated_at'])
+                advanced = dict(metadata.advanced or {})
+                merged = list(advanced.get(kind) or [])
+                seen = {str(m).strip().lower() for m in merged}
+                merged += [w for w in added if w.lower() not in seen]
+                advanced[kind] = merged
+                metadata.advanced = advanced
+                metadata.save(update_fields=['advanced', 'updated_at'])
+        return Response({'added': added, 'rejected': rejected, 'existing': existing})
 
     @action(detail=False, methods=['get'], url_path='proposals', permission_classes=[IsAdminUser])
     def proposals(self, request):

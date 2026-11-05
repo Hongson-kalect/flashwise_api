@@ -344,7 +344,8 @@ class UserCollectionViewSet(SoftDeleteViewSet):
         """
         Thêm từ (chưa cần có sẵn) vào bộ của chính mình, như bulk-create: từ đã có nghĩa vào bộ ngay (dòng nháp),
         từ bị từ chối vào invalid_words, từ còn lại vào pending_words (đẩy AI tạo, tính hạn mức ngày).
-        Chỉ tác giả bộ (từ đang chờ được thêm vào nháp của tác giả); người đã tải dùng get-word rồi add-senses.
+        Tác giả: như trên. Người đã tải (chuẩn bị remix): chỉ thêm được từ đã có nghĩa chính thức; từ chưa có không tạo AI
+        (bộ chung không nhận từ chờ của người khác) mà trả trong `unavailable`.
         Body: words, user_lang.
         """
         from ai.bulk import clean_words, sort_words, start_words
@@ -359,10 +360,13 @@ class UserCollectionViewSet(SoftDeleteViewSet):
 
         user_collection = get_object_or_404(self.get_queryset().select_related('collection'), id=pk)
         collection = user_collection.collection
-        if collection is None or collection.created_by_id != user.id:
-            return Response(status=status.HTTP_403_FORBIDDEN, data={"message": "Only the collection author can add words"})
+        if collection is None:
+            return Response(status=status.HTTP_404_NOT_FOUND, data={"message": "Collection not found"})
+        is_author = collection.created_by_id == user.id
 
         found, invalid, pending, to_start, existing = sort_words(cleaned, collection.language_code)
+        if not is_author:
+            to_start = []
         if to_start and not consume_daily_quota(user, 'bulk_words', len(to_start), settings.BULK_WORDS_PER_DAY):
             return Response(status=status.HTTP_429_TOO_MANY_REQUESTS, data={"detail": "Daily new-word limit reached", "errorCode": "bulk_quota_exceeded"})
 
@@ -374,13 +378,16 @@ class UserCollectionViewSet(SoftDeleteViewSet):
                     state, _ = add_sense_to(user_collection, user, found[word])
                     if state != 'exists':
                         added.append(word)
-            locked = Collection.objects.select_for_update().get(pk=collection.pk)
-            locked.pending_words = list(dict.fromkeys([*(locked.pending_words or []), *pending]))
-            locked.invalid_words = list(dict.fromkeys([*(locked.invalid_words or []), *invalid]))
-            locked.save(update_fields=['pending_words', 'invalid_words', 'updated_at'])
+            if is_author:
+                locked = Collection.objects.select_for_update().get(pk=collection.pk)
+                locked.pending_words = list(dict.fromkeys([*(locked.pending_words or []), *pending]))
+                locked.invalid_words = list(dict.fromkeys([*(locked.invalid_words or []), *invalid]))
+                locked.save(update_fields=['pending_words', 'invalid_words', 'updated_at'])
 
+        if not is_author:
+            return Response({"added": added, "pending_words": [], "invalid_words": [], "unavailable": [*invalid, *pending]})
         start_words(user, to_start, existing, collection.language_code, user_language_code, collection_id=collection.id)
-        return Response({"added": added, "pending_words": pending, "invalid_words": invalid})
+        return Response({"added": added, "pending_words": pending, "invalid_words": invalid, "unavailable": []})
 
     @action(detail=True, methods=['post'], url_path='reorder')
     def reorder(self, request, pk=None):

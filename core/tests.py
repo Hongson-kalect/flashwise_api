@@ -600,6 +600,16 @@ class UserCollectionEditFlowTests(APITestCase):
         self.assertEqual((collection.version, collection.released), (1, True))
         self.assertFalse(CollectionItem.objects.filter(collection=collection, released=False).exists())
 
+    def test_bundle_carries_own_delete_drafts_so_app_can_count_changes(self):
+        collection, mine = self.create_collection(self.one, self.two)
+        self.released_version(mine)
+        item = CollectionItem.objects.get(collection=collection, released=True, sense=self.one)
+        self.post('delete-sense', mine, collection_item_id=str(item.id))
+        res = self.client.get(f'/api/user-collections/{mine.id}/bundle/', {'user_lang': 'vi'})
+        self.assertEqual(res.status_code, 200)
+        drafts = [i for i in res.data['items'] if not i['released']]
+        self.assertEqual([(str(i['sense_id']), i['is_deleted']) for i in drafts], [(str(self.one.id), True)])
+
     def test_first_upload_without_senses_is_refused(self):
         collection, mine = self.create_collection(self.one)
         CollectionItem.objects.filter(collection=collection).delete()
@@ -762,13 +772,16 @@ class UserCollectionEditFlowTests(APITestCase):
         self.assertEqual([job['value'] for _, job in queue.jobs], ['zznew'])
         self.assertEqual(redis.sets['collection_id:zznew'], {str(collection.id)})
 
-        # Người đã tải (không phải tác giả) không thêm từ được
+        # Người đã tải (chuẩn bị remix): chỉ thêm được từ đã có nghĩa chính thức, từ lạ không đẩy AI, không đụng bộ gốc
         self.upload(mine)
         self.as_user(self.bob)
         self.client.post(f'/api/user-collections/{collection.id}/download/')
         bobs = UserCollection.objects.get(user=self.bob, collection=collection)
-        res = self.client.post(f'/api/user-collections/{bobs.id}/add-words/', {'words': ['three'], 'user_lang': 'vi'}, format='json')
-        self.assertEqual(res.status_code, 403)
+        res = self.client.post(f'/api/user-collections/{bobs.id}/add-words/', {'words': ['three', 'zznew2'], 'user_lang': 'vi'}, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual((res.data['added'], res.data['unavailable'], res.data['pending_words']), (['three'], ['zznew2'], []))
+        collection.refresh_from_db()
+        self.assertEqual(collection.pending_words, ['zznew'])  # không đổi
 
     def test_reorder(self):
         collection, mine = self.create_collection(self.one, self.two)

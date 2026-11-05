@@ -17,7 +17,7 @@ from ai.jobs import queue_translation
 from ai.models import AISense
 from ai.queries import banned_sense_ids
 from ai.serializers.AISense import AISenseSerializer
-from core.queries import live_items
+from core.queries import current_items
 from utils.utils.sense_handle import get_user_lang_sense
 
 ITEM_COLUMNS = ('id', 'value', 'collection_id', 'original_id', 'sense_id', 'display_order', 'status', 'version',
@@ -72,7 +72,11 @@ def load_bundle(user_collection, user):
     Trả (collection, items, senses, banned): dòng / nghĩa bị ban đã bị bỏ, banned = id các nghĩa đó.
     """
     collection = user_collection.collection
-    items = live_items(collection.id, user_collection.version, user)
+    # Gồm cả dòng xoá (bia mộ nháp của chính user) để app đếm được thay đổi chưa phát hành; app bỏ dòng is_deleted khi hiển thị.
+    items = sorted(
+        current_items(collection.id, user_collection.version, user),
+        key=lambda row: (row.display_order or 0, row.created_at),
+    )
     banned = banned_sense_ids({item.sense_id for item in items})
     items = [item for item in items if str(item.sense_id) not in banned]
     senses = list(

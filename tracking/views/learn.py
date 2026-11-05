@@ -34,6 +34,14 @@ def _params(request, modes):
     return user_language_code, mode, count
 
 
+def _exclude_words(request):
+    """Query exclude_words: id từ (UUID, ngăn cách bằng dấu phẩy) đã có trong phiên. Trả set hoặc Response lỗi."""
+    raw = [w.strip() for w in (request.query_params.get('exclude_words') or '').split(',') if w.strip()]
+    if not all(is_uuid(w) for w in raw):
+        return _bad('exclude_words must be comma separated UUIDs')
+    return set(raw)
+
+
 def _user_collection(request, required):
     """Bộ user đã tải theo collection_id (id bộ gốc). Trả (bộ hoặc None, Response lỗi hoặc None)."""
     collection_id = request.query_params.get('collection_id')
@@ -66,7 +74,8 @@ def _with_senses(cards, user_language_code):
 @permission_classes([IsAuthenticated])
 def learn_new(request):
     """
-    Nghĩa mới của 1 bộ. Query: collection_id (bộ đã tải), user_lang, mode (normal), count (mặc định 6, tối đa 50).
+    Nghĩa mới của 1 bộ. Query: collection_id (bộ đã tải), user_lang, mode (normal), count (mặc định 6, tối đa 50),
+    exclude_words (id từ đã có trong phiên, ngăn cách bằng dấu phẩy: nghĩa của các từ đó dời sang lần sau).
     Trả {mode, collection_id, new: [thẻ], new_available, words, senses, sense_metadata, pending}.
     """
     parsed = _params(request, NEW_MODES)
@@ -77,7 +86,10 @@ def learn_new(request):
     if error:
         return error
 
-    items, available = pick_new(request.user, user_collection, count)
+    exclude = _exclude_words(request)
+    if isinstance(exclude, Response):
+        return exclude
+    items, available = pick_new(request.user, user_collection, count, exclude)
     cards = [{'item_id': i.id, 'sense_id': i.sense_id, 'original_sense_id': original_key(i), 'level': 0} for i in items]
     cards, tables = _with_senses(cards, user_language_code)
     return Response({'mode': mode, 'collection_id': user_collection.collection_id, 'new': cards, 'new_available': available, **tables})
@@ -88,7 +100,8 @@ def learn_new(request):
 def learn_review(request):
     """
     Thẻ đến hạn ôn. Query: user_lang, mode (normal: như học mới, quick: vuốt / đọc, chỉ thẻ đủ cấp swipe_min_level),
-    count (normal mặc định 6 tối đa 50, quick 30 / 200), collection_id (tuỳ chọn: chỉ nghĩa trong bộ đó, bỏ trống = mọi nghĩa đang học).
+    count (normal mặc định 6 tối đa 50, quick 30 / 200), collection_id (tuỳ chọn: chỉ nghĩa trong bộ đó, bỏ trống = mọi nghĩa đang học),
+    exclude_words (như học mới). Không 2 nghĩa cùng 1 từ trong 1 lượt.
     Trả {mode, collection_id, due: [thẻ], due_count (hợp kiểu ôn), due_total (mọi thẻ đến hạn), day_ends_at, words, senses, sense_metadata, pending}.
     """
     parsed = _params(request, REVIEW_MODES)
@@ -99,7 +112,10 @@ def learn_review(request):
     if error:
         return error
 
-    picked, due_total, due_count, cutoff = pick_review(request.user, mode, count, user_collection)
+    exclude = _exclude_words(request)
+    if isinstance(exclude, Response):
+        return exclude
+    picked, due_total, due_count, cutoff = pick_review(request.user, mode, count, user_collection, exclude_words=exclude)
     cards = [{
         'item_id': item.id if item else None, 'sense_id': sense_id, 'original_sense_id': str(progress.original_sense_id),
         'level': progress.level, 'next_review_at': progress.next_review_at, 'retrievability': round(chance, 4),

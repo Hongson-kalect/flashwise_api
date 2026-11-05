@@ -76,20 +76,23 @@ def collection_cards(user, user_collection):
     return {original_key(i): i for i in items if str(i.sense_id) not in hidden and str(i.original_id) not in hidden}
 
 
-def pick_new(user, user_collection, count):
-    """Trả (các dòng nghĩa mới, new_available = số nghĩa mới còn lại trong bộ, tính cả nghĩa bị dời vì trùng từ)."""
+def pick_new(user, user_collection, count, exclude_words=()):
+    """
+    Trả (các dòng nghĩa mới, new_available = số nghĩa mới còn lại trong bộ, tính cả nghĩa bị dời vì trùng từ).
+    exclude_words: id từ đã có trong phiên (vd thẻ ôn đã lấy), nghĩa của các từ đó dời sang lần sau.
+    """
     cards = collection_cards(user, user_collection)
     learned = {
         str(p.original_sense_id) for p in UserSenseProgress.objects.filter(user=user, original_sense_id__in=list(cards)).exclude(is_deleted=True)
         if not is_new(p)
     }
-    picked, words, available = [], set(), 0
+    picked, words, available = [], {str(w) for w in exclude_words}, 0
     for key, item in cards.items():
         if key in learned:
             continue
         available += 1
-        if len(picked) < count and item.sense.word_id not in words:
-            words.add(item.sense.word_id)
+        if len(picked) < count and str(item.sense.word_id) not in words:
+            words.add(str(item.sense.word_id))
             picked.append(item)
     return picked, available
 
@@ -106,9 +109,10 @@ def resolve_senses(user, originals):
     return resolved
 
 
-def pick_review(user, mode, count, user_collection=None, now=None):
+def pick_review(user, mode, count, user_collection=None, now=None, exclude_words=()):
     """
     Thẻ đến hạn ôn, khả năng còn nhớ (R) thấp nhất trước. Theo bộ thì chỉ nghĩa đang có trong bộ, không thì mọi nghĩa đang học.
+    Không 2 nghĩa cùng 1 từ trong 1 lượt (giữ thẻ có R thấp nhất, thẻ còn lại để lượt sau); exclude_words: id từ đã có trong phiên.
     Trả (các thẻ [(tiến độ, sense_id, dòng bộ từ hoặc None, R)] tối đa count, due_total, due_count, day_ends_at):
     due_total = mọi thẻ đến hạn, due_count = thẻ đến hạn hợp với kiểu ôn (đủ cấp).
     """
@@ -133,7 +137,20 @@ def pick_review(user, mode, count, user_collection=None, now=None):
         elapsed = (now - p.last_reviewed_at).total_seconds() / 86400 if p.last_reviewed_at else 0
         eligible.append((p, retrievability(p.stability, elapsed)))
     eligible.sort(key=lambda entry: entry[1])
-    chosen = eligible[:count]
+    word_of = {
+        str(sense_id): str(word_id) for sense_id, word_id in AISense.objects.filter(
+            id__in=[p.original_sense_id for p, _ in eligible]).values_list('id', 'word_id')
+    }
+    used, chosen = {str(w) for w in exclude_words}, []
+    for entry in eligible:
+        if len(chosen) >= count:
+            break
+        word = word_of.get(str(entry[0].original_sense_id))
+        if word is not None and word in used:
+            continue
+        if word is not None:
+            used.add(word)
+        chosen.append(entry)
 
     keys = [str(p.original_sense_id) for p, _ in chosen]
     senses = {key: str(cards[key].sense_id) for key in keys} if cards is not None else resolve_senses(user, keys)

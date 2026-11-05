@@ -11,13 +11,42 @@ from utils.utils.normalize import is_lookup_word, lookup_entry_problem, normaliz
 BULK_WORD_QUEUE = 'redis_collection_word'  # worker bỏ qua phần thêm vào bộ khi không có bộ nào gắn vào từ
 
 
-def best_official_senses(words, language_code):
-    """Nghĩa chính thức có điểm cao nhất của mỗi từ trong ngôn ngữ đó (không lấy nghĩa tuỳ chỉnh của ai)."""
+def ranked_official_senses(words, language_code):
+    """
+    Nghĩa chính thức của các từ, theo từ rồi theo độ tốt giảm dần: score, rồi like, rồi id (UUIDv7 tăng theo thời điểm sinh
+    nên bằng nhau thì lấy nghĩa AI trả ra trước = phổ biến nhất). score chưa có cơ chế tự cập nhật (hiện đều 0) nên tạm thời
+    like quyết định; sau này score tổng hợp like, lượt xem, uy tín người tạo thì thứ tự tự theo. Không lấy nghĩa tuỳ chỉnh của ai.
+    """
     return (
         AISense.objects.filter(is_official=True, language_code=language_code, word_value__in=list(words))
         .exclude(is_deleted=True).exclude(is_active=False)
-        .order_by('word_value', '-score', 'id').distinct('word_value')
+        .order_by('word_value', '-score', '-like_count', 'id')
     )
+
+
+def best_official_senses(words, language_code):
+    """Chế độ nhanh khi thêm từ vào bộ: mỗi từ 1 nghĩa chính thức tốt nhất (score cao nhất)."""
+    return ranked_official_senses(words, language_code).distinct('word_value')
+
+
+def sense_brief(sense, user_language_code):
+    """Dòng gọn của 1 nghĩa để người dùng chọn: loại từ, cấp, định nghĩa / từ tương đương theo ngôn ngữ của họ, ví dụ đầu tiên."""
+    contents = sense.contents or {}
+    lang = sense.language_code
+
+    def text(node):
+        return (node or {}).get('value') or ''
+
+    definition = contents.get('definition') or {}
+    translations = contents.get('translations') or {}
+    examples = contents.get('examples') or [{}]
+    return {
+        'id': str(sense.id), 'pos': sense.pos, 'level': sense.level, 'like_count': sense.like_count,
+        'definition': text(definition.get(user_language_code)) or text(definition.get(lang)),
+        'translations': translations.get(user_language_code) or [],
+        'example': text((examples[0] or {}).get(lang)),
+        'image_preview': sense.image_preview,
+    }
 
 
 def clean_words(words):

@@ -1000,6 +1000,49 @@ class GetWordApiTests(APITestCase):
         self.assertEqual(res.data['errorCode'], 'bulk_quota_exceeded')
         self.assertFalse(AIWord.objects.filter(value__in=['zzq1', 'zzq2']).exists())
 
+    def make_ranked_senses(self, value):
+        """Từ có 3 nghĩa chính thức: nghĩa AI trả đầu tiên ít like, nghĩa thứ ba nhiều like nhất."""
+        word = AIWord.objects.create(value=value, language_code='en', status='COMPLETED')
+        senses = []
+        for pos, likes in (('noun', 1), ('verb', 0), ('adj', 9)):
+            contents = {'definition': {'en': {'value': pos + ' def'}, 'vi': {'value': pos + ' nghĩa'}}, 'translations': {'vi': [pos + ' vi']},
+                        'examples': [{'en': {'value': pos + ' example'}}]}
+            senses.append(AISense.objects.create(word=word, word_value=value, language_code='en', pos=pos, like_count=likes,
+                                                 is_official=True, contents=contents))
+        return senses
+
+    def test_quick_mode_picks_best_official_sense(self):
+        from ai.bulk import best_official_senses
+        low, mid, top = self.make_ranked_senses('zzranked')
+        AISense.objects.create(word=top.word, word_value='zzranked', language_code='en', pos='noun', like_count=99, score=999, is_official=False,
+                               created_by=User.objects.create_user('liker'), contents={})  # nghĩa riêng của người khác không được chọn
+        self.assertEqual([s.id for s in best_official_senses(['zzranked'], 'en')], [top.id])  # score bằng nhau (0): nhiều like nhất
+        AISense.objects.filter(pk=mid.pk).update(score=50)
+        self.assertEqual([s.id for s in best_official_senses(['zzranked'], 'en')], [mid.id])  # score được ưu tiên hơn like
+
+    def test_senses_of_words_for_advanced_mode(self):
+        self.client.force_authenticate(User.objects.create_user('chooser'))
+        low, mid, top = self.make_ranked_senses('zzchoose')
+        AIWord.objects.create(value='zzchoosewip', language_code='en', status='PROCESSING')
+        res = self.client.get('/api/ai-words/senses/', {'lang': 'en', 'user_lang': 'vi', 'words': 'ZZChoose,zzchoosewip,zzchoosenew'})
+        self.assertEqual(res.status_code, 200, res.data)
+        r = res.data['results']
+        rows = r['zzchoose']['senses']
+        self.assertEqual([x['id'] for x in rows], [str(top.id), str(low.id), str(mid.id)])  # score cao trước, score bằng nhau thì like rồi id
+        self.assertEqual([x['best'] for x in rows], [True, False, False])
+        self.assertEqual(rows[0]['definition'], 'adj nghĩa')
+        self.assertEqual((rows[0]['translations'], rows[0]['example'], rows[0]['like_count']), (['adj vi'], 'adj example', 9))
+        self.assertEqual(r['zzchoosewip'], {'status': 'processing'})
+        self.assertEqual(r['zzchoosenew'], {'status': 'unknown'})
+        self.assertFalse(AIWord.objects.filter(value='zzchoosenew').exists())  # chỉ đọc, không tạo từ
+
+    def test_senses_validation_and_login(self):
+        self.assertIn(self.client.get('/api/ai-words/senses/', {'lang': 'en', 'words': 'a'}).status_code, (401, 403))
+        self.client.force_authenticate(User.objects.create_user('chooser2'))
+        self.assertEqual(self.client.get('/api/ai-words/senses/', {'lang': 'en'}).status_code, 400)
+        self.assertEqual(self.client.get('/api/ai-words/senses/', {'words': 'a'}).status_code, 400)
+        self.assertEqual(self.client.get('/api/ai-words/senses/', {'lang': 'en', 'words': ','.join(f'w{i}' for i in range(21))}).status_code, 400)
+
     def test_check_words_validation_and_login(self):
         self.assertIn(self.post_check(['a']).status_code, (401, 403))
         self.client.force_authenticate(User.objects.create_user('checker2'))

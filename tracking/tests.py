@@ -518,6 +518,12 @@ class LearnNewTests(LearnTestBase):
         self.assertEqual({str(s['id']) for s in data['senses']}, set(self.ids(data['new'])))
         self.assertEqual(len(data['words']), 2)
 
+    def test_exclude_words_moves_their_senses_to_next_time(self):
+        data = self.new(count=3, exclude_words=str(self.senses['dog'].word_id)).data
+        self.assertEqual(self.ids(data['new']), self.sid('cat1', 'bird', 'fish'))
+        self.assertEqual(data['new_available'], 5)
+        self.assertEqual(self.new(exclude_words='x').status_code, 400)
+
     def test_learned_and_hidden_senses_are_skipped(self):
         from interact.models import UserInteraction
         self.progress('dog')
@@ -549,6 +555,21 @@ class LearnReviewTests(LearnTestBase):
         self.assertLess(data['due'][0]['retrievability'], data['due'][1]['retrievability'])
         self.assertEqual((data['due_count'], data['due_total'], data['mode']), (3, 3, 'normal'))
         self.assertEqual(len(data['senses']), 2)
+
+    def test_two_senses_of_one_word_never_in_same_batch(self):
+        self.progress('cat1', stability=20)
+        self.progress('cat2', stability=2)  # cùng từ cat, nhớ kém hơn nên được giữ
+        self.progress('dog', stability=10)
+        data = self.get('review', count=5).data
+        self.assertEqual(self.ids(data['due']), self.sid('cat2', 'dog'))
+        self.assertEqual((data['due_count'], data['due_total']), (3, 3))  # cat1 vẫn đến hạn, ôn ở lượt sau
+
+    def test_review_exclude_words(self):
+        self.progress('cat1', stability=1)
+        self.progress('dog', stability=5)
+        data = self.get('review', exclude_words=str(self.senses['cat1'].word_id)).data
+        self.assertEqual(self.ids(data['due']), self.sid('dog'))
+        self.assertEqual(self.get('review', exclude_words='nope').status_code, 400)
 
     def test_quick_mode_only_cards_with_enough_level(self):
         self.progress('fish', level=1)

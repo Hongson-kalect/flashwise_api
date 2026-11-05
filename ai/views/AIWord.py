@@ -17,7 +17,7 @@ from ai.models.AISenseContent import AISenseContent
 from ai.models.AISenseMetadata import AISenseMetadata
 from ai.models.AIWord import AIWord
 from ai.models.TranslateLog import TranslateLog
-from ai.bulk import clean_words, describe_words, sort_words, start_words
+from ai.bulk import clean_words, describe_words, ranked_official_senses, sense_brief, sort_words, start_words
 from ai.generation import GenerationError, start_word_generation
 from ai.jobs import queue_translation
 from ai.forms import form_of_payload, forms_of, resolve_form
@@ -320,6 +320,33 @@ class AIWordViewSet(SoftDeleteViewSet):
                 lemma_of.setdefault(row.form, row.word.value)
             for key, lemma in lemma_of.items():
                 results[key] = {'status': 'exists', 'form_of': lemma}
+        return Response({'results': results})
+
+    @action(detail=False, methods=['get'], url_path='senses', permission_classes=[IsAuthenticated])
+    def senses(self, request):
+        """
+        Các nghĩa chính thức của nhiều từ để người dùng chọn khi thêm từ vào bộ (chế độ chuyên sâu). Chỉ đọc: không tạo từ,
+        không tính hạn mức. Query: lang, words (ngăn cách bằng dấu phẩy, tối đa 20), user_lang (tuỳ chọn, ngôn ngữ của định nghĩa).
+        Trả {results: {từ: {status, senses?}}}: status như ai-words/check; từ exists có senses [{id, pos, level, like_count,
+        definition, translations, example, image_preview, best}] theo độ tốt giảm dần, `best` đánh dấu nghĩa chế độ nhanh sẽ chọn.
+        """
+        language_code = request.query_params.get('lang')
+        user_language_code = request.query_params.get('user_lang') or language_code
+        raw = [w for w in (request.query_params.get('words') or '').split(',') if w.strip()]
+        if not is_lang(language_code) or not is_lang(user_language_code) or not raw:
+            return Response({'detail': 'lang and words are required'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(raw) > MAX_CHECK_WORDS:
+            return Response({'detail': f'At most {MAX_CHECK_WORDS} words'}, status=status.HTTP_400_BAD_REQUEST)
+        found, invalid, pending, to_start, existing = sort_words(clean_words(raw), language_code)
+        results = describe_words(raw, language_code, found, invalid, pending, to_start, existing)
+        by_word = {}
+        for sense in ranked_official_senses(list(found), language_code):
+            by_word.setdefault(sense.word_value, []).append(sense)
+        for word, rows in by_word.items():
+            briefs = [sense_brief(s, user_language_code) for s in rows]
+            for index, brief in enumerate(briefs):
+                brief['best'] = index == 0
+            results[word]['senses'] = briefs
         return Response({'results': results})
 
     @action(detail=False, methods=['get'], url_path='search')

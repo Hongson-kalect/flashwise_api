@@ -13,7 +13,7 @@ from asgiref.sync import sync_to_async
 from collections import defaultdict
 from django.db import connection, transaction
 from django.apps import apps # Tuyệt chiêu đọc Model động của Django
-from django.db.models import Prefetch, Case, When, F, Value, Func, ExpressionWrapper, IntegerField
+from django.db.models import Prefetch, Case, When, F, Value, Func, ExpressionWrapper, IntegerField, Max
 from django.contrib.postgres.fields import ArrayField
 from django.db.models import CharField
 
@@ -53,7 +53,7 @@ BUFFER_CONFIGS = [
     {"key": "db_buffer:sense:update", "model_name": "AISense", "action": "bulk_update", "fields": ["contents"], "app":"ai"},
     {"key": "db_buffer:word:update", "model_name": "AIWord", "action": "bulk_update", "fields": ["text", "updated_at"], "app":"ai"},
     {"key": "db_buffer:collection:atoms_update", "model_name": "Collection", "action": "atoms_update", "fields": [], "app":"core"},
-    {"key": "db_buffer:collectionItem:create", "model_name": "CollectionItem", "action": "bulk_create", "fields": [], "app":"core"},
+    {"key": "db_buffer:collectionItem:create", "model_name": "CollectionItem", "action": "collection_items_create", "fields": [], "app":"core"},
 ]
 
 logging.basicConfig(level=logging.INFO)
@@ -312,6 +312,36 @@ def execute_bulk_db(batch_data, config):
             logger.info(f"[BULK-CREATE] Đã chèn mới thành công {len(objects_to_create)} dòng vào bảng {config['model_name']}.")
 
             return len(objects_to_create)
+
+        elif action == "collection_items_create":
+            # Từ chờ AI vừa tạo xong vào bộ: dòng nháp của tác giả (có original_id, thứ tự cuối bộ) như các đường thêm từ khác.
+            # Dòng chỉ có collection_id / sense_id thì không ai thấy (live_items lọc theo người tạo) nên không insert thô.
+            from ai.models import AISense
+            from core.models import Collection, CollectionItem
+            from core.views.Collection import make_items
+
+            wanted = defaultdict(list)
+            for item in batch_data:
+                wanted[item["collection_id"]].append(item["sense_id"])
+            created = 0
+            for collection_id, sense_ids in wanted.items():
+                collection = Collection.objects.filter(pk=collection_id).first()
+                if collection is None:
+                    continue
+                senses = {str(s.id): s for s in AISense.objects.filter(id__in=sense_ids)}
+                present = set(CollectionItem.objects.filter(collection=collection).values_list("original_id", flat=True))
+                to_add = []
+                for sense_id in dict.fromkeys(sense_ids):
+                    sense = senses.get(str(sense_id))
+                    if sense is not None and (sense.original_id or sense.id) not in present:
+                        to_add.append(sense)
+                if not to_add:
+                    continue
+                last = CollectionItem.objects.filter(collection=collection).aggregate(last=Max("display_order"))["last"]
+                CollectionItem.objects.bulk_create(make_items(collection.id, to_add, 0 if last is None else last + 1, collection.created_by))
+                created += len(to_add)
+            logger.info(f"[COLLECTION-ITEMS] Đã thêm {created} dòng vào bộ từ.")
+            return created
 
         elif action == 'atoms_update':
             # case đặc biệt hiện chỉ áp dụng để update bảng collection các cột pending và invalid tự động

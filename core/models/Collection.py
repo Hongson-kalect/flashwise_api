@@ -19,6 +19,7 @@ class Collection(BaseModel):
     like_count = models.IntegerField(default=0)
     view_count = models.IntegerField(default=0)
     downloaded_count = models.IntegerField(default=0)
+    remix_count = models.IntegerField(default=0) # Số bộ khác được tách (remix) từ bộ này; bộ remix trỏ về đây qua previous / original / parents
     is_frozen = models.BooleanField(default=False) # Đóng băng không cho sửa cấu trúc (app đã có cột này)
 
     is_uploaded = models.BooleanField(default=False)

@@ -425,10 +425,11 @@ class UserCollectionEditFlowTests(APITestCase):
         self.assertEqual({i['sense']['id'] for i in self.items(bobs)}, {str(self.one.id), str(self.two.id)})
         self.assertEqual(Collection.objects.get(pk=collection.pk).downloaded_count, 1)
 
-    def test_upload_without_changes_is_rejected(self):
+    def test_upload_without_changes_keeps_version(self):
         collection, mine = self.create_collection(self.one)
         self.assertEqual(self.upload(mine).status_code, 200)
-        self.assertEqual(self.upload(mine).status_code, 400)
+        res = self.upload(mine)  # tác giả: không đổi gì vẫn là cập nhật hợp lệ, không tăng version
+        self.assertEqual((res.status_code, res.data['changed']), (200, False))
         collection.refresh_from_db()
         self.assertEqual(collection.version, 1)
 
@@ -593,11 +594,65 @@ class UserCollectionEditFlowTests(APITestCase):
         self.post('delete-sense', mine, collection_item_id=str(item.id))
         res = self.post('add-sense', mine, sense_id=str(self.one.id))
         self.assertEqual(res.status_code, 200)
+        res = self.upload(mine)  # tác giả: không đổi gì thì không tăng version nhưng vẫn là cập nhật hợp lệ
+        self.assertEqual((res.status_code, res.data['changed'], res.data['current_version']), (200, False, 1))
+        collection.refresh_from_db()
+        self.assertEqual((collection.version, collection.released), (1, True))
+        self.assertFalse(CollectionItem.objects.filter(collection=collection, released=False).exists())
+
+    def test_first_upload_without_senses_is_refused(self):
+        collection, mine = self.create_collection(self.one)
+        CollectionItem.objects.filter(collection=collection).delete()
         res = self.upload(mine)
         self.assertEqual((res.status_code, res.data.get('errorCode')), (400, 'no_changes'))
+
+    def test_unpublish_hides_collection_and_republish_restores_it_without_new_version(self):
+        collection, mine = self.create_collection(self.one, self.two)
+        self.released_version(mine)
+        self.as_user(self.bob)
+        self.assertEqual(self.client.post(f'/api/user-collections/{collection.id}/download/').status_code, 201)
+
+        self.as_user(self.alice)
+        res = self.post('unpublish', mine)
+        self.assertEqual((res.status_code, res.data['released'], res.data['version']), (200, False, 1))
+        self.assertEqual(self.post('unpublish', mine).status_code, 409)  # đã thu hồi rồi
         collection.refresh_from_db()
-        self.assertEqual(collection.version, 1)
-        self.assertFalse(CollectionItem.objects.filter(collection=collection, released=False).exists())
+        self.assertFalse(collection.released)
+        self.assertEqual(CollectionItem.objects.filter(collection=collection, released=True).count(), 2)  # nội dung giữ nguyên
+
+        # Người chưa tải không thấy nữa, người đã tải vẫn còn bộ
+        self.as_user(User.objects.create_user('carol'))
+        self.assertEqual(self.client.post(f'/api/user-collections/{collection.id}/download/').status_code, 404)
+        self.as_user(self.bob)
+        self.assertEqual(UserCollection.objects.filter(user=self.bob, collection=collection).count(), 1)
+
+        # Người khác không thu hồi được
+        bobs = UserCollection.objects.get(user=self.bob, collection=collection)
+        self.assertEqual(self.post('unpublish', bobs).status_code, 403)
+
+        # Phát hành lại không cần thay đổi: công khai lại, version giữ nguyên
+        self.as_user(self.alice)
+        res = self.post('upload', mine, title='Back')
+        self.assertEqual((res.status_code, res.data['changed'], res.data['current_version']), (200, False, 1))
+        collection.refresh_from_db()
+        self.assertEqual((collection.released, collection.version, collection.name, len(collection.metadatas)), (True, 1, 'Back', 1))
+
+    def test_remix_is_logged_on_both_collections(self):
+        collection, mine = self.create_collection(self.one, self.two)
+        self.released_version(mine)
+        self.as_user(self.bob)
+        self.client.post(f'/api/user-collections/{collection.id}/download/')
+        bobs = UserCollection.objects.get(user=self.bob, collection=collection)
+        self.post('add-sense', bobs, sense_id=str(self.three.id))
+        res = self.post('upload', bobs)
+        self.assertEqual(res.status_code, 200)
+
+        remix = Collection.objects.get(id=res.data['collection_id'])
+        self.assertEqual((str(remix.original_id), str(remix.previous_id), [str(p) for p in remix.parents]), (str(collection.id),) * 2 + ([str(collection.id)],))
+        self.assertEqual(remix.metadatas[0]['remixed_from']['collection_id'], str(collection.id))
+        collection.refresh_from_db()
+        self.assertEqual(collection.remix_count, 1)
+        self.assertGreater(collection.score, 0)
 
     def test_upload_counts_only_real_changes_and_applies_info(self):
         collection, mine = self.create_collection(self.one, self.two)

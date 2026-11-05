@@ -187,8 +187,9 @@ class PromoteAndScoreTests(ModerationTestBase):
         self.assertEqual(self.client.post(f'/api/ai-senses/{custom.id}/promote/').status_code, 400)
 
     def test_collection_score_prefers_quality(self):
-        good = Collection.objects.create(name='Good', language_code='en', released=True, created_by=self.alice)
-        trusted = Collection.objects.create(name='Trusted', language_code='en', released=True, created_by=self.bob)
+        big = dict(language_code='en', released=True, item_count=10)  # đủ lớn để không bị trừ điểm bộ nhỏ
+        good = Collection.objects.create(name='Good', created_by=self.alice, **big)
+        trusted = Collection.objects.create(name='Trusted', created_by=self.bob, **big)
         record(self.bob, 'manual', points=1000)  # uy tín rất cao nhưng bộ chưa ai thích
         self.client.post(f'/api/collections/{good.id}/like/')
         self.assertEqual(Collection.objects.get(pk=good.pk).score, 69)  # 100 * ln 2

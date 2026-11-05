@@ -29,7 +29,7 @@ SENSE_COLUMNS = ('id', 'word_id', 'word_value', 'original_id', 'metadata_id', 'i
                  'is_deleted', 'created_at', 'updated_at')
 METADATA_COLUMNS = ('id', 'image_link', 'advanced', 'tags', 'image_keywords', 'image_metadata', 'is_active', 'created_at', 'updated_at')
 COLLECTION_COLUMNS = ('id', 'name', 'description', 'image_url', 'score', 'item_count', 'language_code', 'downloaded_count',
-                      'like_count', 'view_count', 'metadatas', 'parents', 'previous_id', 'invalid_words', 'pending_words',
+                      'like_count', 'view_count', 'remix_count', 'metadatas', 'parents', 'previous_id', 'original_id', 'invalid_words', 'pending_words',
                       'version', 'is_official', 'is_active', 'is_frozen', 'is_deleted', 'created_at', 'updated_at')
 USER_COLLECTION_COLUMNS = ('id', 'collection_id', 'name', 'description', 'learned_count', 'version', 'is_active',
                            'is_deleted', 'created_at', 'updated_at')

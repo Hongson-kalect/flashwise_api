@@ -575,9 +575,11 @@ class UserCollectionViewSet(SoftDeleteViewSet):
     def upload(self, request, pk=None, *args, **kwargs):
         """
         Phát hành nháp của user. Chỉ dòng nháp thật sự đổi nghĩa so với bản đang dùng mới được tính (thêm / đổi sense_id / xoá);
-        nháp không đổi gì bị dọn đi, không còn gì thật sự đổi thì trả 400 no_changes và không tạo version.
-        - Tác giả: tăng version của bộ, nháp thành bản phát hành, title / desc / image (nếu gửi) thành thông tin bộ.
-        - Người khác: tách thành bộ remix mới (v1) gồm bản đang dùng + nháp của họ.
+        nháp không đổi gì bị dọn đi.
+        - Tác giả: luôn đặt bộ ở trạng thái đã phát hành (released + is_uploaded; dùng cho cả phát hành lại sau khi thu hồi).
+          Có thay đổi thì tăng version, nháp thành bản phát hành; không thì giữ nguyên version (changed=false). title / desc /
+          image (nếu gửi) cập nhật thông tin bộ ở cả hai trường hợp. Bộ chưa từng phát hành mà không có nghĩa nào: 400 no_changes.
+        - Người khác: tách thành bộ remix mới (v1) gồm bản đang dùng + nháp của họ; không có thay đổi: 400 no_changes.
         Body: user_collection_id, title, desc, image (tuỳ chọn).
         """
         user_collection_id = request.data.get('user_collection_id')
@@ -605,10 +607,12 @@ class UserCollectionViewSet(SoftDeleteViewSet):
             changes, noop_ids = classify_drafts(current_collection.id, current_user, base_version)
             if noop_ids:
                 CollectionItem.objects.filter(id__in=noop_ids).delete()
-            if not any(changes.values()):
+            has_changes = any(changes.values())
+            republish = is_author and not has_changes and current_collection.version > 0
+            if not has_changes and not republish:
                 return Response(status=status.HTTP_400_BAD_REQUEST, data={"message": "No changes to upload", "errorCode": "no_changes"})
 
-            next_version = current_collection.version + 1
+            next_version = current_collection.version + (1 if has_changes else 0)
             current_metadatas = list(current_collection.metadatas or [])
             last_meta = current_metadatas[-1] if current_metadatas else {}
             new_meta = {
@@ -620,7 +624,20 @@ class UserCollectionViewSet(SoftDeleteViewSet):
                 "released_at": timezone.now().isoformat(),
             }
 
-            if is_author:
+            if republish:
+                # Tác giả phát hành lại / cập nhật thông tin, không có nghĩa nào đổi: giữ version, chỉ sửa thông tin bản hiện tại
+                if current_metadatas:
+                    current_metadatas[-1] = {**current_metadatas[-1], **{k: new_meta[k] for k in ('title', 'desc', 'image')}}
+                current_collection.metadatas = current_metadatas
+                current_collection.name = new_meta['title']
+                current_collection.description = new_meta['desc'] or ''
+                current_collection.image_url = new_meta['image']
+                current_collection.released = True
+                current_collection.is_uploaded = True
+                current_collection.save()
+                final_collection_id = current_collection.id
+                final_user_version = current_collection.version
+            elif is_author:
                 # Tác giả: nháp (đã dọn dòng không đổi) thành bản phát hành của version mới
                 current_collection.version = next_version
                 current_collection.metadatas = [*current_metadatas, new_meta]
@@ -657,7 +674,10 @@ class UserCollectionViewSet(SoftDeleteViewSet):
                     original_id=current_collection.original_id or current_collection.id,
                     parents=[*(current_collection.parents or []), current_collection.id],
                     previous_id=current_collection.id,
-                    metadatas=[{**new_meta, "version": 1}],
+                    metadatas=[{**new_meta, "version": 1, "remixed_from": {
+                        "collection_id": str(current_collection.id), "name": current_collection.name,
+                        "version": user_collection.version, "author_id": current_collection.created_by_id,
+                    }}],
                     image=current_collection.image,
                     image_url=new_meta['image'],
                     version=1, released=True, is_uploaded=True,
@@ -666,20 +686,43 @@ class UserCollectionViewSet(SoftDeleteViewSet):
                 )
                 CollectionItem.objects.bulk_create(new_items)
                 CollectionItem.objects.filter(collection_id=current_collection.id, created_by=current_user, released=False).delete()
+                # Ghi nhận bản gốc được remix (điểm xếp hạng của nó tăng nhẹ)
+                Collection.objects.filter(pk=current_collection.pk).update(remix_count=F('remix_count') + 1)
+                refresh_collection_scores(pk=current_collection.pk)
                 final_collection_id = new_collection_id
                 final_user_version = 1
 
             user_collection.collection_id = final_collection_id
             user_collection.version = final_user_version
             user_collection.save()
+            refresh_collection_scores(pk=final_collection_id)
 
         return Response(status=status.HTTP_200_OK, data={
             "message": "Upload success",
             "collection_id": final_collection_id,
             "user_collection_id": user_collection.id,
             "current_version": final_user_version,
+            "changed": has_changes,
             "changelog": changes,
         })
+
+    @action(detail=True, methods=['post'], url_path='unpublish', permission_classes=[IsAuthenticated])
+    def unpublish(self, request, pk=None):
+        """
+        Thu hồi bộ đã phát hành (chỉ tác giả): bộ không còn công khai, người chưa tải không thấy / tải được nữa. Người đã tải
+        giữ nguyên và vẫn học tiếp. Nội dung và version giữ nguyên; phát hành lại bằng upload (không cần thay đổi) để công khai lại.
+        Bộ chính thức không thu hồi được (403). Chưa phát hành: 409 not_released.
+        """
+        with transaction.atomic():
+            user_collection = get_object_or_404(self.get_queryset().select_related('collection'), id=pk)
+            collection = user_collection.collection
+            if collection is None or collection.created_by_id != request.user.id or collection.is_official:
+                return Response({"message": "Only the author can unpublish a collection"}, status=status.HTTP_403_FORBIDDEN)
+            if not collection.released:
+                return Response({"message": "Collection is not released", "errorCode": "not_released"}, status=status.HTTP_409_CONFLICT)
+            # updated_at đổi nên etag của bundle đổi, app thấy trạng thái mới
+            Collection.objects.filter(pk=collection.pk).update(released=False, updated_at=timezone.now())
+        return Response({"collection_id": collection.id, "released": False, "version": collection.version})
 
     def perform_create(self, serializer):
         # Nếu bạn muốn gán user tạo collection

@@ -50,7 +50,18 @@ class CollectionDetailSerializer(BaseModelSerializer):
         items = self.context.get('items')
         if items is None:
             items = obj.collectionitem_set.exclude(is_deleted=True).select_related('sense').order_by('display_order', 'created_at')
-        return AISenseSerializerBasic([item.sense for item in items], many=True).data
+        senses = [item.sense for item in items]
+        data = AISenseSerializerBasic(senses, many=True).data
+        request = self.context.get('request')
+        lang = request.query_params.get('user_lang') if request is not None else None
+        # gloss: nghĩa ngắn theo ngôn ngữ người xem (bản dịch, không có thì định nghĩa), để xem trước bộ không cần tải
+        for row, sense in zip(data, senses):
+            contents = sense.contents if isinstance(sense.contents, dict) else {}
+            translations = (contents.get('translations') or {}).get(lang) if lang else None
+            definition = ((contents.get('definition') or {}).get(lang) or (contents.get('definition') or {}).get(sense.language_code) or {})
+            row['gloss'] = ', '.join(translations) if translations else (definition.get('value') if isinstance(definition, dict) else '') or ''
+            row['image_preview'] = sense.image_preview
+        return data
 
 
 class CollectionSerializer(BaseModelSerializer):

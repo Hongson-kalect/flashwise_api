@@ -172,7 +172,7 @@ Setting app nên dùng: `day_start_hour`, `first_review_hours`, `swipe_min_level
 **Xem / tải bộ**
 - `GET /api/collections/?lang&q&official=true|false&mine=true&tag=id1,id2&ordering=popular|newest|-like_count|-downloaded_count|-view_count`
   → mỗi bộ `{id, name, description, image_url, senses_count, is_official, language_code, like_count, downloaded_count, view_count, tags, created_at}`.
-- `GET /api/collections/{id}/` chi tiết + `senses`, `author_id` (id hồ sơ tác giả, để report), `version`, `pending_words`, `invalid_words`. Mỗi lần xem cộng `view_count` (1 lần / người / ngày).
+- `GET /api/collections/{id}/?user_lang=vi` chi tiết + `senses` (mỗi nghĩa có `gloss` = nghĩa ngắn theo `user_lang`, để xem trước bộ không cần tải), `author_id` (id hồ sơ tác giả, để report), `version`, `pending_words`, `invalid_words`. Mỗi lần xem cộng `view_count` (1 lần / người / ngày).
 - `GET /api/collections/{id}/versions/` lịch sử phát hành + like từng version + `liked_versions`.
 - `POST/DELETE /api/collections/{id}/like/` `{version?}` (mặc định version hiện tại; DELETE không gửi version = bỏ hết) → `{liked, liked_versions, like_count, version, version_like_count}`.
 - `POST /api/user-collections/{collection_id}/download/` → `{id}` = id UserCollection (đã tải rồi: 200 cùng id).

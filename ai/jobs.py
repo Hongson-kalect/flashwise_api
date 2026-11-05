@@ -14,7 +14,7 @@ def queue_translation(word_id, language_code, user_language_code, missing, curre
     missing / current_senses phải là dữ liệu thuần JSON (dict), không phải model instance.
     """
     try:
-        if not acquire_lock(f"trans_lock:{word_id}:{user_language_code}", TRANSLATE_LOCK_SECONDS):
+        if not acquire_lock(f"trans_lock:{word_id}:{language_code}:{user_language_code}", TRANSLATE_LOCK_SECONDS):
             return False
         push_job("redis_trans", {
             "word_id": str(word_id),

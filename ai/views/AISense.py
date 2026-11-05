@@ -551,6 +551,25 @@ class AISenseViewSet(SoftDeleteViewSet):
             })
         return Response({'status': wanted, 'senses': rows})
 
+    @action(detail=False, methods=['post'], url_path='translate', permission_classes=[IsAuthenticated])
+    def translate(self, request):
+        """
+        Dịch trước cho 1 cụm nghĩa sắp học (app gọi khi chọn cụm 5-8 thẻ). Body: sense_ids (tối đa 30), user_lang.
+        Nghĩa đã đủ bản dịch bỏ qua; thiếu thì đẩy việc dịch (nghĩa user sửa thì dịch phần delta). Trả {ready, pending}: id nghĩa.
+        App hỏi lại sau ít giây (pending giảm dần) hoặc tải lại bundle.
+        """
+        from ai.translation import collect_gaps, missing_sense_ids, queue_gaps
+        from ai.queries import visible_senses
+
+        sense_ids, user_language_code = request.data.get('sense_ids'), request.data.get('user_lang')
+        if not isinstance(sense_ids, list) or not 0 < len(sense_ids) <= 30 or not all(is_uuid(i) for i in sense_ids) or not is_lang(user_language_code):
+            return Response({'message': 'sense_ids (1-30) and user_lang are required'}, status=status.HTTP_400_BAD_REQUEST)
+        senses = list(visible_senses(request.user).filter(id__in=sense_ids).select_related('word', 'original'))
+        gaps = collect_gaps(senses, user_language_code)
+        queue_gaps(gaps, user_language_code)
+        pending = set(missing_sense_ids(gaps))
+        return Response({'ready': [str(s.id) for s in senses if str(s.id) not in pending], 'pending': sorted(pending)})
+
     @action(detail=False, methods=['get'], url_path='community', permission_classes=[AllowAny])
     def community(self, request):
         """
@@ -617,12 +636,16 @@ class AISenseViewSet(SoftDeleteViewSet):
         Nghĩa tuỳ chỉnh dạng delta không có contents riêng mà dùng contents của nghĩa gốc, nên bản dịch bù
         cũng phải ghi vào nghĩa gốc (job trỏ tới nghĩa gốc).
         """
+        from ai.translation import queue_gaps, sense_gaps
+
         target = sense if sense.contents else sense.original
         if target is None:
             return {}
         contents, missing = get_user_lang_sense(sense.language_code, user_language_code, target.contents, str(target.id))
         if missing:
             queue_translation(sense.word_id, sense.language_code, user_language_code, [missing], [AISenseSerializer(target).data])
+        # Phần user đã sửa trong delta (ngôn ngữ họ viết) dịch riêng, ghi vào delta của nghĩa riêng
+        queue_gaps([gap for gap in sense_gaps(sense, user_language_code) if gap.delta], user_language_code)
         return contents
 
     def retrieve(self, request, *args, **kwargs):

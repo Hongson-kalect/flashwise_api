@@ -3,22 +3,20 @@ Gói học offline của 1 bộ từ (GET user-collections/{id}/bundle): mọi t
 mỗi bảng là danh sách dòng đúng tên cột SQLite phía app (flashwise/database/schema).
 
 - Dòng bộ từ: bản user đang thấy (live_items: nháp của chính user thắng bản phát hành tới version user dùng).
-- Nội dung nghĩa chỉ giữ ngôn ngữ gốc + ngôn ngữ của user. Thiếu bản dịch thì đẩy hàng dịch, trả id trong `pending`
-  (dịch xong nghĩa đổi updated_at nên etag đổi, app tải lại).
+- Nội dung nghĩa chỉ giữ ngôn ngữ gốc + ngôn ngữ của user. Nghĩa thiếu bản dịch: id trong `pending`, đếm ở
+  user_collection.translation_missing. Tải bộ KHÔNG đẩy việc dịch (dịch lười: app gọi ai-senses/translate cho cụm sắp học,
+  hoặc get-word / learn/* đẩy khi chạm tới); dịch xong nghĩa đổi updated_at nên etag đổi, app tải lại.
 - Nghĩa bị ban (ai/queries.banned_sense_ids) bị bỏ khỏi gói cùng dòng bộ từ trỏ tới nó, id nằm trong `banned`
   để app xoá bản đã lưu. Bộ bị ban thì view trả 403 collection_banned, không có gói.
 - etag: băm các mốc cập nhật của mọi thứ trong gói; app gửi lại etag cũ, không đổi thì chỉ nhận {unchanged: true}.
 """
 import hashlib
 import json
-from collections import defaultdict
 
-from ai.jobs import queue_translation
 from ai.models import AISense
 from ai.queries import banned_sense_ids
-from ai.serializers.AISense import AISenseSerializer
+from ai.translation import collect_gaps, missing_sense_ids, queue_gaps
 from core.queries import current_items
-from utils.utils.sense_handle import get_user_lang_sense
 
 ITEM_COLUMNS = ('id', 'value', 'collection_id', 'original_id', 'sense_id', 'display_order', 'status', 'version',
                 'released', 'is_base', 'is_active', 'is_deleted', 'parent', 'created_by_id', 'created_at', 'updated_at')
@@ -87,28 +85,32 @@ def load_bundle(user_collection, user):
 
 
 def build_bundle(user_collection, user, user_language_code, collection, items, senses, banned=()):
+    tables = sense_tables(senses, user_language_code, queue=False)
+    live = {str(item.sense_id) for item in items if not item.is_deleted}
     return {
-        # is_author / is_released: app biết có cho đổi ảnh bìa không (chỉ tác giả, bộ chưa phát hành); chỉ lưu ở máy
+        # is_author / is_released: app biết có cho đổi ảnh bìa không (chỉ tác giả, bộ chưa phát hành); chỉ lưu ở máy.
+        # translation_missing: số nghĩa trong bộ chưa có bản dịch cho ngôn ngữ người xem (app hiện "đã dịch x / n")
         'user_collection': {
             **row(user_collection, USER_COLLECTION_COLUMNS),
             'is_author': collection.created_by_id == user.id,
             'is_released': bool(collection.released),
+            'translation_missing': sum(1 for sense_id in tables['pending'] if sense_id in live),
         },
         'collection': row(collection, COLLECTION_COLUMNS),
         'items': [row(item, ITEM_COLUMNS) for item in items],
-        **sense_tables(senses, user_language_code),
+        **tables,
         'banned': list(banned),
     }
 
 
-def sense_tables(senses, user_language_code):
+def sense_tables(senses, user_language_code, queue=True):
     """
     Các bảng ai_word / ai_sense / sense_metadata cho danh sách nghĩa (đã select_related word, metadata, original),
-    nội dung chỉ giữ ngôn ngữ gốc + user. Nghĩa thiếu bản dịch: đẩy hàng dịch theo từ, id nằm trong `pending`.
+    nội dung chỉ giữ ngôn ngữ gốc + user. Nghĩa thiếu bản dịch: id nằm trong `pending`; queue=True thì đẩy việc dịch
+    (ai/translation.py), tải bộ dùng queue=False để không bắn cả bộ vào hàng đợi.
     """
     langs = {user_language_code} | {s.language_code for s in senses}
     words, metadata, sense_rows = {}, {}, []
-    missing_by_word = defaultdict(list)
 
     for sense in senses:
         data = row(sense, SENSE_COLUMNS)
@@ -123,18 +125,10 @@ def sense_tables(senses, user_language_code):
         if sense.metadata_id:
             metadata.setdefault(sense.metadata_id, row(sense.metadata, METADATA_COLUMNS))
 
-        # Bản dịch thiếu được bù vào nghĩa đang giữ nội dung (bản gốc nếu là nghĩa delta)
-        target = sense if sense.contents else sense.original
-        if target is not None and target.contents and user_language_code != target.language_code:
-            _, missing = get_user_lang_sense(target.language_code, user_language_code, target.contents, str(target.id))
-            if missing:
-                missing_by_word[target.word_id].append((target, missing))
-
-    pending = []
-    for word_id, rows in missing_by_word.items():
-        rows = list({str(s.id): (s, m) for s, m in rows}.values())  # nhiều nghĩa delta cùng 1 bản gốc
-        queue_translation(word_id, rows[0][0].language_code, user_language_code, [m for _, m in rows], [AISenseSerializer(s).data for s, _ in rows])
-        pending.extend(str(s.id) for s, _ in rows)
+    gaps = collect_gaps(senses, user_language_code)
+    if queue:
+        queue_gaps(gaps, user_language_code)
+    pending = missing_sense_ids(gaps)
 
     return {
         'words': list(words.values()),

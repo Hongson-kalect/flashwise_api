@@ -102,7 +102,7 @@ async def handle_task(job, sema, task_type, raw=None, queue=None):
                 # Mở khoá để lần tra sau đẩy lại được nếu bản dịch chưa đủ
                 user_language = job.get('user_language_code')
                 if word_id and isinstance(user_language, str):
-                    await redis_client.delete(f"trans_lock:{word_id}:{user_language}")
+                    await redis_client.delete(f"trans_lock:{word_id}:{job.get('language_code')}:{user_language}")
 
         elif task_type == 'collection_word':
             # Tạo word mới
@@ -150,15 +150,23 @@ def save_translated_contents(senses, source_language):
     with transaction.atomic():
         rows = {str(row.id): row for row in AISense.objects.select_for_update().filter(id__in=ids)}
         updated = []
+        delta_rows = []
         for sense in senses:
             row = rows.get(str(sense['id']))
             if row is None or not sense.get('contents'):
                 continue
-            row.contents = merge_translations(row.contents, sense['contents'], source_language)
+            if sense.get('target') == 'delta':
+                # Nghĩa riêng dạng delta (ai/translation.py): bản dịch của phần user sửa ghi vào delta của chính nghĩa đó
+                row.delta = merge_translations(row.delta, sense['contents'], source_language)
+                delta_rows.append(row)
+            else:
+                row.contents = merge_translations(row.contents, sense['contents'], source_language)
             row.updated_at = now
             updated.append(row)
         if updated:
-            AISense.objects.bulk_update(updated, ['contents', 'updated_at'])
+            AISense.objects.bulk_update([r for r in updated if r not in delta_rows], ['contents', 'updated_at'])
+            if delta_rows:
+                AISense.objects.bulk_update(delta_rows, ['delta', 'updated_at'])
     return len(updated)
 
 

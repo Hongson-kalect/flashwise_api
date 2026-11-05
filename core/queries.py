@@ -36,5 +36,5 @@ def current_items(collection_id, version, user=None):
 
 def live_items(collection_id, version, user=None):
     """current_items bỏ dòng xoá, theo thứ tự hiển thị (display_order)."""
-    rows = current_items(collection_id, version, user).select_related('sense')
+    rows = current_items(collection_id, version, user).select_related('sense', 'sense__original')
     return sorted((row for row in rows if not row.is_deleted), key=lambda row: (row.display_order or 0, row.created_at))

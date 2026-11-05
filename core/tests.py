@@ -849,7 +849,7 @@ class BundleTests(APITestCase):
         _, extra = make_word_with_sense('bird')
         CollectionItem.objects.create(collection=self.collection, sense=extra, original=extra, released=False, created_by=self.bob)  # nháp của bob
         self.user_collection = UserCollection.objects.create(user=self.alice, collection=self.collection, version=1)
-        self.queue = mock.patch('core.bundle.queue_translation').start()
+        self.queue = mock.patch('ai.translation.queue_translation').start()
         self.addCleanup(mock.patch.stopall)
 
     def bundle(self, **params):
@@ -872,10 +872,10 @@ class BundleTests(APITestCase):
         for column in ('original_id', 'delta', 'audio', 'global_difficulty', 'learner_count'):
             self.assertIn(column, sense)
 
-        # Nghĩa thiếu bản dịch: đẩy hàng dịch 1 lần cho từ đó, app biết để tải lại sau
+        # Nghĩa thiếu bản dịch: chỉ báo (pending + số đếm), tải bộ không đẩy việc dịch (dịch lười khi học tới)
         self.assertEqual(data['pending'], [str(self.todo.id)])
-        self.assertEqual(self.queue.call_count, 1)
-        self.assertEqual(self.queue.call_args.args[0], self.todo.word_id)
+        self.assertEqual(data['user_collection']['translation_missing'], 1)
+        self.assertEqual(self.queue.call_count, 0)
 
     def test_etag_skips_unchanged_bundle(self):
         etag = self.bundle().data['etag']

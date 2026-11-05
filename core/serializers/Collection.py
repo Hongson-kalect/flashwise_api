@@ -40,7 +40,7 @@ class CollectionDetailSerializer(BaseModelSerializer):
 
     def get_translation(self, obj):
         """Bộ đã dịch được bao nhiêu nghĩa sang ngôn ngữ người xem (query user_lang): {language, total, missing}. Không có user_lang: null."""
-        from ai.translation import collect_gaps, missing_sense_ids
+        from ai.translation import collect_gaps, missing_sense_ids, queue_gaps
 
         request = self.context.get('request')
         lang = request.query_params.get('user_lang') if request is not None else None
@@ -48,7 +48,10 @@ class CollectionDetailSerializer(BaseModelSerializer):
         if not lang or items is None:
             return None
         senses = [item.sense for item in items]
-        return {'language': lang, 'total': len(senses), 'missing': len(missing_sense_ids(collect_gaps(senses, lang)))}
+        gaps = collect_gaps(senses, lang)
+        if gaps:
+            queue_gaps(gaps, lang, lazy=True)  # có người xem bộ: dịch dần ở nền nếu cặp ngôn ngữ phổ biến
+        return {'language': lang, 'total': len(senses), 'missing': len(missing_sense_ids(gaps))}
 
     def get_author_id(self, obj):
         # Id hồ sơ (UserProfile) của tác giả, dùng để report user; bộ chính thức không cần

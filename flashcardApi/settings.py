@@ -165,6 +165,14 @@ COLLECTION_WORD_SEMA_LIMIT = int(os.getenv('COLLECTION_WORD_SEMA_LIMIT', '5'))
 TRANS_SEMA_LIMIT = int(os.getenv('TRANS_SEMA_LIMIT', '20'))
 # Job đang chạy mà worker chết: worker khác trả job về hàng đợi; quá số lần này thì bỏ (job làm sập worker)
 JOB_MAX_REQUEUES = int(os.getenv('JOB_MAX_REQUEUES', '3'))
+
+# Dịch nền (hàng đợi redis_trans_lazy, ai/jobs.queue_lazy_translation): chỉ cho cặp ngôn ngữ phổ biến (ngôn ngữ của bộ và của user đều
+# thuộc danh sách), worker chỉ lấy việc khi các hàng đợi gấp (word / collection_word / image / trans) rỗng và không việc nào đang chạy,
+# mỗi việc cách nhau LAZY_TRANS_INTERVAL giây. Hàng đợi đầy (LAZY_TRANS_MAX_QUEUE) thì không nhận thêm; mỗi (từ, nguồn, đích) chỉ xếp 1 lần / LAZY_LOCK_SECONDS.
+POPULAR_LANGUAGES = [m.strip() for m in os.getenv('POPULAR_LANGUAGES', 'en,vi,ja,zh,ko,es,fr').split(',') if m.strip()]
+LAZY_TRANS_INTERVAL = float(os.getenv('LAZY_TRANS_INTERVAL', '20'))
+LAZY_TRANS_MAX_QUEUE = int(os.getenv('LAZY_TRANS_MAX_QUEUE', '5000'))
+LAZY_LOCK_SECONDS = int(os.getenv('LAZY_LOCK_SECONDS', '86400'))
 WORD_PROCESSING_STALE_SECONDS = int(os.getenv('WORD_PROCESSING_STALE_SECONDS', '600'))
 WORD_ERROR_RETRY_SECONDS = int(os.getenv('WORD_ERROR_RETRY_SECONDS', '60')) # tạo từ lỗi: get-word trả 500 trong khoảng này rồi cho tạo lại
 

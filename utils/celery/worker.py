@@ -99,9 +99,9 @@ async def handle_task(job, sema, task_type, raw=None, queue=None):
                 if word_id:
                     await sync_to_async(re_cache_word)(word_id)
             finally:
-                # Mở khoá để lần tra sau đẩy lại được nếu bản dịch chưa đủ
+                # Mở khoá để lần tra sau đẩy lại được nếu bản dịch chưa đủ (việc nền giữ khoá cả ngày, không mở)
                 user_language = job.get('user_language_code')
-                if word_id and isinstance(user_language, str):
+                if word_id and isinstance(user_language, str) and not job.get('lazy'):
                     await redis_client.delete(f"trans_lock:{word_id}:{job.get('language_code')}:{user_language}")
 
         elif task_type == 'collection_word':
@@ -225,6 +225,46 @@ async def consume_queue(queue_name, sema, task_type):
         except Exception as e:
             logger.error(f"[LOOP-ERROR] Lỗi vòng lặp Consumer {queue_name}: {e}")
             await asyncio.sleep(1)
+
+LAZY_QUEUE = "redis_trans_lazy"
+URGENT_QUEUES = ("redis_word", "redis_collection_word", "redis_image", "redis_trans")
+
+
+def lazy_should_wait(urgent_lengths, busy_semas):
+    """Việc nền chỉ chạy khi mọi hàng đợi gấp rỗng và không việc gấp nào đang chạy (sema nào cũng còn đủ ghế)."""
+    return any(length > 0 for length in urgent_lengths) or any(sema.locked() or sema._value < limit for sema, limit in busy_semas)
+
+
+async def consume_lazy(lazy_sema, busy_semas):
+    """
+    Dịch nền: mỗi lần 1 việc từ redis_trans_lazy, chỉ khi hệ thống rảnh, cách nhau LAZY_TRANS_INTERVAL giây
+    (giới hạn tốc độ để không ảnh hưởng việc gấp). Cùng dạng job với redis_trans nên dùng chung handle_task('translate').
+    """
+    logger.info(f"[START] Khởi động hàng chờ dịch nền: {LAZY_QUEUE}")
+    while True:
+        try:
+            lengths = [await redis_client.llen(queue) for queue in URGENT_QUEUES]
+            if lazy_should_wait(lengths, busy_semas):
+                await asyncio.sleep(5)
+                continue
+            await lazy_sema.acquire()
+            raw = await redis_client.blmove(LAZY_QUEUE, processing_key(LAZY_QUEUE), 5, "LEFT", "RIGHT")
+            if not raw:
+                lazy_sema.release()
+                continue
+            try:
+                job = json.loads(raw)
+            except ValueError:
+                logger.error(f"[BAD-JOB] {LAZY_QUEUE}: job không phải JSON, bỏ: {raw[:200]}")
+                await redis_client.lrem(processing_key(LAZY_QUEUE), 1, raw)
+                lazy_sema.release()
+                continue
+            await handle_task(job, lazy_sema, "translate", raw, LAZY_QUEUE)  # tự trả ghế ở finally
+            await asyncio.sleep(settings.LAZY_TRANS_INTERVAL)
+        except Exception as e:
+            logger.error(f"[LOOP-ERROR] Lỗi vòng lặp dịch nền: {e}")
+            await asyncio.sleep(5)
+
 
 async def heartbeat():
     """Báo worker còn sống; hết hạn (worker chết / bị tắt) thì worker khác thu hồi job đang làm dở."""
@@ -495,6 +535,7 @@ async def main():
         consume_queue("redis_collection_word", collection_word_sema, "collection_word"),
         consume_queue("redis_image", image_sema, "image"),
         consume_queue("redis_trans", trans_sema, "translate"),
+        consume_lazy(asyncio.Semaphore(1), [(word_sema, WORD_SEMA_LIMIT), (collection_word_sema, COLLECTION_WORD_SEMA_LIMIT), (image_sema, IMAGE_SEMA_LIMIT), (trans_sema, TRANS_SEMA_LIMIT)]),
         
         # Flusher quản lý trút DB ngầm (Bật lên khi Sơn đưa cấu hình lưu kết quả vào redis)
         flush_buffer_to_db(redis_client),

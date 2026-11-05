@@ -95,3 +95,71 @@ class DeltaTranslationTests(APITestCase):
         res = self.client.get(f'/api/collections/{collection.id}/', {'user_lang': 'vi'})
         self.assertEqual(res.data['translation'], {'language': 'vi', 'total': 2, 'missing': 0})
         self.assertIsNone(self.client.get(f'/api/collections/{collection.id}/').data['translation'])
+
+
+@override_settings(CACHES=LOCMEM_CACHE, POPULAR_LANGUAGES=['en', 'vi', 'ja'], LAZY_TRANS_MAX_QUEUE=100)
+class LazyTranslationTests(APITestCase):
+    """Dịch nền: hàng đợi riêng, chỉ cặp ngôn ngữ phổ biến, không xếp trùng."""
+
+    def setUp(self):
+        django_cache.clear()
+        self.queue = JsonQueue()
+        for target in ('ai.jobs.push_job', 'ai.jobs.acquire_lock'):
+            patcher = mock.patch(target, getattr(self.queue, target.rsplit('.', 1)[1]))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = mock.patch('ai.jobs.lazy_queue_length', lambda: 0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.alice = User.objects.create_user('alice')
+        word = AIWord.objects.create(value='bank', language_code='en', status='COMPLETED')
+        data = make_sense(str(uuid7()))
+        data.update(word_id=word.id, word_value='bank')
+        self.sense = AISense.objects.create(**data)
+
+    def test_popular_pair_goes_to_lazy_queue_only(self):
+        gaps = collect_gaps([self.sense], 'ja')
+        queue_gaps(gaps, 'ja', lazy=True)
+        self.assertEqual(self.queue.names(), ['redis_trans_lazy'])
+        job = self.queue.jobs[0][1]
+        self.assertTrue(job['lazy'])
+        self.assertEqual((job['language_code'], job['user_language_code']), ('en', 'ja'))
+        queue_gaps(gaps, 'ja', lazy=True)
+        self.assertEqual(self.queue.names(), ['redis_trans_lazy'])  # đã xếp rồi: không xếp trùng
+
+    def test_unpopular_language_is_not_queued(self):
+        queue_gaps(collect_gaps([self.sense], 'sw'), 'sw', lazy=True)
+        self.assertEqual(self.queue.jobs, [])
+
+    def test_full_lazy_queue_refuses_new_jobs(self):
+        with mock.patch('ai.jobs.lazy_queue_length', lambda: 100):
+            queue_gaps(collect_gaps([self.sense], 'ja'), 'ja', lazy=True)
+        self.assertEqual(self.queue.jobs, [])
+
+    def test_bundle_download_queues_lazy_not_urgent(self):
+        from core.models import Collection, CollectionItem, UserCollection
+
+        collection = Collection.objects.create(name='c', language_code='en', released=True, version=1, created_by=self.alice)
+        CollectionItem.objects.create(collection=collection, sense=self.sense, original=self.sense, released=True, version=1, value='bank')
+        uc = UserCollection.objects.create(user=self.alice, collection=collection, version=1)
+        self.client.force_authenticate(self.alice)
+        res = self.client.get(f'/api/user-collections/{uc.id}/bundle/', {'user_lang': 'ja'})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(self.queue.names(), ['redis_trans_lazy'])  # tải bộ không đẩy việc gấp
+        self.assertEqual(res.data['user_collection']['translation_missing'], 1)
+
+    def test_worker_waits_while_urgent_work_exists(self):
+        import asyncio
+
+        from utils.celery.worker import lazy_should_wait
+
+        idle = asyncio.Semaphore(3)
+        self.assertFalse(lazy_should_wait([0, 0, 0, 0], [(idle, 3)]))
+        self.assertTrue(lazy_should_wait([0, 2, 0, 0], [(idle, 3)]))  # còn việc gấp trong hàng đợi
+
+        async def busy():
+            running = asyncio.Semaphore(3)
+            await running.acquire()
+            return lazy_should_wait([0, 0, 0, 0], [(running, 3)])
+
+        self.assertTrue(asyncio.run(busy()))  # có việc gấp đang chạy

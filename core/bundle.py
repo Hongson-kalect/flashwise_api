@@ -15,6 +15,7 @@ import json
 
 from ai.models import AISense
 from ai.queries import banned_sense_ids
+from ai.jobs import is_popular_pair
 from ai.translation import collect_gaps, missing_sense_ids, queue_gaps
 from core.queries import current_items
 
@@ -85,7 +86,8 @@ def load_bundle(user_collection, user):
 
 
 def build_bundle(user_collection, user, user_language_code, collection, items, senses, banned=()):
-    tables = sense_tables(senses, user_language_code, queue=False)
+    # Cặp ngôn ngữ phổ biến: phần thiếu bản dịch của bộ được dịch dần ở nền (không chen việc gấp)
+    tables = sense_tables(senses, user_language_code, queue=False, lazy=is_popular_pair(collection.language_code, user_language_code))
     live = {str(item.sense_id) for item in items if not item.is_deleted}
     return {
         # is_author / is_released: app biết có cho đổi ảnh bìa không (chỉ tác giả, bộ chưa phát hành); chỉ lưu ở máy.
@@ -103,11 +105,11 @@ def build_bundle(user_collection, user, user_language_code, collection, items, s
     }
 
 
-def sense_tables(senses, user_language_code, queue=True):
+def sense_tables(senses, user_language_code, queue=True, lazy=False):
     """
     Các bảng ai_word / ai_sense / sense_metadata cho danh sách nghĩa (đã select_related word, metadata, original),
     nội dung chỉ giữ ngôn ngữ gốc + user. Nghĩa thiếu bản dịch: id nằm trong `pending`; queue=True thì đẩy việc dịch
-    (ai/translation.py), tải bộ dùng queue=False để không bắn cả bộ vào hàng đợi.
+    (ai/translation.py), tải bộ dùng queue=False để không bắn cả bộ vào hàng đợi; lazy=True xếp phần thiếu vào hàng đợi dịch NỀN.
     """
     langs = {user_language_code} | {s.language_code for s in senses}
     words, metadata, sense_rows = {}, {}, []
@@ -128,6 +130,8 @@ def sense_tables(senses, user_language_code, queue=True):
     gaps = collect_gaps(senses, user_language_code)
     if queue:
         queue_gaps(gaps, user_language_code)
+    if lazy:
+        queue_gaps(gaps, user_language_code, lazy=True)
     pending = missing_sense_ids(gaps)
 
     return {

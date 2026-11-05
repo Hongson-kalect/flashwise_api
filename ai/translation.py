@@ -11,7 +11,7 @@ Thiếu bản dịch của nghĩa cho 1 ngôn ngữ người xem: phát hiện, 
 from collections import defaultdict
 from dataclasses import dataclass
 
-from ai.jobs import queue_translation
+from ai.jobs import queue_lazy_translation, queue_translation
 from ai.serializers.AISense import AISenseSerializer
 from utils.utils.sense_handle import get_user_lang_sense
 
@@ -72,11 +72,15 @@ def missing_sense_ids(gaps):
     return list(dict.fromkeys(gap.sense_id for gap in gaps))
 
 
-def queue_gaps(gaps, user_language_code):
-    """Đẩy việc dịch theo (từ, ngôn ngữ nguồn); nhiều nghĩa delta cùng 1 bản gốc chỉ dịch bản gốc 1 lần."""
+def queue_gaps(gaps, user_language_code, lazy=False):
+    """
+    Đẩy việc dịch theo (từ, ngôn ngữ nguồn); nhiều nghĩa delta cùng 1 bản gốc chỉ dịch bản gốc 1 lần.
+    lazy=True: xếp vào hàng đợi nền (chậm, chỉ chạy khi hệ thống rảnh, chỉ cặp ngôn ngữ phổ biến) thay vì hàng đợi gấp.
+    """
+    push = queue_lazy_translation if lazy else queue_translation
     groups = defaultdict(dict)
     for gap in gaps:
         groups[(gap.target.word_id, gap.source)][(str(gap.target.id), gap.delta)] = gap
     for (word_id, source), by_target in groups.items():
         rows = list(by_target.values())
-        queue_translation(word_id, source, user_language_code, [g.missing for g in rows], [g.data for g in rows])
+        push(word_id, source, user_language_code, [g.missing for g in rows], [g.data for g in rows])

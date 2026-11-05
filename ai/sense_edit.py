@@ -4,10 +4,19 @@ from ai.models.AISense import AISense
 from ai.models.AISenseMetadata import AISenseMetadata
 from ai.validators import METADATA_FIELDS, clean_metadata
 from utils.ai.japanese import add_ruby
+from utils.redis.word_init import WordCacheManager
+from utils.utils.best_effort import best_effort
 from utils.utils.sense_handle import deep_merge
 
 
 def apply_sense_edit(user, sense, delta, raw_metadata=None, image=None, audio=None):
+    """Sửa nghĩa (xem _apply_sense_edit) rồi bỏ cache Redis của từ sau khi giao dịch xong, để get-word đọc lại từ DB."""
+    result = _apply_sense_edit(user, sense, delta, raw_metadata, image, audio)
+    transaction.on_commit(lambda: best_effort(WordCacheManager().cache_word_clear_specific, result.language_code, result.word_value))
+    return result
+
+
+def _apply_sense_edit(user, sense, delta, raw_metadata=None, image=None, audio=None):
     """
     Sửa nghĩa bằng delta, trả về nghĩa kết quả. Nghĩa chính thức, đã đóng băng hoặc của người khác không bị sửa tại chỗ
     mà tách thành một bản tuỳ chỉnh mới của user; chỉ nghĩa tuỳ chỉnh của chính user (chưa đóng băng) mới sửa tại chỗ.

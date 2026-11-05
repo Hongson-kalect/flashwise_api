@@ -161,6 +161,11 @@ def community_row(sense, langs, liked_ids):
     }
 
 
+def clear_word_cache(sense):
+    """Nghĩa đổi thì bỏ cache Redis của từ để get-word đọc lại từ DB (cache lỗi không làm hỏng request)."""
+    best_effort(WordCacheManager().cache_word_clear_specific, sense.language_code, sense.word_value)
+
+
 class AISenseViewSet(SoftDeleteViewSet):
     queryset = AISense.objects.select_related('metadata', 'original')
     serializer_class = AISenseSerializer
@@ -198,6 +203,7 @@ class AISenseViewSet(SoftDeleteViewSet):
             sense.updated_by = user
             sense.save(update_fields=['is_deleted', 'deleted_at', 'updated_by', 'updated_at'])
             CollectionItem.objects.filter(sense=sense, released=False, created_by=sense.created_by).delete()
+        clear_word_cache(sense)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=['post', 'delete'], url_path='hide', permission_classes=[IsAuthenticated])
@@ -218,6 +224,7 @@ class AISenseViewSet(SoftDeleteViewSet):
         """POST: thích (tim) nghĩa, DELETE: bỏ thích. Mỗi bản nghĩa (chính thức / tuỳ chỉnh) đếm riêng, gọi lại không đếm trùng."""
         sense = self.get_object()
         versions, like_count = set_like(request.user, AISense, 'sense', sense.id, request.method == 'POST')
+        clear_word_cache(sense)
         return Response({'liked': bool(versions), 'sense_id': str(sense.id), 'like_count': like_count})
 
     @action(detail=True, methods=['post'], url_path='promote', permission_classes=[IsAdminUser])
@@ -250,7 +257,7 @@ class AISenseViewSet(SoftDeleteViewSet):
                 replaced = str(original.pk)
             if sense.created_by_id and sense.created_by_id != request.user.id:
                 record(sense.created_by, 'sense_promoted', 'sense', sense.pk, by=request.user)
-        best_effort(WordCacheManager().cache_word_clear_specific, sense.language_code, sense.word_value)
+        clear_word_cache(sense)
         return Response({'id': str(sense.id), 'is_official': True, 'replaced': replaced})
 
     @action(detail=False, methods=['get'], url_path='top')
@@ -433,6 +440,7 @@ class AISenseViewSet(SoftDeleteViewSet):
                 advanced[kind] = merged
                 metadata.advanced = advanced
                 metadata.save(update_fields=['advanced', 'updated_at'])
+            clear_word_cache(sense)
         return Response({'added': added, 'rejected': rejected, 'existing': existing})
 
     @action(detail=False, methods=['post'], url_path='form-example', permission_classes=[IsAuthenticated, NotBanned])
@@ -630,6 +638,7 @@ class AISenseViewSet(SoftDeleteViewSet):
                 language_code=word_instance.language_code, is_official=False, is_ai_created=False,
             )
 
+        clear_word_cache(sense_instance)
         data = AISenseSerializer(sense_instance).data
         _, missing = get_user_lang_sense(word_instance.language_code, user_language_code, contents, str(sense_instance.id))
         if missing:

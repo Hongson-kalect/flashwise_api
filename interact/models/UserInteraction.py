@@ -10,6 +10,7 @@ class UserInteraction(BaseModel):
         # ('download', 'Download'), sử dụng bảng userCollection thì đúng hơn
         ('bookmark', 'Bookmark'), # Có thể mở rộng sau này
         ('hide', 'Hide'), # Ẩn 1 nghĩa (target sense) khỏi get-word của riêng user
+        ('main', 'Main'), # Đặt 1 nghĩa làm nghĩa chính của từ (interact/mains.py)
     ]
     TARGET_TYPES=[
         ('collection', 'Collection'),

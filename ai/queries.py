@@ -97,6 +97,25 @@ def user_senses(user, word_id):
     )
 
 
+def order_senses(senses, pinned=()):
+    """
+    Thứ tự nghĩa trong dict {id: nghĩa}: các nghĩa `pinned` (của riêng user) trước, còn lại theo loại từ rồi theo nghĩa.
+    Loại từ xếp theo điểm CAO NHẤT của nghĩa trong loại đó (không phải tổng, để loại từ nhiều nghĩa không thắng chỉ vì nhiều),
+    trong loại từ theo score giảm dần; bằng nhau giữ thứ tự cũ (thứ tự AI trả ra).
+    """
+    pinned = [sid for sid in pinned if sid in senses]
+    index = {sid: i for i, sid in enumerate(senses)}
+    rest = [(sid, sense) for sid, sense in senses.items() if sid not in pinned]
+    score = lambda sense: (sense or {}).get('score') or 0
+    pos = lambda sense: (sense or {}).get('pos') or ''
+    best, first = {}, {}
+    for sid, sense in rest:
+        best[pos(sense)] = max(best.get(pos(sense), score(sense)), score(sense))
+        first.setdefault(pos(sense), index[sid])
+    rest.sort(key=lambda item: (-best[pos(item[1])], first[pos(item[1])], -score(item[1]), index[item[0]]))
+    return {**{sid: senses[sid] for sid in pinned}, **dict(rest)}
+
+
 def personalize_word(data, user):
     """
     Ghép nghĩa riêng của user vào dữ liệu từ dùng chung (cache / DB) mà không đụng vào cache:
@@ -107,13 +126,13 @@ def personalize_word(data, user):
     """
     from ai.serializers.AISense import AISenseSerializer
 
-    if not user or not user.is_authenticated or not data or not data.get('id'):
+    if not data or not data.get('id'):
         return data
     senses = data.get('senses') or {}
+    if not user or not user.is_authenticated:
+        return {**data, 'senses': order_senses(senses)}
     customs = list(user_senses(user, data['id']))
     hidden = hidden_sense_ids(user, senses.keys()) if senses else set()
-    if not customs and not hidden:
-        return data
 
     merged = {}
     for custom in customs:
@@ -138,5 +157,15 @@ def personalize_word(data, user):
     for sense_id, sense in senses.items():
         if sense_id not in replaced and sense_id not in hidden:
             merged[sense_id] = sense
-    return {**data, 'senses': merged}
+    # Thứ tự riêng: nghĩa chính của user, rồi nghĩa user tự sửa / thêm, rồi điểm chung. Nghĩa chính nằm trên nghĩa gốc bị bản sửa thay thì
+    # chỉ vào bản sửa đó.
+    from interact.mains import main_sense_id
+    main_id = main_sense_id(user, [*senses.keys(), *merged.keys()])
+    replaced_by = {str(custom.original_id): str(custom.id) for custom in customs if custom.original_id}
+    main_id = replaced_by.get(main_id, main_id)
+    pinned = [main_id] if main_id in merged else []
+    if pinned:
+        merged[main_id] = {**merged[main_id], 'is_main': True}  # bản sao: không đụng dict dùng chung với cache
+    pinned += [str(custom.id) for custom in customs if str(custom.id) not in pinned]
+    return {**data, 'senses': order_senses(merged, pinned)}
 

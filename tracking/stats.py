@@ -8,6 +8,7 @@ from collections import defaultdict
 from django.db.models import F, Q
 
 from ai.models import AISense
+from ai.scores import refresh_sense_scores
 from tracking.fsrs import AGAIN, initial_difficulty
 from tracking.models import ReviewLog
 
@@ -54,3 +55,5 @@ def apply_review_stats(user, rows):
             update['global_difficulty'] = (F('global_difficulty') * F('learner_count') + d0) / (F('learner_count') + 1)
             update['learner_count'] = F('learner_count') + 1
         AISense.objects.filter(Q(id=sense_id) | Q(original_id=sense_id)).update(**update)
+        if first is not None:
+            refresh_sense_scores(Q(id=sense_id) | Q(original_id=sense_id))

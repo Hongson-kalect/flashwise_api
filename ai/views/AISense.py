@@ -35,6 +35,8 @@ from utils.ai import items_gate, sense_gate
 from utils.utils.normalize import is_lookup_word, lookup_entry_problem, normalize_lookup
 from utils.utils.permissions import IsAdminOrReadOnly, NotBanned, SenseItemsThrottle, SenseProposeThrottle
 from user.reputation import record
+from ai.scores import refresh_sense_scores
+from interact.mains import set_main
 from utils.redis.word_init import WordCacheManager
 from utils.utils.best_effort import best_effort
 from utils.utils.sense_handle import deep_merge, get_user_lang_sense
@@ -226,6 +228,34 @@ class AISenseViewSet(SoftDeleteViewSet):
         versions, like_count = set_like(request.user, AISense, 'sense', sense.id, request.method == 'POST')
         clear_word_cache(sense)
         return Response({'liked': bool(versions), 'sense_id': str(sense.id), 'like_count': like_count})
+
+    @action(detail=True, methods=['post', 'delete'], url_path='main', permission_classes=[IsAuthenticated, NotBanned])
+    def main(self, request, pk=None):
+        """
+        POST: đặt nghĩa này làm nghĩa chính của từ cho mình (đứng đầu trang từ), DELETE: bỏ. Mỗi từ 1 nghĩa chính, đặt nghĩa khác thì
+        nghĩa cũ bị thu hồi. Tài khoản thật (không phải khách) còn cộng vào điểm chung của nghĩa chính thức (main_count, score).
+        Trả {main, sense_id, word_id, main_count}.
+        """
+        sense = self.get_object()
+        main, main_count, touched = set_main(request.user, sense, request.method == 'POST')
+        if touched:
+            clear_word_cache(sense)
+        return Response({'main': main, 'sense_id': str(sense.id), 'word_id': str(sense.word_id), 'main_count': main_count})
+
+    @action(detail=True, methods=['post', 'delete'], url_path='recommend', permission_classes=[IsAdminUser])
+    def recommend(self, request, pk=None):
+        """Admin: POST đề xuất nghĩa này (score tăng rất mạnh), DELETE gỡ đề xuất. Nghĩa phải là nghĩa chính thức."""
+        sense = self.get_object()
+        if request.method == 'POST':
+            if not sense.is_official:
+                return _bad_request("Only official senses can be recommended")
+            AISense.objects.filter(pk=sense.pk).update(recommended_by=request.user, recommended_at=timezone.now())
+        else:
+            AISense.objects.filter(pk=sense.pk).update(recommended_by=None, recommended_at=None)
+        refresh_sense_scores(pk=sense.pk)
+        clear_word_cache(sense)
+        score = AISense.objects.filter(pk=sense.pk).values_list('score', flat=True).first()
+        return Response({'recommended': request.method == 'POST', 'sense_id': str(sense.id), 'score': score})
 
     @action(detail=True, methods=['post'], url_path='promote', permission_classes=[IsAdminUser])
     def promote(self, request, pk=None):

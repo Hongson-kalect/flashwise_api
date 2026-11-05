@@ -55,7 +55,10 @@ class AISense(BaseModel):
     is_ai_created = models.BooleanField(default=True)
     score = models.IntegerField(default=0, db_index=True)
     like_count = models.IntegerField(default=0)
-    main_count = models.IntegerField(default=0)
+    main_count = models.IntegerField(default=0)  # Số tài khoản (không tính khách) đặt nghĩa này làm nghĩa chính của từ; xem interact/mains.py
+    # Admin / seeder đề xuất nghĩa này: cờ riêng, gỡ được, mạnh hơn mọi tín hiệu khác trong score (ai/scores.py)
+    recommended_by = models.ForeignKey('auth.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='recommended_senses')
+    recommended_at = models.DateTimeField(null=True, blank=True)
 
     # Thống kê học của mọi user, cộng dồn khi push review_log (tracking/stats.py), ghi trên mọi bản cùng original
     global_forget_count = models.IntegerField(default=0)   # Số lần chấm FSRS là Again

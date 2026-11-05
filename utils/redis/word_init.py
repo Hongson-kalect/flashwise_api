@@ -47,13 +47,16 @@ def compute_languages(senses, language_code):
     return sorted((final or set()) | {language_code})
 
 
+WORD_KEY_PREFIX = "word:"
+
+
 class WordCacheManager:
     def __init__(self):
         # Client dùng chung của process (decode_responses=True để nhận string/dict sạch từ RedisJSON)
         self.r = get_cache_client()
 
     def _key(self, language_code, word_val):
-        return f"word:{language_code}:{word_val.lower().strip()}"
+        return f"{WORD_KEY_PREFIX}{language_code}:{word_val.lower().strip()}"
 
     def _pipe_expire(self, pipe, key):
         pipe.expire(key, TTL)
@@ -254,8 +257,17 @@ class WordCacheManager:
             return False
 
     def cache_word_clear_all(self):
+        """Xoá mọi cache từ (khoá word:*). Trả số khoá đã xoá, lỗi Redis thì False. Không đụng hàng đợi, khoá worker, socket group."""
         try:
-            return self.r.flushdb()
+            deleted, batch = 0, []
+            for key in self.r.scan_iter(match=f"{WORD_KEY_PREFIX}*", count=500):
+                batch.append(key)
+                if len(batch) >= 500:
+                    deleted += self.r.delete(*batch)
+                    batch = []
+            if batch:
+                deleted += self.r.delete(*batch)
+            return deleted
         except Exception as e:
-            print(f"Redis Flush Error: {e}")
+            print(f"Redis Clear Error: {e}")
             return False

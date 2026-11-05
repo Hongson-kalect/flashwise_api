@@ -178,6 +178,29 @@ class UserCollectionViewSet(SoftDeleteViewSet):
         data = build_bundle(user_col, request.user, user_language_code, collection, items, senses, banned)
         return Response({"etag": etag, "unchanged": False, **data})
     
+    @action(detail=True, methods=['post'], url_path='cover', permission_classes=[IsAuthenticated, NotBanned])
+    def cover(self, request, pk=None):
+        """
+        Đặt / gỡ ảnh bìa của bộ mình tạo. Body: image = khoá file đã tải lên qua POST media/ (hoặc URL ảnh ngoài), '' = gỡ (về ảnh tự động).
+        Chỉ tác giả (403). Bộ đã phát hành thì ảnh bìa đổi qua upload để ghi vào lịch sử version (409 collection_released).
+        Trả {image_url}.
+        """
+        user_collection = get_object_or_404(self.get_queryset().select_related('collection'), id=pk)
+        collection = user_collection.collection
+        if collection is None or collection.created_by_id != request.user.id:
+            return Response({"message": "Only the collection author can change the cover"}, status=status.HTTP_403_FORBIDDEN)
+        if collection.released:
+            return Response(
+                {"message": "Released collection cover changes via upload (image)", "errorCode": "collection_released"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        image, error = clean_media_param(request.user, request.data.get('image'), 'image')
+        if error or image is None:
+            return Response({"message": error or "image is required ('' to remove the cover)"}, status=status.HTTP_400_BAD_REQUEST)
+        # updated_at đổi nên etag của bundle đổi, máy đã tải sẽ thấy ảnh mới
+        Collection.objects.filter(pk=collection.pk).update(image_url=image or None, updated_at=timezone.now())
+        return Response({"image_url": image or None})
+
     # @action(detail=True, methods=['post'], url_path='get-collection')
     # def get_user_collection_detail(self, request, pk=None):
         

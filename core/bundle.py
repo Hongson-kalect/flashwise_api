@@ -84,7 +84,12 @@ def load_bundle(user_collection, user):
 
 def build_bundle(user_collection, user, user_language_code, collection, items, senses, banned=()):
     return {
-        'user_collection': row(user_collection, USER_COLLECTION_COLUMNS),
+        # is_author / is_released: app biết có cho đổi ảnh bìa không (chỉ tác giả, bộ chưa phát hành); chỉ lưu ở máy
+        'user_collection': {
+            **row(user_collection, USER_COLLECTION_COLUMNS),
+            'is_author': collection.created_by_id == user.id,
+            'is_released': bool(collection.released),
+        },
         'collection': row(collection, COLLECTION_COLUMNS),
         'items': [row(item, ITEM_COLUMNS) for item in items],
         **sense_tables(senses, user_language_code),

@@ -169,6 +169,7 @@ JOB_MAX_REQUEUES = int(os.getenv('JOB_MAX_REQUEUES', '3'))
 # Dịch nền (hàng đợi redis_trans_lazy, ai/jobs.queue_lazy_translation): chỉ cho cặp ngôn ngữ phổ biến (ngôn ngữ của bộ và của user đều
 # thuộc danh sách), worker chỉ lấy việc khi các hàng đợi gấp (word / collection_word / image / trans) rỗng và không việc nào đang chạy,
 # mỗi việc cách nhau LAZY_TRANS_INTERVAL giây. Hàng đợi đầy (LAZY_TRANS_MAX_QUEUE) thì không nhận thêm; mỗi (từ, nguồn, đích) chỉ xếp 1 lần / LAZY_LOCK_SECONDS.
+LAZY_TRANS_ENABLED = os.getenv('LAZY_TRANS_ENABLED', 'false').lower() in ('1', 'true', 'yes')  # TẮT mặc định (tốn hạn mức AI); có kinh phí thì bật
 POPULAR_LANGUAGES = [m.strip() for m in os.getenv('POPULAR_LANGUAGES', 'en,vi,ja,zh,ko,es,fr').split(',') if m.strip()]
 LAZY_TRANS_INTERVAL = float(os.getenv('LAZY_TRANS_INTERVAL', '20'))
 LAZY_TRANS_MAX_QUEUE = int(os.getenv('LAZY_TRANS_MAX_QUEUE', '5000'))

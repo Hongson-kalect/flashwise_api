@@ -535,8 +535,9 @@ async def main():
         consume_queue("redis_collection_word", collection_word_sema, "collection_word"),
         consume_queue("redis_image", image_sema, "image"),
         consume_queue("redis_trans", trans_sema, "translate"),
-        consume_lazy(asyncio.Semaphore(1), [(word_sema, WORD_SEMA_LIMIT), (collection_word_sema, COLLECTION_WORD_SEMA_LIMIT), (image_sema, IMAGE_SEMA_LIMIT), (trans_sema, TRANS_SEMA_LIMIT)]),
         
+        *([consume_lazy(asyncio.Semaphore(1), [(word_sema, WORD_SEMA_LIMIT), (collection_word_sema, COLLECTION_WORD_SEMA_LIMIT), (image_sema, IMAGE_SEMA_LIMIT), (trans_sema, TRANS_SEMA_LIMIT)])] if settings.LAZY_TRANS_ENABLED else []),  # dịch nền: tắt mặc định
+
         # Flusher quản lý trút DB ngầm (Bật lên khi Sơn đưa cấu hình lưu kết quả vào redis)
         flush_buffer_to_db(redis_client),
         heartbeat(),

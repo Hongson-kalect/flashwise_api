@@ -53,7 +53,7 @@ def queue_lazy_translation(word_id, language_code, user_language_code, missing, 
     (từ, nguồn, đích) đã xếp trong LAZY_LOCK_SECONDS thì bỏ qua.
     """
     try:
-        if not is_popular_pair(language_code, user_language_code):
+        if not settings.LAZY_TRANS_ENABLED or not is_popular_pair(language_code, user_language_code):
             return False
         if lazy_queue_length() >= settings.LAZY_TRANS_MAX_QUEUE:
             return False

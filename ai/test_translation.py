@@ -97,7 +97,7 @@ class DeltaTranslationTests(APITestCase):
         self.assertIsNone(self.client.get(f'/api/collections/{collection.id}/').data['translation'])
 
 
-@override_settings(CACHES=LOCMEM_CACHE, POPULAR_LANGUAGES=['en', 'vi', 'ja'], LAZY_TRANS_MAX_QUEUE=100)
+@override_settings(CACHES=LOCMEM_CACHE, POPULAR_LANGUAGES=['en', 'vi', 'ja'], LAZY_TRANS_MAX_QUEUE=100, LAZY_TRANS_ENABLED=True)
 class LazyTranslationTests(APITestCase):
     """Dịch nền: hàng đợi riêng, chỉ cặp ngôn ngữ phổ biến, không xếp trùng."""
 
@@ -126,6 +126,11 @@ class LazyTranslationTests(APITestCase):
         self.assertEqual((job['language_code'], job['user_language_code']), ('en', 'ja'))
         queue_gaps(gaps, 'ja', lazy=True)
         self.assertEqual(self.queue.names(), ['redis_trans_lazy'])  # đã xếp rồi: không xếp trùng
+
+    def test_disabled_by_default_flag_queues_nothing(self):
+        with override_settings(LAZY_TRANS_ENABLED=False):
+            queue_gaps(collect_gaps([self.sense], 'ja'), 'ja', lazy=True)
+        self.assertEqual(self.queue.jobs, [])
 
     def test_unpopular_language_is_not_queued(self):
         queue_gaps(collect_gaps([self.sense], 'sw'), 'sw', lazy=True)

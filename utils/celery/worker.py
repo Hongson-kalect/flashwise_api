@@ -25,6 +25,7 @@ from utils.redis.word_init import WordCacheManager
 from utils.ai.word_render import ai_create_new_word_sema
 from utils.ai.translate import ai_create_translate_sema
 from utils.celery.fetch_image import get_image_by_keyword
+from utils.image_gen.service import process_job as process_image_gen_job
 from utils.utils.sense_handle import merge_translations
 from ai.queries import load_word
 from django.conf import settings
@@ -44,7 +45,7 @@ HEARTBEAT_KEY = "worker:alive:{}"
 HEARTBEAT_SECONDS = 30
 REAP_INTERVAL = 30
 # Hàng đợi gọi Claude: đang bị giới hạn (ai_cooldown:anthropic) thì tạm không nhận job mới
-QUEUE_PROVIDER = {"redis_word": "anthropic", "redis_collection_word": "anthropic"}
+QUEUE_PROVIDER = {"redis_word": "anthropic", "redis_collection_word": "anthropic", settings.IMAGE_GEN_QUEUE: "comfyui"}
 TERMINAL_WORD_STATUS = ('COMPLETED', 'REJECTED', 'BANNED')
 BATCH_SIZE = 500
 FLUSH_INTERVAL = 3 
@@ -88,6 +89,13 @@ async def handle_task(job, sema, task_type, raw=None, queue=None):
             await ai_create_new_word_sema(job)
         elif task_type == 'image':
             await get_image_by_keyword(job)
+        elif task_type == 'image_gen':
+            # Vẽ ảnh bằng ComfyUI (utils/image_gen): chưa bật ComfyUI / lỗi vẽ thì trả job về đầu hàng đợi, không mất job
+            outcome, next_job = await process_image_gen_job(job)
+            if outcome == 'offline' and queue:
+                await redis_client.lpush(queue, raw if raw is not None else json.dumps(next_job))
+            elif outcome == 'retry' and queue:
+                await redis_client.lpush(queue, json.dumps(next_job))
         elif task_type == 'translate':
             # Dịch phần còn thiếu cho 1 từ đã có (user chọn ngôn ngữ mới). Ghi thẳng DB rồi mới nạp lại cache: nếu đi qua
             # buffer 3 giây thì cache bị nạp lại từ dữ liệu cũ và user vẫn thấy thiếu bản dịch.
@@ -227,7 +235,7 @@ async def consume_queue(queue_name, sema, task_type):
             await asyncio.sleep(1)
 
 LAZY_QUEUE = "redis_trans_lazy"
-URGENT_QUEUES = ("redis_word", "redis_collection_word", "redis_image", "redis_trans")
+URGENT_QUEUES = ("redis_word", "redis_collection_word", "redis_image", "redis_trans", settings.IMAGE_GEN_QUEUE)
 
 
 def lazy_should_wait(urgent_lengths, busy_semas):
@@ -527,6 +535,7 @@ async def main():
     word_sema = asyncio.Semaphore(WORD_SEMA_LIMIT)
     collection_word_sema = asyncio.Semaphore(COLLECTION_WORD_SEMA_LIMIT)
     image_sema = asyncio.Semaphore(IMAGE_SEMA_LIMIT)
+    image_gen_sema = asyncio.Semaphore(settings.IMAGE_GEN_CONCURRENCY)
     trans_sema = asyncio.Semaphore(TRANS_SEMA_LIMIT)
 
     # Đăng ký các bánh răng chạy đồng thời
@@ -534,6 +543,7 @@ async def main():
         consume_queue("redis_word", word_sema, "word"),
         consume_queue("redis_collection_word", collection_word_sema, "collection_word"),
         consume_queue("redis_image", image_sema, "image"),
+        consume_queue(settings.IMAGE_GEN_QUEUE, image_gen_sema, "image_gen"),
         consume_queue("redis_trans", trans_sema, "translate"),
         
         *([consume_lazy(asyncio.Semaphore(1), [(word_sema, WORD_SEMA_LIMIT), (collection_word_sema, COLLECTION_WORD_SEMA_LIMIT), (image_sema, IMAGE_SEMA_LIMIT), (trans_sema, TRANS_SEMA_LIMIT)])] if settings.LAZY_TRANS_ENABLED else []),  # dịch nền: tắt mặc định

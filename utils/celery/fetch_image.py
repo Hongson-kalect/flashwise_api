@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import requests
 import os
 import io
@@ -28,8 +29,16 @@ PER_PAGE = 3  # mức nhỏ nhất Pixabay cho phép; mỗi ảnh mới phải t
 
 
 def images_enabled():
-    """Chỉ lấy ảnh khi .env có PIXABAY_API_KEY, không có thì mọi bước lấy ảnh bỏ qua (không gọi mạng)."""
-    return bool(settings.PIXABAY_API_KEY)
+    """
+    Chỉ lấy ảnh Pixabay khi .env có PIXABAY_API_KEY, không có thì mọi bước lấy ảnh bỏ qua (không gọi mạng).
+    Bật ảnh AI vẽ (IMAGE_GEN_ENABLED, utils/image_gen) thì tắt Pixabay: Pixabay chặn request từ server nên chỉ tốn thời gian.
+    """
+    return bool(settings.PIXABAY_API_KEY) and not settings.IMAGE_GEN_ENABLED
+
+
+def _scrub(error):
+    """Nội dung lỗi requests chứa nguyên URL kèm key Pixabay: che key trước khi ghi log."""
+    return re.sub(r'(key=)[^&\s\'"]+', r'\1***', str(error))
 
 
 def _context_preview(context):
@@ -72,7 +81,7 @@ def find_image(keywords):
         try:
             hits = _search_pixabay(keyword)
         except Exception as e:
-            logger.warning('Pixabay lỗi với "%s": %s', keyword, e)
+            logger.warning('Pixabay lỗi với "%s": %s', keyword, _scrub(e))
             continue
         if not hits:
             continue
@@ -92,7 +101,7 @@ def find_image(keywords):
                     save_sense_image(image, f'{PROVIDER}_{pid}', hit['webformatURL'])
                 except Exception as e:
                     # Ảnh tải / nén hỏng: bỏ bản ghi rỗng để lần sau thử lại được
-                    logger.warning('Không tải được ảnh Pixabay %s: %s', pid, e)
+                    logger.warning('Không tải được ảnh Pixabay %s: %s', pid, _scrub(e))
                     image.delete()
                     continue
             ImageLibraryContext.objects.get_or_create(image=image, context=context, defaults={'order': index})

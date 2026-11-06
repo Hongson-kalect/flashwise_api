@@ -88,12 +88,14 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - PYTHONPATH=/app
       - DJANGO_SETTINGS_MODULE=flashcardApi.settings
+      # Vẽ ảnh AI bằng ComfyUI trên máy host (xem .env.example, utils/image_gen); đặt IMAGE_GEN_ENABLED=true trong .env hoặc shell để bật
+      - IMAGE_GEN_ENABLED=${IMAGE_GEN_ENABLED:-false}
     depends_on:
       - redis
       - db
     volumes:
       - .:/app
-      
+
 
 volumes:
   redis_data:

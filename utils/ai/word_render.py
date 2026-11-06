@@ -40,6 +40,7 @@ from utils.ai.translate import ai_create_translate_sema
 from utils.ai.metadata import ai_create_metadata
 from utils.utils.normalize import normalize_lookup
 from utils.utils.best_effort import best_effort
+from utils.image_gen.service import enqueue_word_images
 from ai.queries import load_word
 from utils.ai import claude
 from utils.ai.japanese import add_ruby
@@ -314,6 +315,10 @@ async def ai_create_new_word_sema(word_info):
             logger.error('Lỗi khi lưu DB / cache cho %s: %s', word_value, e)
             await _close_word(word_id, word_value, language_code, socket_room, cache, 'FAILED', 'ERROR', 'ERROR', str(e), keep_old=bool(replace_ids))
             raise
+
+        if settings.IMAGE_GEN_ENABLED and not word_info.get('no_image'):
+            # Xếp việc vẽ ảnh AI cho các nghĩa vừa lưu (ComfyUI trên máy host); lỗi ở đây không được làm hỏng từ đã lưu
+            await sync_to_async(best_effort)(enqueue_word_images, word_id)
 
         marks['saved'] = time.monotonic()
         logger.info('Tạo từ %s [%s]: %s', word_value, language_code, ', '.join(f'{name} {value - marks["start"]:.1f}s' for name, value in marks.items() if name != 'start'))

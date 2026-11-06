@@ -602,6 +602,28 @@ class PipelineTests(PipelineBase):
         self.assertEqual(self.word.status, 'COMPLETED')
         self.assertEqual([s.image_preview for s in self.senses()], [None, None])
 
+    @override_settings(IMAGE_GEN_ENABLED=True, PIXABAY_API_KEY='')
+    def test_image_gen_enqueued_after_word_saved(self):
+        with mock.patch('utils.ai.word_render.enqueue_word_images') as enqueue:
+            result = self.run_pipeline(lambda m: stream_pieces(DRAFT), self.keep_all())
+        self.assertTrue(result['is_valid'])
+        enqueue.assert_called_once()
+        self.assertEqual(str(enqueue.call_args.args[0]), str(self.word.id))
+
+    @override_settings(IMAGE_GEN_ENABLED=True, PIXABAY_API_KEY='')
+    def test_image_gen_failure_or_no_image_job_does_not_block_saving(self):
+        with mock.patch('utils.ai.word_render.enqueue_word_images', side_effect=RuntimeError('redis down')):
+            result = self.run_pipeline(lambda m: stream_pieces(DRAFT), self.keep_all())
+        self.assertTrue(result['is_valid'])
+        self.word.refresh_from_db()
+        self.assertEqual(self.word.status, 'COMPLETED')
+
+    @override_settings(IMAGE_GEN_ENABLED=False, PIXABAY_API_KEY='')
+    def test_image_gen_disabled_does_not_enqueue(self):
+        with mock.patch('utils.ai.word_render.enqueue_word_images') as enqueue:
+            self.run_pipeline(lambda m: stream_pieces(DRAFT), self.keep_all())
+        enqueue.assert_not_called()
+
     def test_worker_keeps_symbols_in_word(self):
         self.prepare('c++', 'en')
         prompts = []

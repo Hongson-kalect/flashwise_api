@@ -71,10 +71,14 @@ async def process_metadata(chunk, word, language_code, mapping_table, socket_roo
 
             id = str(s_metadata.pop("id", uuidv7.generate_uuid7()))
 
+            # Chủ thể vẽ ảnh + loại nằm trong image_metadata (không cần cột mới), utils/image_gen đọc từ đây
+            image_metadata = {name: value for name, value in (('subject', s_metadata.pop('image_subject', None)),
+                                                              ('kind', s_metadata.pop('image_kind', None))) if value}
             metadata_obj = {
                 'id': id,
                 'tags': s_metadata.pop('tags', []),
                 'image_keywords' : s_metadata.pop('image_keywords', []),
+                'image_metadata': image_metadata,
             }
 
             advanced = {}

@@ -131,6 +131,20 @@ ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 PIXABAY_API_KEY = os.getenv('PIXABAY_API_KEY', '').strip() # rỗng = tạo từ không lấy ảnh minh hoạ
 
+# --- Ảnh minh hoạ do AI vẽ (utils/image_gen): ComfyUI chạy trên máy host, model FLUX.2 klein 4B (Apache-2.0) ---
+# BẬT thì tạo từ xong sẽ xếp việc vẽ ảnh cho các nghĩa chưa có ảnh vào hàng đợi IMAGE_GEN_QUEUE (tắt mặc định: cần máy có GPU đang bật ComfyUI).
+IMAGE_GEN_ENABLED = os.getenv('IMAGE_GEN_ENABLED', 'false').lower() in ('1', 'true', 'yes')
+# Container gọi ComfyUI trên máy host qua host.docker.internal (đã kiểm: tới được cả khi ComfyUI chỉ lắng nghe 127.0.0.1)
+COMFYUI_URL = os.getenv('COMFYUI_URL', 'http://host.docker.internal:8188').rstrip('/')
+COMFYUI_UNET = os.getenv('COMFYUI_UNET', 'flux-2-klein-4b-fp8.safetensors')
+COMFYUI_CLIP = os.getenv('COMFYUI_CLIP', 'qwen_3_4b.safetensors')
+COMFYUI_VAE = os.getenv('COMFYUI_VAE', 'flux2-vae.safetensors')
+IMAGE_GEN_STEPS = int(os.getenv('IMAGE_GEN_STEPS', '4'))  # bản distilled 4 bước; 6 bước chỉ đẹp hơn chút mà chậm hơn ~30%
+IMAGE_GEN_TIMEOUT = int(os.getenv('IMAGE_GEN_TIMEOUT', '180'))  # giây chờ 1 ảnh (lần đầu phải nạp model nên lâu hơn)
+IMAGE_GEN_QUEUE = os.getenv('IMAGE_GEN_QUEUE', 'redis_image_gen')
+IMAGE_GEN_CONCURRENCY = int(os.getenv('IMAGE_GEN_CONCURRENCY', '1'))  # 1 GPU: vẽ lần lượt
+IMAGE_GEN_STYLE_VERSION = os.getenv('IMAGE_GEN_STYLE_VERSION', 'v1')  # đổi khi đổi phong cách: ảnh mới có khoá riêng, ảnh cũ không bị ghi đè
+
 # --- Model cho từng bước tạo từ (danh sách = thử lần lượt khi lỗi) ---
 # Bước 1 draft + bước 2 refine: Claude Haiku (structured output nên JSON luôn đúng schema)
 AI_DRAFT_MODELS = _env_list('AI_DRAFT_MODELS', 'claude-haiku-5-5')

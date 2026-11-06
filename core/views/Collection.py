@@ -93,6 +93,9 @@ class CollectionViewSet(SoftDeleteViewSet):
                 queryset = queryset.filter(is_official=params['official'] == 'true')
             if params.get('mine') == 'true' and self.request.user.is_authenticated:
                 queryset = queryset.filter(created_by=self.request.user)
+            else:
+                # Danh sách công khai (Khám phá): chỉ bộ chính thức / đã phát hành, không lộ nháp hay bộ đã thu hồi của chính mình
+                queryset = queryset.filter(Q(is_official=True) | Q(released=True))
             tag_ids = parse_tag_ids(params.get('tag'))
             if tag_ids:
                 queryset = queryset.filter(tags__id__in=tag_ids).distinct()

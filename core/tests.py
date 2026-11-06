@@ -47,22 +47,26 @@ class CollectionApiTests(APITestCase):
 
     # ---------- xem ----------
 
-    def test_list_shows_official_released_and_own_only(self):
+    def test_list_shows_official_and_released_only_unless_mine(self):
         official = self.collection('official', is_official=True)
         released = self.collection('released', owner=self.bob, released=True)
         mine = self.collection('mine', owner=self.alice)
-        theirs = self.collection('theirs', owner=self.bob)
+        self.collection('theirs', owner=self.bob)
 
+        # Danh sách công khai không lộ nháp / bộ đã thu hồi, kể cả của chính mình
         self.client.force_authenticate(self.alice)
         ids = {row['id'] for row in self.client.get('/api/collections/').data['results']}
-        self.assertEqual(ids, {str(official.id), str(released.id), str(mine.id)})
+        self.assertEqual(ids, {str(official.id), str(released.id)})
+
+        ids = {row['id'] for row in self.client.get('/api/collections/?mine=true').data['results']}
+        self.assertEqual(ids, {str(mine.id)})
 
         self.client.force_authenticate(None)
         ids = {row['id'] for row in self.client.get('/api/collections/').data['results']}
         self.assertEqual(ids, {str(official.id), str(released.id)})
 
         self.client.force_authenticate(self.admin)
-        self.assertEqual(self.client.get('/api/collections/').data['count'], 4)
+        self.assertEqual(self.client.get('/api/collections/').data['count'], 2)
 
     def test_list_count_is_released_word_count(self):
         # Số từ = item_count của bản đang hiệu lực, không đếm nháp / dòng xoá / version cũ trong bảng trung gian

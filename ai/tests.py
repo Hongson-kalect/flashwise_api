@@ -24,6 +24,7 @@ from core.models import ImageContext, ImageLibrary
 from utils.celery.fetch_image import find_image, get_image_by_keyword
 from utils.ai import refine
 from utils.ai.word_render import ai_create_new_word_sema
+from utils.image_gen.brief import draft_fields
 from utils.ai.japanese import add_ruby
 from utils.ai.translate import ai_create_translate_sema
 from utils.ai.schema import complex_schema
@@ -578,7 +579,7 @@ class PipelineTests(PipelineBase):
         find_image.assert_not_called()
         self.assertEqual([s.image_preview for s in self.senses()], [None, None])
 
-    @override_settings(PIXABAY_API_KEY='test-key')
+    @override_settings(PIXABAY_API_KEY='test-key', IMAGE_GEN_ENABLED=False)
     def test_images_are_saved_with_senses_when_key_present(self):
         context = ImageContext.objects.create(description='money building', provider='pixabay')
         socket = AsyncMock()
@@ -593,7 +594,7 @@ class PipelineTests(PipelineBase):
         cached = self.cache.cache_word_get_data('en', self.WORD)
         self.assertEqual({s['image_preview'] for s in cached['senses'].values()}, {'/upload/images/v1/p.webp'})
 
-    @override_settings(PIXABAY_API_KEY='test-key')
+    @override_settings(PIXABAY_API_KEY='test-key', IMAGE_GEN_ENABLED=False)
     def test_image_failure_does_not_block_saving(self):
         with mock.patch('utils.celery.fetch_image.find_image', side_effect=RuntimeError('pixabay down')):
             result = self.run_pipeline(lambda m: stream_pieces(DRAFT), self.keep_all(), metadata=self.metadata_with_keywords)
@@ -604,15 +605,58 @@ class PipelineTests(PipelineBase):
 
     @override_settings(IMAGE_GEN_ENABLED=True, PIXABAY_API_KEY='')
     def test_image_gen_enqueued_after_word_saved(self):
-        with mock.patch('utils.ai.word_render.enqueue_word_images') as enqueue:
+        with mock.patch('utils.ai.word_render.prepare_and_enqueue', new_callable=AsyncMock) as enqueue, \
+                mock.patch('utils.ai.word_render.draft_briefs', new_callable=AsyncMock, return_value={}) as briefs:
             result = self.run_pipeline(lambda m: stream_pieces(DRAFT), self.keep_all())
         self.assertTrue(result['is_valid'])
+        briefs.assert_awaited_once()  # brief nháp chạy song song với refine
         enqueue.assert_called_once()
         self.assertEqual(str(enqueue.call_args.args[0]), str(self.word.id))
+        self.assertEqual(enqueue.call_args.args[1], {})  # preset brief còn dùng được sau refine
+
+    @override_settings(IMAGE_GEN_ENABLED=True, PIXABAY_API_KEY='', IMAGE_GEN_DRAW_BEFORE_REFINE=False)
+    def test_briefs_made_during_refine_are_queued_right_after_refine(self):
+        captured = {}
+
+        async def fake_drafts(word_value, language_code, sense_objs, ask=None):
+            captured['ids'] = [s['id'] for s in sense_objs]
+            return {s['id']: {'sig': draft_fields(s, language_code)[:2], 'brief': {'kind': 'object', 'subject': f"zz{i}", 'prompt': 'A simple test object on its own.'}}
+                    for i, s in enumerate(sense_objs)}
+
+        with mock.patch('utils.ai.word_render.draft_briefs', side_effect=fake_drafts), \
+                mock.patch('utils.ai.word_render.early_enqueue') as early, \
+                mock.patch('utils.ai.word_render.prepare_and_enqueue', new_callable=AsyncMock) as prepare:
+            result = self.run_pipeline(lambda m: stream_pieces(DRAFT), self.keep_all())
+        self.assertTrue(result['is_valid'])
+        early.assert_called_once()
+        queued = early.call_args.args[0]
+        self.assertTrue(set(queued) <= set(captured['ids']) and queued)  # chỉ nghĩa còn lại sau refine
+        self.assertEqual(prepare.call_args.args[1], queued)
+
+    @override_settings(IMAGE_GEN_ENABLED=True, PIXABAY_API_KEY='', IMAGE_GEN_DRAW_BEFORE_REFINE=True)
+    def test_draw_before_refine_queues_drafts_then_prunes_what_refine_dropped(self):
+        events = []
+
+        async def fake_drafts(word_value, language_code, sense_objs, ask=None):
+            return {s['id']: {'sig': draft_fields(s, language_code)[:2], 'brief': {'kind': 'object', 'subject': f'zz{i}', 'prompt': 'A simple test object on its own.'}}
+                    for i, s in enumerate(sense_objs)}
+
+        with mock.patch('utils.ai.word_render.draft_briefs', side_effect=fake_drafts), \
+                mock.patch('utils.ai.word_render.early_enqueue', side_effect=lambda preset: events.append(('early', set(preset)))), \
+                mock.patch('utils.ai.word_render.prune_draft_senses', side_effect=lambda drafts, keep: events.append(('prune', set(drafts), set(keep)))), \
+                mock.patch('utils.ai.word_render.prepare_and_enqueue', new_callable=AsyncMock) as prepare:
+            result = self.run_pipeline(lambda m: stream_pieces(DRAFT), self.keep_all())
+        self.assertTrue(result['is_valid'])
+        kinds = [e[0] for e in events]
+        self.assertEqual(kinds, ['early', 'prune'])  # đẩy hàng đợi trước, gỡ nghĩa mất sau refine
+        self.assertEqual(events[0][1], events[1][1])  # đẩy đủ mọi nghĩa nháp
+        self.assertTrue(events[1][2] <= events[1][1] and events[1][2])  # giữ lại nghĩa còn sau refine
+        self.assertEqual(set(prepare.call_args.args[1]), events[1][2])
 
     @override_settings(IMAGE_GEN_ENABLED=True, PIXABAY_API_KEY='')
     def test_image_gen_failure_or_no_image_job_does_not_block_saving(self):
-        with mock.patch('utils.ai.word_render.enqueue_word_images', side_effect=RuntimeError('redis down')):
+        with mock.patch('utils.ai.word_render.prepare_and_enqueue', new_callable=AsyncMock, side_effect=RuntimeError('redis down')), \
+                mock.patch('utils.ai.word_render.draft_briefs', new_callable=AsyncMock, return_value={}):
             result = self.run_pipeline(lambda m: stream_pieces(DRAFT), self.keep_all())
         self.assertTrue(result['is_valid'])
         self.word.refresh_from_db()
@@ -620,7 +664,7 @@ class PipelineTests(PipelineBase):
 
     @override_settings(IMAGE_GEN_ENABLED=False, PIXABAY_API_KEY='')
     def test_image_gen_disabled_does_not_enqueue(self):
-        with mock.patch('utils.ai.word_render.enqueue_word_images') as enqueue:
+        with mock.patch('utils.ai.word_render.prepare_and_enqueue', new_callable=AsyncMock) as enqueue:
             self.run_pipeline(lambda m: stream_pieces(DRAFT), self.keep_all())
         enqueue.assert_not_called()
 
@@ -1097,6 +1141,7 @@ class GetWordApiTests(APITestCase):
         self.assertEqual(res.status_code, 201)  # xuống DB (FAILED) và tạo lại trên cùng bản ghi
         self.assertEqual(self.queue.jobs[-1][1]['word_id'], str(word.id))
 
+    @override_settings(IMAGE_GEN_ENABLED=False)
     def test_completed_word_comes_from_db_with_two_queries_then_from_cache(self):
         self.make_completed('zzfull')
         with self.assertNumQueries(2):  # từ + nghĩa kèm metadata, không N+1
@@ -1201,7 +1246,7 @@ class GetWordApiTests(APITestCase):
         self.assertIsNone(self.cache.cache_word_get_data('en', 'zzdown'))
 
 
-@override_settings(PIXABAY_API_KEY='test-key')
+@override_settings(PIXABAY_API_KEY='test-key', IMAGE_GEN_ENABLED=False)
 class FindImageTests(TestCase):
     HITS = {'hits': [
         {'id': 11, 'imageWidth': 640, 'imageHeight': 400, 'webformatURL': 'https://cdn/11.png', 'user': 'a', 'pageURL': 'https://p/11'},

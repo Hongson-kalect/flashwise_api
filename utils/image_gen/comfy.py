@@ -28,10 +28,22 @@ class ComfyError(Exception):
     """ComfyUI nhận việc nhưng vẽ lỗi (thiếu model, workflow sai...)."""
 
 
-def build_workflow(prompt, seed, steps=None, size=RENDER_SIZE):
-    width, height = size
+def render_size():
+    """(rộng, cao) vẽ ra, đọc từ IMAGE_GEN_RENDER_SIZE ('1216x832'); sai định dạng thì dùng RENDER_SIZE."""
+    try:
+        width, height = (int(v) for v in settings.IMAGE_GEN_RENDER_SIZE.lower().split('x'))
+        if width % 16 == 0 and height % 16 == 0 and 64 <= width <= 2048 and 64 <= height <= 2048:
+            return width, height
+    except (ValueError, AttributeError):
+        pass
+    return RENDER_SIZE
+
+
+def build_workflow(prompt, seed, steps=None, size=None, lora=None, lora_strength=None):
+    width, height = size or render_size()
     steps = steps or settings.IMAGE_GEN_STEPS
-    return {
+    lora = settings.COMFYUI_LORA if lora is None else lora
+    flow = {
         '1': {'class_type': 'UNETLoader', 'inputs': {'unet_name': settings.COMFYUI_UNET, 'weight_dtype': 'default'}},
         '2': {'class_type': 'CLIPLoader', 'inputs': {'clip_name': settings.COMFYUI_CLIP, 'type': 'flux2', 'device': 'default'}},
         '3': {'class_type': 'VAELoader', 'inputs': {'vae_name': settings.COMFYUI_VAE}},
@@ -46,6 +58,11 @@ def build_workflow(prompt, seed, steps=None, size=RENDER_SIZE):
         '12': {'class_type': 'VAEDecode', 'inputs': {'samples': ['11', 0], 'vae': ['3', 0]}},
         '13': {'class_type': 'PreviewImage', 'inputs': {'images': ['12', 0]}},
     }
+    if lora:  # LoRA phong cách: chen giữa UNET và guider
+        strength = settings.COMFYUI_LORA_STRENGTH if lora_strength is None else lora_strength
+        flow['14'] = {'class_type': 'LoraLoaderModelOnly', 'inputs': {'model': ['1', 0], 'lora_name': lora, 'strength_model': strength}}
+        flow['6']['inputs']['model'] = ['14', 0]
+    return flow
 
 
 def _request(method, path, **kwargs):
@@ -55,9 +72,9 @@ def _request(method, path, **kwargs):
         raise ComfyUnavailable(f'Không gọi được ComfyUI ({settings.COMFYUI_URL}): {e}') from e
 
 
-def generate(prompt, seed):
+def generate(prompt, seed, lora=None, lora_strength=None, size=None):
     """Vẽ 1 ảnh, trả bytes PNG. ComfyUI không với tới -> ComfyUnavailable; ComfyUI báo lỗi / quá hạn -> ComfyError."""
-    response = _request('POST', '/prompt', json={'prompt': build_workflow(prompt, seed), 'client_id': uuid.uuid4().hex})
+    response = _request('POST', '/prompt', json={'prompt': build_workflow(prompt, seed, lora=lora, lora_strength=lora_strength, size=size), 'client_id': uuid.uuid4().hex})
     if response.status_code != 200:
         raise ComfyError(f'ComfyUI từ chối workflow ({response.status_code}): {response.text[:500]}')
     prompt_id = response.json()['prompt_id']
@@ -86,9 +103,14 @@ def generate(prompt, seed):
     return view.content
 
 
-def to_webp(png_bytes, size=OUTPUT_SIZE, quality=80):
-    """PNG -> WebP đã thu về cỡ lưu. Trả (bytes, (rộng, cao))."""
-    image = Image.open(io.BytesIO(png_bytes)).convert('RGB')
+def to_webp(png_bytes, size=OUTPUT_SIZE, quality=80, transparent=False):
+    """PNG -> WebP đã thu về cỡ lưu. `transparent`: ảnh vẽ trên nền magenta, xoá nền thành alpha (utils/image_gen/cutout.py).
+    Trả (bytes, (rộng, cao))."""
+    if transparent:
+        from utils.image_gen.cutout import to_transparent
+        image = to_transparent(png_bytes)
+    else:
+        image = Image.open(io.BytesIO(png_bytes)).convert('RGB')
     if image.size != size:
         image = image.resize(size, Image.LANCZOS)
     buffer = io.BytesIO()

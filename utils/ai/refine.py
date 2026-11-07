@@ -21,6 +21,7 @@ from utils.ai import claude
 from utils.ai.constain import language_map
 from utils.ai.japanese import add_ruby
 from utils.utils import uuidv7
+from utils.ai import usage
 from utils.utils.best_effort import best_effort
 from utils.utils.socket import socket_message
 
@@ -406,6 +407,7 @@ async def request_refinement(prompt):
                     ),
                     timeout=settings.AI_REFINE_TIMEOUT,
                 )
+            usage.record_claude('refine', response)
             if response.stop_reason in ('refusal', 'max_tokens'):
                 logger.warning('Refine %s dừng vì %s', model, response.stop_reason)
                 models.pop(0)

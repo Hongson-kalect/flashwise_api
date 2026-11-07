@@ -215,10 +215,8 @@ def render_enhanced_schema(sense_ids):
                 "antonyms": {"type": "ARRAY", "items": {"type": "STRING"}},
                 "tags": {"type": "ARRAY", "items": {"type": "STRING"}},
                 "image_keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
-                "image_subject": {"type": "STRING"},  # chủ thể vẽ ảnh (tiếng Anh), khoá dùng lại ảnh giữa các ngôn ngữ (utils/image_gen)
-                "image_kind": {"type": "STRING", "enum": ["object", "action", "scene", "abstract", "none"]}
             },
-            "required": ["tags", "image_keywords", "image_subject", "image_kind"] # Ép AI không được bỏ sót
+            "required": ["tags", "image_keywords"] # Ép AI không được bỏ sót
         }
     
     return {

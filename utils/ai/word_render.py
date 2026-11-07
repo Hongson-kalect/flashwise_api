@@ -40,7 +40,9 @@ from utils.ai.translate import ai_create_translate_sema
 from utils.ai.metadata import ai_create_metadata
 from utils.utils.normalize import normalize_lookup
 from utils.utils.best_effort import best_effort
-from utils.image_gen.service import enqueue_word_images
+from utils.ai import usage
+from utils.image_gen.brief import draft_briefs, reusable_briefs
+from utils.image_gen.service import early_enqueue, prepare_and_enqueue, prune_draft_senses
 from ai.queries import load_word
 from utils.ai import claude
 from utils.ai.japanese import add_ruby
@@ -239,6 +241,10 @@ async def ai_create_new_word_sema(word_info):
 
                             except Exception as e:
                                 logger.warning('Lỗi đọc 1 nghĩa từ stream của %s: %s', word_value, e)
+                    try:
+                        usage.record_claude('draft', await response.get_final_message())
+                    except Exception:
+                        pass  # chỉ đếm token, không được ảnh hưởng việc tạo từ
             except Exception as e:
                 logger.warning('Tạo từ %s lỗi ở lần thử %s với %s: %s', word_value, attempts, model, e)
                 if not rejected:
@@ -269,6 +275,19 @@ async def ai_create_new_word_sema(word_info):
         if not valid or not sense_objs:
             await _close_word(word_id, word_value, language_code, socket_room, cache, 'FAILED', 'ERROR', 'ERROR', 'No usable AI response', keep_old=bool(replace_ids))
             return {"id": word_id, "senses": [], "is_valid": False, "error": "No usable AI response"}
+
+        # Brief ảnh cho nghĩa nháp chạy SONG SONG với refine (refine ~7s, brief ~1s); sau refine chỉ giữ brief của nghĩa còn lại
+        brief_task = None
+        draw_early = settings.IMAGE_GEN_DRAW_BEFORE_REFINE
+        if settings.IMAGE_GEN_ENABLED and not word_info.get('no_image'):
+            async def briefs_then_maybe_draw():
+                drafts = await draft_briefs(word_value, language_code, sense_objs)
+                if draw_early and drafts:
+                    # Vẽ trước refine: đẩy việc vẽ ngay khi brief nháp xong; sau refine nghĩa nào không còn thì gỡ khỏi hàng chờ
+                    await sync_to_async(best_effort)(early_enqueue, {sid: e['brief'] for sid, e in drafts.items()})
+                    marks['image_queued_early'] = time.monotonic()
+                return drafts
+            brief_task = asyncio.create_task(briefs_then_maybe_draw())
 
         # --- BƯỚC 2: chuẩn hoá. Chỉ gửi nội dung ngôn ngữ gốc nên chạy song song được với các task dịch đang chạy ---
         refine_task = None
@@ -302,13 +321,30 @@ async def ai_create_new_word_sema(word_info):
         )
         marks['applied'] = time.monotonic()
 
+        # Nghĩa nào mất / bị sửa thì loại brief, phần còn lại đẩy vào hàng đợi vẽ ngay (trước khi lưu DB)
+        image_preset = {}
+        if brief_task:
+            try:
+                drafts = await asyncio.wait_for(brief_task, timeout=settings.IMAGE_BRIEF_WAIT_SECONDS)
+                image_preset = reusable_briefs(drafts, sense_objs, language_code, strict=not draw_early)
+                if draw_early:
+                    dropped = await sync_to_async(best_effort)(prune_draft_senses, drafts, image_preset.keys())
+                    marks.setdefault('image_dropped_%s' % (dropped or 0), time.monotonic())
+                elif image_preset:
+                    await sync_to_async(best_effort)(early_enqueue, image_preset)
+            except Exception as e:
+                logger.warning('Brief ảnh song song cho %s không dùng được (%s), sẽ viết sau khi lưu', word_value, type(e).__name__)
+            marks['image_queued'] = time.monotonic()
+
         try:
             await sync_to_async(save_sense)(sense_objs, word_id, replace_ids, common_ipas(sense_objs))
             data = await sync_to_async(build_word_payload)(word_id)
             cache.cache_word(language_code=language_code, word_id=word_id, word_val=word_value, data=data.get('senses'), word_fields=data)
 
-            # Gửi socket FULL chốt hạ dữ liệu cuối cùng
-            await socket_message(socket_room, {"type": "FULL_SENSE", "payload": data}, True)
+            # Gửi socket FULL chốt hạ dữ liệu cuối cùng. Còn ảnh AI sẽ vẽ sau (PARTIAL_IMAGE về sau FULL_SENSE vài chục giây) thì
+            # KHÔNG đóng phòng: app xoá người nghe của phòng khi nhận cờ unsubscribe nên sẽ lỡ tin ảnh (phải vào lại mới thấy)
+            images_pending = settings.IMAGE_GEN_ENABLED and not word_info.get('no_image')
+            await socket_message(socket_room, {"type": "FULL_SENSE", "payload": data}, not images_pending)
 
         except Exception as e:
             traceback.print_exc()
@@ -317,8 +353,11 @@ async def ai_create_new_word_sema(word_info):
             raise
 
         if settings.IMAGE_GEN_ENABLED and not word_info.get('no_image'):
-            # Xếp việc vẽ ảnh AI cho các nghĩa vừa lưu (ComfyUI trên máy host); lỗi ở đây không được làm hỏng từ đã lưu
-            await sync_to_async(best_effort)(enqueue_word_images, word_id)
+            # Haiku viết brief ảnh rồi xếp việc vẽ ảnh AI cho các nghĩa vừa lưu (ComfyUI trên máy host); lỗi ở đây không được làm hỏng từ đã lưu
+            try:
+                await prepare_and_enqueue(word_id, image_preset)
+            except Exception as e:
+                logger.warning('Không xếp được việc vẽ ảnh cho từ %s: %s', word_value, e)
 
         marks['saved'] = time.monotonic()
         logger.info('Tạo từ %s [%s]: %s', word_value, language_code, ', '.join(f'{name} {value - marks["start"]:.1f}s' for name, value in marks.items() if name != 'start'))

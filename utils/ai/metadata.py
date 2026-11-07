@@ -1,5 +1,6 @@
 import json
 import asyncio
+from utils.ai import usage
 from google import genai
 from google.genai import types
 from flashcardApi import settings
@@ -53,6 +54,7 @@ async def process_metadata(chunk, word, language_code, mapping_table, socket_roo
                             thinking_config=types.ThinkingConfig(thinking_budget=0)
                         )
                     ), timeout=settings.AI_GEMINI_TIMEOUT)
+                    usage.record_gemini('metadata', response)
                     data = json.loads(response.text.strip())
                     break
                 except Exception as e:
@@ -71,9 +73,8 @@ async def process_metadata(chunk, word, language_code, mapping_table, socket_roo
 
             id = str(s_metadata.pop("id", uuidv7.generate_uuid7()))
 
-            # Chủ thể vẽ ảnh + loại nằm trong image_metadata (không cần cột mới), utils/image_gen đọc từ đây
-            image_metadata = {name: value for name, value in (('subject', s_metadata.pop('image_subject', None)),
-                                                              ('kind', s_metadata.pop('image_kind', None))) if value}
+            # Brief ảnh (chủ thể / mô tả / loại) do Haiku viết sau khi từ lưu xong (utils/image_gen/brief.py), không phải ở đây
+            image_metadata = {}
             metadata_obj = {
                 'id': id,
                 'tags': s_metadata.pop('tags', []),

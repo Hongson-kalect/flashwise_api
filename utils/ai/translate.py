@@ -1,5 +1,6 @@
 import json
 import asyncio
+from utils.ai import usage
 from google import genai
 from google.genai import types
 from flashcardApi import settings
@@ -88,6 +89,7 @@ Rules:
                             thinking_config=types.ThinkingConfig(thinking_budget=0)
                         )
                     ), timeout=settings.AI_GEMINI_TIMEOUT)
+                    usage.record_gemini('translate', response)
                     data = json.loads(response.text.strip())
                     break
                 except Exception as e:

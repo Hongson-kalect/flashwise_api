@@ -55,6 +55,4 @@ For each sense key, about THAT sense only:
 - idioms: idioms or fixed expressions with '{word}' in this sense.
 - tags: 1-5 short lowercase English topic tags, e.g. "finance", "nature".
 - image_keywords: 1-3 English stock-photo search terms that show this sense concretely.
-- image_subject: the plainest English phrase for what ONE simple illustration of THIS sense shows (lowercase, 1-6 words, no articles). It is a key shared by words of every language, so the same idea must get identical wording: a thing -> only its basic name, no adjectives, material, state or scene ("refrigerator", never "white kitchen refrigerator"; "telescope", never "refracting telescope"; "umbrella", never "open umbrella"); an action -> "person" plus the -ing verb ("person running", "person sleeping"; never child / man / woman, no place); an idea or feeling -> one concrete symbolic scene in the simplest wording ("bird flying out of open cage"). Tell homonyms apart with one extra noun ("bat animal", "baseball bat", "river bank", "money bank").
-- image_kind: object, action, scene or abstract; none when nothing can be drawn (grammar words, particles, names, formulas).
 At most 5 items per list. Leave a list empty rather than invent or reuse items from another sense."""

@@ -86,6 +86,18 @@ def _word_response(detail, http_status, data=None):
     return Response({'detail': detail, 'status': str(http_status), 'data': data}, status=http_status)
 
 
+def _backfill_images(response):
+    """Từ đã hoàn thành mà còn nghĩa chưa có ảnh thì nhờ worker vẽ bù (utils/image_gen/service.request_missing_images). Không bao giờ làm hỏng phản hồi."""
+    try:
+        data = response.data.get('data') if response.status_code in (200, 206) and isinstance(response.data, dict) else None
+        if isinstance(data, dict) and data.get('id'):
+            from utils.image_gen.service import request_missing_images
+            request_missing_images(data['id'], data)
+    except Exception:
+        logger.exception('Không xếp được việc vẽ ảnh bù')
+    return response
+
+
 def _personal(request, response):
     """Dữ liệu từ dùng chung (cache / DB) + nghĩa riêng của user đang đăng nhập, ghép lúc trả về nên cache vẫn dùng chung."""
     data = response.data.get('data') if isinstance(response.data, dict) else None
@@ -231,7 +243,7 @@ class AIWordViewSet(SoftDeleteViewSet):
             cached = None
 
         if cached:
-            return _personal(request, _respond_from_cache(cache_manager, cached, word, language_code, user_language_code))
+            return _backfill_images(_personal(request, _respond_from_cache(cache_manager, cached, word, language_code, user_language_code)))
 
         word_instance = load_word(value=word, language_code=language_code)
 
@@ -250,7 +262,7 @@ class AIWordViewSet(SoftDeleteViewSet):
             if state in ('REJECTED', 'BANNED'):
                 return _word_response('NOT_FOUND', 404, {'value': word, 'language_code': language_code})
             if state == 'COMPLETED':
-                return _personal(request, _respond_completed(cache_manager, word_instance, word, language_code, user_language_code))
+                return _backfill_images(_personal(request, _respond_completed(cache_manager, word_instance, word, language_code, user_language_code)))
             if state != 'FAILED':
                 updated_at = word_instance.updated_at or word_instance.created_at
                 stale = updated_at is None or (timezone.now() - updated_at).total_seconds() > settings.WORD_PROCESSING_STALE_SECONDS

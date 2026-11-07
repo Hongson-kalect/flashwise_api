@@ -139,11 +139,20 @@ COMFYUI_URL = os.getenv('COMFYUI_URL', 'http://host.docker.internal:8188').rstri
 COMFYUI_UNET = os.getenv('COMFYUI_UNET', 'flux-2-klein-4b-fp8.safetensors')
 COMFYUI_CLIP = os.getenv('COMFYUI_CLIP', 'qwen_3_4b.safetensors')
 COMFYUI_VAE = os.getenv('COMFYUI_VAE', 'flux2-vae.safetensors')
+COMFYUI_LORA = os.getenv('COMFYUI_LORA', '').strip()  # tên file LoRA trong models/loras của ComfyUI; rỗng = không dùng LoRA
+COMFYUI_LORA_STRENGTH = float(os.getenv('COMFYUI_LORA_STRENGTH', '0.6'))  # Outlined (Klein 4B) ở 0.6: nhiều chi tiết mà giữ màu / nét phẳng; 0.85+ xỉn màu, mặt nặng
+IMAGE_BRIEF_PROVIDER = os.getenv('IMAGE_BRIEF_PROVIDER', 'gemini').strip().lower()  # ai viết brief ảnh: 'gemini' (flash-lite) | 'claude' (Haiku); đổi thì nghĩa cũ được viết lại khi chạy queue_sense_images --briefs
+IMAGE_GEN_TRANSPARENT = os.getenv('IMAGE_GEN_TRANSPARENT', 'true').lower() in ('1', 'true', 'yes')  # xoá nền magenta thành alpha (utils/image_gen/cutout.py)
+IMAGE_GEN_RENDER_SIZE = os.getenv('IMAGE_GEN_RENDER_SIZE', '1008x672')  # WxH vẽ ra: bội số của 16, FLUX.2 khuyến nghị <= 2MP; 1008x672 đúng 3:2 như ảnh lưu 768x512, nhanh hơn 1216x832 ~26% (đo 10 chủ thể), chất lượng ngang
+IMAGE_BRIEF_WAIT_SECONDS = float(os.getenv('IMAGE_BRIEF_WAIT_SECONDS', '5'))  # giây chờ brief chạy song song sau refine; quá hạn thì bỏ, viết sau khi lưu
+# Vẽ ngay khi brief nháp xong (trước refine); nghĩa bị refine xoá / đổi loại từ thì bỏ ảnh, ảnh chưa vẽ thì bỏ job. Đo 6 từ mỗi chế độ:
+# ảnh đầu sau khi từ xong 4,4s -> 2,9s, tất cả ảnh 7,0s -> 5,6s; vẽ thừa 1/13 ảnh (refine xoá ~8% nghĩa). Đặt false khi nạp hàng loạt (đỡ vẽ thừa).
+IMAGE_GEN_DRAW_BEFORE_REFINE = os.getenv('IMAGE_GEN_DRAW_BEFORE_REFINE', 'true').lower() in ('1', 'true', 'yes')
 IMAGE_GEN_STEPS = int(os.getenv('IMAGE_GEN_STEPS', '4'))  # bản distilled 4 bước; 6 bước chỉ đẹp hơn chút mà chậm hơn ~30%
 IMAGE_GEN_TIMEOUT = int(os.getenv('IMAGE_GEN_TIMEOUT', '180'))  # giây chờ 1 ảnh (lần đầu phải nạp model nên lâu hơn)
 IMAGE_GEN_QUEUE = os.getenv('IMAGE_GEN_QUEUE', 'redis_image_gen')
 IMAGE_GEN_CONCURRENCY = int(os.getenv('IMAGE_GEN_CONCURRENCY', '1'))  # 1 GPU: vẽ lần lượt
-IMAGE_GEN_STYLE_VERSION = os.getenv('IMAGE_GEN_STYLE_VERSION', 'v1')  # đổi khi đổi phong cách: ảnh mới có khoá riêng, ảnh cũ không bị ghi đè
+IMAGE_GEN_STYLE_VERSION = os.getenv('IMAGE_GEN_STYLE_VERSION', 'v5')  # đổi khi đổi phong cách: ảnh mới có khoá riêng, ảnh cũ không bị ghi đè
 
 # --- Model cho từng bước tạo từ (danh sách = thử lần lượt khi lỗi) ---
 # Bước 1 draft + bước 2 refine: Claude Haiku (structured output nên JSON luôn đúng schema)

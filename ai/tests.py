@@ -653,6 +653,21 @@ class PipelineTests(PipelineBase):
         self.assertTrue(events[1][2] <= events[1][1] and events[1][2])  # giữ lại nghĩa còn sau refine
         self.assertEqual(set(prepare.call_args.args[1]), events[1][2])
 
+    @override_settings(IMAGE_GEN_ENABLED=False, CONCEPT_LINKING_ENABLED=True)
+    def test_concept_linking_runs_after_save_and_failure_does_not_block(self):
+        with mock.patch('utils.ai.word_render.link_word_and_notify', new_callable=AsyncMock) as link:
+            result = self.run_pipeline(lambda m: stream_pieces(DRAFT), self.keep_all())
+        self.assertTrue(result['is_valid'])
+        link.assert_awaited_once_with(result['id'])
+        with mock.patch('utils.ai.word_render.link_word_and_notify', new_callable=AsyncMock, side_effect=RuntimeError('boom')):
+            self.assertTrue(self.run_pipeline(lambda m: stream_pieces(DRAFT), self.keep_all())['is_valid'])
+
+    @override_settings(IMAGE_GEN_ENABLED=False, CONCEPT_LINKING_ENABLED=False)
+    def test_concept_linking_is_off_by_default(self):
+        with mock.patch('utils.ai.word_render.link_word_and_notify', new_callable=AsyncMock) as link:
+            self.run_pipeline(lambda m: stream_pieces(DRAFT), self.keep_all())
+        link.assert_not_awaited()
+
     @override_settings(IMAGE_GEN_ENABLED=True, PIXABAY_API_KEY='')
     def test_image_gen_failure_or_no_image_job_does_not_block_saving(self):
         with mock.patch('utils.ai.word_render.prepare_and_enqueue', new_callable=AsyncMock, side_effect=RuntimeError('redis down')), \

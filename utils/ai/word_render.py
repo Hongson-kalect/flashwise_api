@@ -41,6 +41,7 @@ from utils.ai.metadata import ai_create_metadata
 from utils.utils.normalize import normalize_lookup
 from utils.utils.best_effort import best_effort
 from utils.ai import usage
+from utils.concept.notify import link_word_and_notify
 from utils.image_gen.brief import draft_briefs, reusable_briefs
 from utils.image_gen.service import early_enqueue, prepare_and_enqueue, prune_draft_senses
 from ai.queries import load_word
@@ -358,6 +359,13 @@ async def ai_create_new_word_sema(word_info):
                 await prepare_and_enqueue(word_id, image_preset)
             except Exception as e:
                 logger.warning('Không xếp được việc vẽ ảnh cho từ %s: %s', word_value, e)
+
+        if settings.CONCEPT_LINKING_ENABLED:
+            # Nối từng nghĩa vào concept (embedding + Gemini xác nhận); chạy sau khi từ đã lưu và báo xong, lỗi không được làm hỏng từ
+            try:
+                await asyncio.wait_for(link_word_and_notify(word_id), timeout=120)
+            except Exception as e:
+                logger.warning('Không nối được concept cho từ %s: %s', word_value, e)
 
         marks['saved'] = time.monotonic()
         logger.info('Tạo từ %s [%s]: %s', word_value, language_code, ', '.join(f'{name} {value - marks["start"]:.1f}s' for name, value in marks.items() if name != 'start'))

@@ -5,3 +5,4 @@ from .AISense import AISense
 from .TranslateLog import TranslateLog
 from .WordForm import WordForm
 from .SenseFormExample import SenseFormExample
+from .Concept import Concept, ConceptDecision

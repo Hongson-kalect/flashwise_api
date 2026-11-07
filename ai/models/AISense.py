@@ -15,6 +15,7 @@ class AISense(BaseModel):
     metadata = models.ForeignKey(AISenseMetadata, on_delete=models.SET_NULL, null=True, related_name='senses')
     preview =models.JSONField(default=dict) # image url, định nghĩa, audio_url nếu cần
     image_preview = models.URLField(max_length=1000, null=True, blank=True)
+    concept = models.ForeignKey('ai.Concept', on_delete=models.SET_NULL, null=True, blank=True, related_name='senses')  # tầng 1: nghĩa giống hệt ở ngôn ngữ khác (utils/concept)
     image_context = models.ForeignKey('core.ImageContext', on_delete=models.SET_NULL, null=True, blank=True)
     language_code = models.CharField(max_length=10, blank=True, null=True)
     contents = models.JSONField(default=dict, null=True, blank=True)

@@ -21,7 +21,7 @@ from ai.queries import visible_senses
 from ai.validators import is_uuid
 from core.models import UserCollection
 from interact.models import LearnSession
-from tracking.fsrs import AGAIN, DEFAULT_W, EASY, HARD, initial_difficulty
+from tracking.fsrs import AGAIN, DEFAULT_W, EASY, HARD, KNOWN_LEVEL, KNOWN_VERIFY_DAYS, initial_difficulty, user_parameters
 from tracking.learn import NEW_MODES, REVIEW_MODES, collection_cards, day_ends_at, is_new, setting
 from tracking.models import DayLearnLog, ReviewLog, UserSenseProgress
 from tracking.stats import apply_review_stats
@@ -32,7 +32,6 @@ SESSION_LOCK_NAMESPACE = 7302
 MAX_CARDS = 200
 MAX_STEPS = 20
 MAX_LEVEL = 7
-KNOWN_LEVEL = 5  # "Đã biết" lên thẳng cấp này
 QUICK_MAX_LEVEL = 5  # vuốt / đọc chỉ đưa tới cấp này, cao hơn phải qua nhớ lại thật (gõ / nói)
 NEW_LEVEL = {AGAIN: 0, HARD: 1, 3: 1, EASY: 2}
 
@@ -73,6 +72,7 @@ def scheduler_for(user, mode):
     else:
         retention = float_setting(user, 'request_retention', 0.9, 0.7, 0.99)
     return Scheduler(
+        parameters=user_parameters(user),
         desired_retention=retention,
         learning_steps=(timedelta(minutes=10), timedelta(hours=hours)),
         relearning_steps=(timedelta(hours=hours),),
@@ -240,6 +240,9 @@ def _apply(user, kind, mode, session_data, raw_cards, now, existing):
             fsrs_card, _ = scheduler.review_card(Card(), Rating(card['rating']), at)
             fsrs_card.difficulty = blended_difficulty(fsrs_card.difficulty, sense)
             progress.level = KNOWN_LEVEL if card['known'] else NEW_LEVEL[card['rating']]
+            if card['known']:
+                # Lời khai "đã biết": ôn kiểm tra sớm (stability sau Easy lên tới ~8 ngày), lần đó phải nhớ lại thật
+                fsrs_card.due = min(fsrs_card.due, at + timedelta(days=KNOWN_VERIFY_DAYS))
             elapsed = 0
             learned += 1
             xp += XP_KNOWN if card['known'] else XP_NEW

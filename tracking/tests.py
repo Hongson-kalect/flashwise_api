@@ -604,6 +604,12 @@ class LearnReviewTests(LearnTestBase):
         self.progress('bird', next_review_at=cutoff + timedelta(minutes=1))
         self.assertEqual(self.ids(self.get('review').data['due']), self.sid('fish'))
 
+    def test_unverified_known_card_is_not_swiped_before_one_real_recall(self):
+        self.progress('fish', level=5, repetitions=1)  # lời khai "đã biết", chưa ôn lần nào
+        self.progress('bird', level=5, repetitions=4)
+        self.assertEqual(self.ids(self.get('review', mode='quick').data['due']), self.sid('bird'))
+        self.assertEqual(set(self.ids(self.get('review').data['due'])), set(self.sid('fish', 'bird')))  # ôn theo cụm vẫn thấy cả 2
+
     def test_validation(self):
         self.assertEqual(self.get('review', mode='bogus').status_code, 400)
         self.assertEqual(self.get('review', collection_id='x').status_code, 400)
@@ -659,6 +665,15 @@ class CompleteSessionTests(LearnTestBase):
         self.assertEqual(UserCollection.objects.get(user=self.user).learned_count, 4)
         self.senses['cat1'].refresh_from_db()
         self.assertEqual(self.senses['cat1'].learner_count, 1)  # thống kê chung của nghĩa
+
+    def test_known_claim_is_checked_within_a_day(self):
+        self.complete('new', [self.card('fish', known=True), self.card('dog', 4)])
+        known = UserSenseProgress.objects.get(user=self.user, original_sense_id=self.senses['fish'].id)
+        easy = UserSenseProgress.objects.get(user=self.user, original_sense_id=self.senses['dog'].id)
+        self.assertEqual((known.level, known.repetitions), (5, 1))
+        self.assertLessEqual(known.next_review_at - known.last_reviewed_at, timedelta(days=1, seconds=5))
+        self.assertGreater(known.stability, 3)  # vẫn tính là Easy, độ bền không bị hạ
+        self.assertGreater(easy.next_review_at, known.next_review_at)  # Easy bình thường (thật sự học) hẹn xa hơn
 
     def test_difficulty_mixes_with_server_difficulty(self):
         from tracking.fsrs import initial_difficulty

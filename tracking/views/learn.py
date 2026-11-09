@@ -153,3 +153,26 @@ def learn_new_complete(request):
 def learn_review_complete(request):
     """Xác nhận phiên ôn tập, body như học mới (không có known), mode normal | quick."""
     return _complete(request, 'review')
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def fsrs_parameters(request):
+    """
+    Tham số FSRS riêng của user (tracking/fsrs_params.py). GET: tham số đang dùng + meta lần tối ưu gần nhất.
+    POST: tối ưu ngay từ review_log (bỏ qua nếu chưa có thêm dữ liệu từ lần trước; `force` chỉ cho nhân viên), tối đa 6 lần / giờ.
+    Trả {status: not_enough | up_to_date | kept | updated, n_items, loss_before?, loss_after?, parameters, meta}.
+    """
+    from django.core.cache import cache
+    from tracking.fsrs import user_parameters
+    from tracking.fsrs_params import current_meta, fit_user
+
+    result = {}
+    if request.method == 'POST':
+        key = f'fsrs_fit:{request.user.pk}'
+        count = cache.get(key, 0)
+        if count >= 6:
+            return Response({'detail': 'Tối ưu quá nhiều lần, thử lại sau.', 'errorCode': 'fsrs_fit_throttled'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        cache.set(key, count + 1, 3600)
+        result = fit_user(request.user, force=bool(request.data.get('force')) and request.user.is_staff)
+    return Response({**result, 'parameters': list(user_parameters(request.user)), 'meta': current_meta(request.user)})

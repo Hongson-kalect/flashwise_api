@@ -14,7 +14,7 @@ from django.utils import timezone
 from ai.models import AISense
 from ai.queries import banned_sense_ids, hidden_sense_ids
 from core.queries import live_items
-from tracking.fsrs import retrievability
+from tracking.fsrs import is_unverified_known, retrievability, user_parameters
 from tracking.models import UserSenseProgress
 from user.models import UserProfile, UserSetting
 
@@ -130,12 +130,15 @@ def pick_review(user, mode, count, user_collection=None, now=None, exclude_words
         progresses = [p for p in progresses if str(p.original_sense_id) not in hidden]
 
     min_level = min_level_for(user, mode)
+    weights = user_parameters(user)
     eligible = []
     for p in progresses:
         if p.level < min_level:
             continue
+        if mode == 'quick' and is_unverified_known(p):
+            continue  # lời khai "đã biết" phải qua 1 lần nhớ lại thật trước khi được ôn bằng vuốt
         elapsed = (now - p.last_reviewed_at).total_seconds() / 86400 if p.last_reviewed_at else 0
-        eligible.append((p, retrievability(p.stability, elapsed)))
+        eligible.append((p, retrievability(p.stability, elapsed, weights)))
     eligible.sort(key=lambda entry: entry[1])
     word_of = {
         str(sense_id): str(word_id) for sense_id, word_id in AISense.objects.filter(

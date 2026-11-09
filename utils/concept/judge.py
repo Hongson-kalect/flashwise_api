@@ -46,10 +46,12 @@ def _ask(prompt):
     last = None
     for attempt in range(4):
         try:
+            model = model_name()
+            extra = {'thinking_config': types.ThinkingConfig(thinking_budget=0)} if model.startswith('gemini-2.5') else {}  # 3.x trả 400 với thinking_budget=0
             resp = _get_client().models.generate_content(
-                model=model_name(), contents=prompt,
+                model=model, contents=prompt,
                 config=types.GenerateContentConfig(system_instruction=SYSTEM, max_output_tokens=300, temperature=0, response_mime_type='application/json',
-                                                   response_schema=copy.deepcopy(SCHEMA), thinking_config=types.ThinkingConfig(thinking_budget=0)))
+                                                   response_schema=copy.deepcopy(SCHEMA), **extra))
             usage.record_gemini('concept_judge', resp)
             return json.loads(resp.text)
         except Exception as e:

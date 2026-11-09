@@ -49,11 +49,8 @@ def chunk_dict(data, size=3):
 async def process_translation_chunk(chunk, language_code, language_str, translate_lang, mapping_table, mapping_sense, socket_room):
     try:
         # 1. Khởi tạo Schema và Client cho riêng Task này
-        word = None
-
-        for id in chunk.keys():
-            word = chunk[id].get("word_value")
-            break
+        # chunk chỉ có định nghĩa / ví dụ đã rút gọn (không có word_value) nên lấy từ đang dịch ở bản đầy đủ của nghĩa
+        word = next((mapping_sense[i].get("word_value") for i in mapping_table.values() if i in mapping_sense and mapping_sense[i].get("word_value")), None)
         sense_ids = list(chunk.keys())
         schema = render_translate_schema(word, language_code, chunk, translate_lang)
 

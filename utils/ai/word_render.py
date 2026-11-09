@@ -46,7 +46,7 @@ from utils.image_gen.brief import draft_briefs, reusable_briefs
 from utils.image_gen.service import early_enqueue, prepare_and_enqueue, prune_draft_senses
 from ai.queries import load_word
 from utils.ai import claude
-from utils.ai.japanese import add_ruby
+from utils.ai.romanize import ROMAN_LANGS, add_readings, reading_ipas
 from utils.ai.refine import render_refine_prompt, request_refinement, refine_word
 
 def get_schema(mode='latin'):
@@ -56,6 +56,33 @@ def get_schema(mode='latin'):
         return nonlatin_schema
     # latin và các ngôn ngữ còn lại: schema phẳng (senses[]) mà bộ đọc stream bên dưới hiểu được
     return word_schema
+
+
+def build_sense_obj(sense, word_id, word_value, language_code):
+    """Một nghĩa trong JSON Claude trả về -> dict nghĩa dùng chung cho stream, refine, dịch và lưu (cũng dùng cho luồng seed hàng loạt)."""
+    processed_contents = {
+        "id": str(uuidv7.generate_uuid7()),
+        "word_id": word_id,
+        "word_value": word_value,
+        "language_code": language_code,
+        "is_offensive": sense.get("is_offensive"),
+        "pos": sense.get("pos"),
+        "level": sense.get("level"),
+        "register": sense.get("register"),
+        "ipas": sense.get("ipas"),
+        "contents": {
+            "definition": {language_code: sense.get("definition")},
+            "usage": {language_code: sense.get("usage")},
+            "examples": [
+                {language_code: ex} for ex in (sense.get("examples") or [])[:2]  # schema Claude không có maxItems
+            ],
+        }
+    }
+    if language_code in ROMAN_LANGS:
+        # roman (ja / zh / ko) và furigana (ja) sinh bằng thuật toán, AI không viết
+        add_readings(processed_contents["contents"], language_code)
+        processed_contents["ipas"] = reading_ipas(word_value, language_code, processed_contents["ipas"])
+    return processed_contents
 
 
 def _set_word_status(word_id, status):
@@ -117,7 +144,8 @@ async def ai_create_new_word_sema(word_info):
         mode = "flat"
 
     current_schema = get_schema(mode)
-    current_prompt = render_word_prompt(word_value, language_code)
+    reference = word_info.get('reference')  # gợi ý từ file seed (Wiktionary), chưa kiểm chứng
+    current_prompt = render_word_prompt(word_value, language_code, reference)
 
     try:
         models = settings.AI_DRAFT_MODELS
@@ -183,28 +211,8 @@ async def ai_create_new_word_sema(word_info):
                             pointer = new_pointer
                             try:
                                 sense = json.loads(sense_str)
-                                id = str(uuidv7.generate_uuid7())
-
-                                processed_contents = {
-                                    "id": id,
-                                    "word_id": word_id,
-                                    "word_value": word_value,
-                                    "language_code": language_code,
-                                    "is_offensive": sense.get("is_offensive"),
-                                    "pos": sense.get("pos"),
-                                    "level": sense.get("level"),
-                                    "register": sense.get("register"),
-                                    "ipas": sense.get("ipas"),
-                                    "contents": {
-                                        "definition": {language_code: sense.get("definition")},
-                                        "usage": {language_code: sense.get("usage")},
-                                        "examples": [
-                                            {language_code: ex} for ex in (sense.get("examples") or [])[:2]  # schema Claude không có maxItems
-                                        ],
-                                    }
-                                }
-                                if language_code == 'ja':
-                                    add_ruby(processed_contents["contents"], language_code)
+                                processed_contents = build_sense_obj(sense, word_id, word_value, language_code)
+                                id = processed_contents["id"]
                                 sense_objs.append(processed_contents)
                                 marks.setdefault('first_sense', time.monotonic())  # bản nháp chỉ đi qua socket cho người tra đầu tiên, không vào cache
 
@@ -294,7 +302,7 @@ async def ai_create_new_word_sema(word_info):
         refine_task = None
         if settings.AI_REFINE_ENABLED:
             best_effort(cache.cache_word_set_stage, language_code, word_value, 'refine')
-            refine_task = asyncio.create_task(request_refinement(render_refine_prompt(word_value, language_code, sense_objs)))
+            refine_task = asyncio.create_task(request_refinement(render_refine_prompt(word_value, language_code, sense_objs, reference)))
 
         # Đợi các task chạy ngầm (socket, dịch, metadata) xong rồi mới đụng vào nội dung các nghĩa
         # Có trần thời gian: một lệnh gọi Gemini treo / 503 liên tục không được giữ người dùng chờ vô hạn.

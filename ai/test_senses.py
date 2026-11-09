@@ -322,7 +322,7 @@ class PersonalSenseTests(APITestCase):
         self.assertIn('[猫|', fork.delta['definition']['ja']['ruby'])
         self.assertNotEqual(fork.delta['definition']['ja']['ruby'], 'old')
         self.assertIn('ruby', fork.delta['examples'][0]['ja'])
-        self.assertNotIn('roman', fork.delta['definition']['ja'])  # roman cũ không còn đúng với chữ mới
+        self.assertEqual(fork.delta['definition']['ja']['roman'], 'neko wa chiisai dōbutsu desu.')  # roman cũ ('neko') được sinh lại theo chữ mới
 
     def test_metadata_only_edit_adds_words_and_shows_in_get_word(self):
         self.client.force_authenticate(self.alice)
@@ -712,7 +712,7 @@ class ProposeSenseApiTests(APITestCase):
         self.assertEqual(self.run_propose(word_id=str(uuid7())).status_code, 404)
         self.assertFalse(self.proposed().exists())
 
-    def test_japanese_sense_keeps_roman_and_gets_ruby(self):
+    def test_japanese_sense_gets_computed_roman_and_ruby(self):
         ja = AIWord.objects.create(value='zz犬', language_code='ja', status='COMPLETED')
         sense = _claude_result()['sense']
         sense.update(
@@ -723,17 +723,17 @@ class ProposeSenseApiTests(APITestCase):
         res = self.run_propose(claude=_claude_result(sense=sense), word_id=str(ja.id), pos='noun')
         self.assertEqual(res.status_code, 201, res.data)
         contents = AISense.objects.get(pk=res.data['sense']['id']).contents
-        self.assertEqual(contents['definition']['ja']['roman'], 'keisatsu ni jōhō o uru hito.')
+        self.assertEqual(contents['definition']['ja']['roman'], 'keisatsu ni jōhō o uru hito.')  # server sinh bằng fugashi, bỏ roman do AI gửi
         self.assertIn('[', contents['definition']['ja']['ruby'])  # furigana do fugashi sinh
         self.assertEqual(contents['examples'][0]['ja']['roman'], 'kare wa inu da to utagawareta.')
         self.assertEqual(contents['definition']['vi']['value'], 'Nguồn dự trữ để dùng sau này.')
 
-    def test_roman_languages_schema_requires_roman(self):
+    def test_roman_languages_schema_has_no_roman(self):
         from utils.ai import sense_gate
         sense = sense_gate.PROPOSE_SCHEMA_JA['properties']['sense']['properties']
-        self.assertIn('roman', sense['definition']['required'])
-        self.assertIn('roman', sense['examples']['items']['required'])
-        self.assertIn('roman', sense['ipas']['items']['required'])
+        self.assertNotIn('roman', sense['definition']['properties'])  # roman do server sinh (utils/ai/romanize.py)
+        self.assertNotIn('roman', sense['examples']['items']['properties'])
+        self.assertNotIn('roman', sense['ipas']['items']['properties'])
         self.assertNotIn('roman', sense_gate.PROPOSE_SCHEMA['properties']['sense']['properties']['definition']['properties'])
 
     def test_guest_needs_an_account_unless_allowed(self):

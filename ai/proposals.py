@@ -63,7 +63,7 @@ def proposal_review(result, text, user_language_code):
 def create_proposed_sense(user, word, result, text, user_language_code):
     """Tạo nghĩa từ kết quả cổng. decision official -> chính thức; admin_review -> riêng của tác giả, chờ duyệt."""
     claude = result['claude']
-    built = sense_gate.assemble_sense(word.language_code, user_language_code, claude['sense'], claude['sense']['translation'], claude['sense']['metadata'])
+    built = sense_gate.assemble_sense(word.language_code, user_language_code, claude['sense'], claude['sense']['translation'], claude['sense']['metadata'], word_value=word.value)
     official = result['decision'] == 'official'
     with transaction.atomic():
         metadata = AISenseMetadata.objects.create(**clean_metadata(built['metadata']), created_by=user)

@@ -137,7 +137,7 @@ CONCEPT_EMBED_MODEL = os.getenv('CONCEPT_EMBED_MODEL', 'gemini-embedding-001')
 CONCEPT_EMBED_DIM = int(os.getenv('CONCEPT_EMBED_DIM', '0'))  # 0 = mặc định của model (3072, đã thử); đặt 768 để tiết kiệm (chưa thử)
 CONCEPT_MIN_COS = float(os.getenv('CONCEPT_MIN_COS', '0.70'))  # dưới ngưỡng này concept không được đưa cho judge
 # Model judge: flash chặt hơn flash-lite rõ rệt (phát lại 233 quyết định: đổi 41, hầu hết là nối sai / đáng ngờ của flash-lite), giá ~4 lần nhưng vẫn rẻ (~$0,0006 / quyết định)
-CONCEPT_JUDGE_MODEL = os.getenv('CONCEPT_JUDGE_MODEL', 'gemini-2.5-flash')
+CONCEPT_JUDGE_MODEL = os.getenv('CONCEPT_JUDGE_MODEL', 'gemini-3.5-flash-lite')
 CONCEPT_JUDGE_RUNS = int(os.getenv('CONCEPT_JUDGE_RUNS', '2'))  # chỉ nối khi mọi lần judge (đảo thứ tự ứng viên) chọn cùng một concept
 PIXABAY_API_KEY = os.getenv('PIXABAY_API_KEY', '').strip() # rỗng = tạo từ không lấy ảnh minh hoạ
 

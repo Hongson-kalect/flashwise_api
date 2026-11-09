@@ -7,9 +7,40 @@ WORD_SYSTEM_PROMPT = (
 )
 
 
-def render_word_prompt(word, language_code):
+REFERENCE_MAX_ENTRIES = 6
+REFERENCE_MAX_GLOSSES = 2
+REFERENCE_MAX_GLOSS_CHARS = 160
+
+
+def render_reference(reference):
+    """
+    Mục từ của từ điển khác (Wiktionary, qua file seed) làm GỢI Ý, chưa kiểm chứng: [{'pos', 'glosses': [...], 'tags': [...]}].
+    Cắt gọn để không phình prompt; rỗng / sai dạng thì trả '' (prompt chạy như cũ).
+    """
+    lines = []
+    for entry in (reference or [])[:REFERENCE_MAX_ENTRIES]:
+        if not isinstance(entry, dict):
+            continue
+        glosses = [str(g).strip()[:REFERENCE_MAX_GLOSS_CHARS] for g in (entry.get('glosses') or [])[:REFERENCE_MAX_GLOSSES] if str(g).strip()]
+        pos = str(entry.get('pos') or '').strip()[:20]
+        if not pos or not glosses:
+            continue
+        tags = [str(t)[:20] for t in (entry.get('tags') or [])[:4]]
+        lines.append(f"- {pos}: " + " | ".join(glosses) + (f" [{', '.join(tags)}]" if tags else ""))
+    return "\n".join(lines)
+
+
+def render_word_prompt(word, language_code, reference=None):
     """Prompt bước 1 cho Claude Haiku: quy tắc ngắn, dữ liệu trong thẻ XML. Cấu trúc JSON do schema (structured output) lo."""
     language_name = language_map.get(language_code, 'en')
+    reference_text = render_reference(reference)
+    reference_block = f"""
+
+<reference>
+{reference_text}
+</reference>""" if reference_text else ""
+    reference_rule = """
+- reference: entries from another dictionary, unverified: unordered, may list archaic, dialect, slang or wrong senses, and its wording is long and clumsy. Use it only to avoid missing a common meaning and to check that a part of speech really exists for this word. Write every definition yourself in simple words; never copy or lightly reword its text. Skip archaic, obsolete, dialect and rare senses even if it lists them. Where it disagrees with your own knowledge, trust yours.""" if reference_text else ""
 
     extra_rules = ""
     ipa_rule = "\n- ipas: IPA between slashes, e.g. /bæŋk/; for English label it US or UK (give both if they differ)."
@@ -18,10 +49,24 @@ def render_word_prompt(word, language_code):
         extra_rules = """
 <japanese>
 - level: JLPT N5-N1.
-- roman: Hepburn romaji of exactly that text.
-- ipas: one item per reading; label READING, value = the full hiragana reading, roman = its romaji.
-- Never put furigana or brackets inside any text.
+- ipas: one item per reading; label READING, value = the full hiragana reading for that sense.
+- Never put romaji, furigana or brackets inside any text (the server adds them).
 </japanese>"""
+    elif language_code == 'zh':
+        ipa_rule = ""
+        extra_rules = """
+<chinese>
+- level: HSK 1-6 (or CEFR A1-C2 if unsure).
+- ipas: exactly one item; label READING, value = pinyin with tone marks for THIS sense (syllables separated by spaces, e.g. "yín háng"), not IPA.
+- Never put pinyin or brackets inside any text (the server adds them).
+</chinese>"""
+    elif language_code == 'ko':
+        ipa_rule = ""
+        extra_rules = """
+<korean>
+- ipas: exactly one item; label READING, value = the headword in Hangul.
+- Never put romanization or brackets inside any text (the server adds them).
+</korean>"""
 
     return f"""Write the dictionary entry for the {language_name} word '{word}'.
 
@@ -34,8 +79,8 @@ def render_word_prompt(word, language_code):
 - usage: a short note on grammar patterns, prepositions / particles, collocations or register, e.g. "Usually plural; used with 'in'". About this sense only, never an example sentence. Only write what you are sure of: a wrong note is worse than none, so use "" if there is nothing useful.
 - examples: 1-2 natural sentences at the sense's level that show exactly this sense (not another one), each ONE sentence containing '{word}' or an inflected form. With two examples use a different form of '{word}' in each when it sounds natural (e.g. base form in one, -ing or past in the other); never force it. Never reuse an example in another sense.
 - level: CEFR A1-C2 (TOPIK1-6 for Korean).
-- register: ["neutral"] unless the sense is marked.{ipa_rule}
-</rules>{extra_rules}"""
+- register: ["neutral"] unless the sense is marked.{ipa_rule}{reference_rule}
+</rules>{extra_rules}{reference_block}"""
 
 
 def render_enhanced_prompt(word, language_code, senses):

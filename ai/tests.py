@@ -690,7 +690,7 @@ class PipelineTests(PipelineBase):
         def script(model):
             return stream_pieces(DRAFT)
 
-        with mock.patch('utils.ai.word_render.render_word_prompt', side_effect=lambda w, l: prompts.append(w) or w):
+        with mock.patch('utils.ai.word_render.render_word_prompt', side_effect=lambda w, l, reference=None: prompts.append(w) or w):
             self.run_pipeline(script, self.keep_all())
         self.assertEqual(prompts, ['c++'])  # không bị cắt thành 'c'
         self.assertEqual(self.cache.cache_word_get_data('en', 'c++')['status'], 'CACHED')  # đúng key view đang chờ
@@ -785,7 +785,7 @@ class PipelineTests(PipelineBase):
         self.assertEqual((sense.pos, sense.level), ('noun', 'N5'))
         self.assertEqual(sense.ipas[0]['roman'], 'neko')
         definition = sense.contents['definition']['ja']
-        self.assertEqual(definition['roman'], 'chiisakute kawaii doubutsu.')
+        self.assertEqual(definition['roman'], 'chiisakute kawaii dōbutsu.')
         # Furigana do server sinh: bỏ markup đi phải ra đúng văn bản gốc
         self.assertEqual(re.sub(r'\[([^|\]]+)\|[^\]]+\]', r'\1', definition['ruby']), definition['value'])
         self.assertEqual(sense.contents['examples'][0]['ja']['ruby'], '[猫|ねこ]がいる。')
@@ -794,7 +794,7 @@ class PipelineTests(PipelineBase):
         self.assertIsNotNone(sense.metadata_id)
         self.assertNotIn('[猫|', self.refine_prompts[0])  # refine không thấy markup furigana
 
-    def test_japanese_refine_regenerates_ruby_and_drops_stale_romaji(self):
+    def test_japanese_refine_regenerates_ruby_and_romaji(self):
         self.prepare('猫', 'ja')
 
         def builder(ids):
@@ -805,7 +805,7 @@ class PipelineTests(PipelineBase):
         definition = sense.contents['definition']['ja']
         self.assertEqual(definition['value'], '小さい動物。')
         self.assertIn('|', definition['ruby'])
-        self.assertNotIn('roman', definition)  # AI refine chỉ trả văn bản nên romaji cũ của đoạn đã đổi không còn đúng
+        self.assertEqual(definition['roman'], 'chiisai dōbutsu.')  # AI refine chỉ trả văn bản: romaji sinh lại theo chữ mới
         example = sense.contents['examples'][0]['ja']
         self.assertEqual((example['roman'], example['ruby']), ('neko ga iru.', '[猫|ねこ]がいる。'))
 
@@ -867,13 +867,13 @@ class ClaudeSchemaTests(TestCase):
 
 
 class JapaneseSchemaTests(TestCase):
-    def test_schema_is_flat_like_latin_plus_roman(self):
+    def test_schema_is_flat_like_latin(self):
         props = complex_schema["properties"]
         self.assertNotIn("entries", props)
         sense = props["senses"]["items"]["properties"]
-        self.assertEqual(sorted(sense["definition"]["properties"]), ["roman", "value"])
-        self.assertEqual(sorted(sense["examples"]["items"]["properties"]), ["roman", "value"])
-        self.assertIn("roman", sense["ipas"]["items"]["properties"])
+        self.assertEqual(sorted(sense["definition"]["properties"]), ["value"])  # roman do server sinh, AI không viết
+        self.assertEqual(sorted(sense["examples"]["items"]["properties"]), ["value"])
+        self.assertNotIn("roman", sense["ipas"]["items"]["properties"])
         self.assertIn("pos", sense)  # pos / level / ipas nằm ở nghĩa như tiếng Latin, không còn chui vào metadata
 
     def test_latin_schema_is_not_modified(self):

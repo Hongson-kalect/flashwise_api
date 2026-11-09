@@ -7,6 +7,7 @@ thì tạo lại trên cùng bản ghi.
 
 Ví dụ: python manage.py seed_words fixtures/wordlists/en.txt --lang en --base-languages en,vi,ja,zh,ko,es,fr --rate 150
 """
+import json
 import time
 from pathlib import Path
 
@@ -44,6 +45,22 @@ def read_words(path):
     return words, invalid
 
 
+def read_references(path):
+    """File JSONL gợi ý (data/seed/<lang>/words_ref.jsonl của app): mỗi dòng {"w", "entries": [{pos, glosses, tags}]} -> {từ: entries}."""
+    refs = {}
+    for line in Path(path).read_text(encoding='utf-8-sig').splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        word = normalize_lookup(str(row.get('w') or ''))
+        if word and row.get('entries'):
+            refs.setdefault(word, row['entries'])
+    return refs
+
+
 def needs_generation(word_instance):
     """None = chưa có, tạo mới; True = FAILED / treo, tạo lại; False = đã xong hoặc đang tạo."""
     if word_instance is None:
@@ -72,6 +89,7 @@ class Command(BaseCommand):
         parser.add_argument('--max-queue', type=int, default=60, help='Hàng đợi dài hơn mức này thì chờ worker làm bớt')
         parser.add_argument('--offset', type=int, default=0, help='Bỏ qua N từ đầu file')
         parser.add_argument('--limit', type=int, default=0, help='Chỉ xử lý N từ (0 = hết file)')
+        parser.add_argument('--ref', help='File JSONL gợi ý từ nguồn ngoài (words_ref.jsonl): đưa vào prompt draft / refine làm tham chiếu chưa kiểm chứng')
         parser.add_argument('--user', help='username đứng tên các từ (mặc định superuser đầu tiên)')
         parser.add_argument('--with-images', action='store_true', help='Lấy ảnh Pixabay (mặc định tắt vì ~100 request/phút)')
         parser.add_argument('--dry-run', action='store_true', help='Chỉ đếm, không đẩy job')
@@ -91,6 +109,9 @@ class Command(BaseCommand):
         if user is None:
             raise CommandError('Không tìm thấy user đứng tên (tạo superuser hoặc truyền --user)')
 
+        if opts['ref'] and not Path(opts['ref']).is_file():
+            raise CommandError(f"Không thấy file {opts['ref']}")
+        refs = read_references(opts['ref']) if opts['ref'] else {}
         words, invalid = read_words(opts['path'])
         words = words[opts['offset']:]
         if opts['limit']:
@@ -100,6 +121,8 @@ class Command(BaseCommand):
         cache_manager = WordCacheManager()
         interval = 60 / opts['rate']
         stats = {'queued': 0, 'retried': 0, 'skipped': 0, 'joined': 0, 'error': 0, 'invalid': invalid}
+        if opts['ref']:
+            stats['with_ref'] = sum(1 for w in words if w in refs)
         extra = {'base_languages': base, 'no_image': not opts['with_images']}
 
         for index, word in enumerate(words, 1):
@@ -115,7 +138,8 @@ class Command(BaseCommand):
             if instance is not None:
                 cache_manager.cache_word_clear_specific(lang, word)  # cache PROCESSING / ERROR cũ của lần tạo hỏng
             try:
-                state, _ = start_word_generation(cache_manager, word, lang, base[0], lambda: user, existing=instance, extra=extra)
+                state, _ = start_word_generation(cache_manager, word, lang, base[0], lambda: user, existing=instance,
+                                                 extra={**extra, 'reference': refs[word]} if word in refs else extra)
             except GenerationError:
                 stats['error'] += 1
                 continue

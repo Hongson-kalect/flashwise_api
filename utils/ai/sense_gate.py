@@ -19,7 +19,7 @@ from google import genai
 from google.genai import types
 
 from utils.ai import claude
-from utils.ai.japanese import add_ruby
+from utils.ai.romanize import add_readings, reading_ipas
 
 VERDICTS = ('accept', 'duplicate', 'reject', 'uncertain')
 
@@ -320,8 +320,8 @@ async def finish_gemini(word, language_code, sense, model=None, timeout=40):
     }
 
 
-def assemble_sense(language_code, user_language_code, sense, translation, finish):
-    """Ghép kết quả thành dạng `contents` + `metadata` như nghĩa trong DB (xem AISenseSerializer). Tiếng Nhật: thêm roman + ruby (fugashi)."""
+def assemble_sense(language_code, user_language_code, sense, translation, finish, word_value=None):
+    """Ghép kết quả thành dạng `contents` + `metadata` như nghĩa trong DB (xem AISenseSerializer). Tiếng Nhật / Trung / Hàn: thêm roman (+ ruby cho tiếng Nhật) bằng thuật toán, không nhờ AI."""
     def text(lang, value, roman=None):
         node = {'value': value}
         if roman:
@@ -344,10 +344,10 @@ def assemble_sense(language_code, user_language_code, sense, translation, finish
         contents['usage'] = text(language_code, sense['usage']['value'], sense['usage'].get('roman'))
         if translate and translation['usage'].strip():
             contents['usage'].update(text(user_language_code, translation['usage']))
-    if is_japanese(language_code):
-        add_ruby(contents, language_code)  # furigana [漢字|かんじ], không tốn AI
+    add_readings(contents, language_code)  # roman (ja / zh / ko) và furigana [漢字|かんじ] (ja), không tốn AI
+    ipas = reading_ipas(word_value, language_code, sense['ipas']) if word_value else sense['ipas']
     return {
-        'pos': sense['pos'], 'level': sense['level'], 'register': sense['register'], 'ipas': sense['ipas'],
+        'pos': sense['pos'], 'level': sense['level'], 'register': sense['register'], 'ipas': ipas,
         'is_offensive': sense['is_offensive'], 'contents': contents,
         'metadata': {
             'tags': finish['tags'], 'image_keywords': finish['image_keywords'],
@@ -398,26 +398,15 @@ def romanization_of(language_code):
 
 
 def _japanese_sense_item():
-    """Ngôn ngữ cần phiên âm (ja, zh, ko): như _SENSE_ITEM + roman cho từng đoạn và cách đọc; furigana (ruby) do server sinh bằng fugashi."""
-    item = copy.deepcopy(_SENSE_ITEM)
-    props = item['properties']
-    roman = {'type': 'STRING', 'description': 'Romanization of exactly this text'}
-    props['definition']['properties']['roman'] = dict(roman)
-    props['definition']['required'].append('roman')
-    props['usage']['properties']['roman'] = dict(roman)  # usage có thể rỗng nên không bắt buộc
-    props['examples']['items']['properties']['roman'] = dict(roman)
-    props['examples']['items']['required'].append('roman')
-    props['ipas']['items']['properties']['roman'] = dict(roman)
-    props['ipas']['items']['required'].append('roman')
-    return item
+    """Ngôn ngữ cần phiên âm (ja, zh, ko): giống _SENSE_ITEM; roman và furigana do server sinh (utils/ai/romanize.py), AI không viết."""
+    return copy.deepcopy(_SENSE_ITEM)
 
 
 def roman_rules(language_code):
-    system = romanization_of(language_code)
+    reading = {'ja': 'hiragana', 'zh': 'pinyin with tone marks', 'ko': 'Hangul'}.get((language_code or '').split('-')[0].lower(), 'its own script')
     rules = (
-        f"\n\nGive `roman` ({system}) for exactly the text of the definition, usage and each example. ipas: exactly one item with label \"READING\", "
-        f"value = the headword's reading in its own script for THIS sense, and roman = the same reading in {system}. "
-        "Do not add ruby, furigana or brackets to the text itself."
+        f"\n\nipas: exactly one item with label \"READING\", value = the headword's reading for THIS sense in {reading}. "
+        "Do not add romanization, ruby, furigana or brackets to any text."
     )
     if is_japanese(language_code):
         rules += ' level: JLPT N5-N1.'

@@ -3,7 +3,7 @@ from django.db import transaction
 from ai.models.AISense import AISense
 from ai.models.AISenseMetadata import AISenseMetadata
 from ai.validators import METADATA_FIELDS, clean_metadata
-from utils.ai.japanese import add_ruby
+from utils.ai.romanize import ROMAN_LANGS, add_readings
 from utils.redis.word_init import WordCacheManager
 from utils.utils.best_effort import best_effort
 from utils.utils.sense_handle import deep_merge
@@ -26,9 +26,9 @@ def _apply_sense_edit(user, sense, delta, raw_metadata=None, image=None, audio=N
         image = sense.image_preview
     if audio is None:
         audio = sense.audio  # None = giữ phát âm cũ, '' = bỏ (dùng audio của từ / giọng máy)
-    if sense.language_code == 'ja':
-        # Chữ Nhật vừa sửa không còn khớp furigana cũ: sinh lại ruby bằng fugashi (không tốn AI). Roman chỉ có khi client gửi kèm
-        add_ruby(delta, 'ja')
+    if sense.language_code in ROMAN_LANGS:
+        # Chữ vừa sửa không còn khớp furigana / roman cũ: sinh lại bằng thuật toán (ruby cho ja; roman cho ja, zh, ko), không tốn AI
+        add_readings(delta, sense.language_code)
     in_place = not sense.is_official and not sense.is_frozen and (user.is_staff or sense.created_by_id == user.id)
 
     with transaction.atomic():

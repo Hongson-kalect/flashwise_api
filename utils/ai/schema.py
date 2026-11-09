@@ -380,21 +380,10 @@ nonlatin_schema = {
 
 def _build_japanese_schema():
     """
-    Schema tiếng Nhật = schema phẳng của word_schema + roman (romaji) cho từng đoạn nội dung.
-    Cùng cấu trúc với tiếng Latin nên dịch / metadata / chuẩn hoá dùng chung; ruby (furigana) do server sinh bằng
-    fugashi (utils/ai/japanese.py) chứ không nhờ AI.
+    Schema tiếng Nhật = schema phẳng của word_schema. Roman (Hepburn) và ruby (furigana) do server sinh bằng fugashi
+    (utils/ai/romanize.py, utils/ai/japanese.py) chứ không nhờ AI.
     """
-    schema = copy.deepcopy(word_schema)
-    sense_props = schema["properties"]["senses"]["items"]["properties"]
-    roman = {"type": "STRING", "description": "Hepburn romaji of exactly this text"}
-
-    for key in ("definition", "examples"):
-        node = sense_props[key] if key == "definition" else sense_props[key]["items"]
-        node["properties"]["roman"] = dict(roman)
-        node["required"].append("roman")
-    sense_props["usage"]["properties"]["roman"] = dict(roman)  # usage có thể rỗng nên không bắt buộc
-    sense_props["ipas"]["items"]["properties"]["roman"] = dict(roman)
-    return schema
+    return copy.deepcopy(word_schema)
 
 
 complex_schema = _build_japanese_schema()

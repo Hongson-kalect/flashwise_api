@@ -19,7 +19,8 @@ from django.conf import settings
 
 from utils.ai import claude
 from utils.ai.constain import language_map
-from utils.ai.japanese import add_ruby
+from utils.ai.prompt import render_reference
+from utils.ai.romanize import ROMAN_LANGS, add_readings, reading_ipas
 from utils.utils import uuidv7
 from utils.ai import usage
 from utils.utils.best_effort import best_effort
@@ -111,7 +112,7 @@ REFINE_SYSTEM_PROMPT = (
 )
 
 
-def render_refine_prompt(word, language_code, senses):
+def render_refine_prompt(word, language_code, senses, reference=None):
     """Prompt cho Claude Haiku: dữ liệu trong thẻ XML, quy tắc ngắn có lý do (model làm theo tốt hơn khi biết vì sao)."""
     language_name = language_map.get(language_code, 'en')
     drafts = json.dumps([draft_view(s, language_code) for s in senses], ensure_ascii=False)
@@ -127,11 +128,20 @@ def render_refine_prompt(word, language_code, senses):
     else:
         ipa_check = "ipas: valid IPA between slashes, matching the word and its label."
 
+    reference_text = render_reference(reference)
+    reference_block = f"""
+
+<reference>
+{reference_text}
+</reference>""" if reference_text else ""
+    reference_check = """
+8. Reference: entries from another dictionary, unverified and unordered, only a second opinion. A draft sense or pos that neither your own knowledge nor the reference supports is probably invented: remove it. Do not copy the reference's wording, and do not fix a draft that is correct just because the reference words it differently.""" if reference_text else ""
+
     return f"""Review the draft senses of the {language_name} word '{word}'. All content is in {language_name}.
 
 <draft>
 {drafts}
-</draft>
+</draft>{reference_block}
 
 Change only what is wrong. Each change is re-translated into 10 languages, so leave correct text exactly as it is: do not reword, shorten or polish it.
 
@@ -142,7 +152,7 @@ Change only what is wrong. Each change is re-translated into 10 languages, so le
 4. usage: only a short note on grammar, prepositions / particles, collocations or register, about this sense only. If it holds an example sentence, is wrong, or describes another sense, rewrite it or return "" to delete it.
 5. examples: at most 2, natural and grammatical, each containing '{word}' or an inflected form and showing this sense, not another one. Replace an example that fits another sense.
 6. {ipa_check}
-{add_rule}
+{add_rule}{reference_check}
 </checks>
 
 <output>
@@ -213,6 +223,8 @@ def _apply_fix(sense, item, language_code):
             {'value': _clean(i.get('value'), 100), 'label': _clean(i.get('label'), 20)}
             for i in item['ipas'] if isinstance(i, dict) and _clean(i.get('value'), 100)
         ]
+        if ipas and language_code in ROMAN_LANGS:
+            ipas = reading_ipas(sense.get('word_value'), language_code, ipas) or ipas  # cách đọc + roman do server dựng
         if ipas and ipas != (sense.get('ipas') or []):
             sense['ipas'] = ipas
             fields.add('ipas')
@@ -223,8 +235,8 @@ def _apply_fix(sense, item, language_code):
 
     if not fields:
         return None
-    if language_code == 'ja' and ({'definition', 'usage', 'examples'} & fields):
-        add_ruby(contents, language_code)
+    if language_code in ROMAN_LANGS and ({'definition', 'usage', 'examples'} & fields):
+        add_readings(contents, language_code)
     return {'fields': fields, 'scope': scope, 'reason': _clean(item.get('reason'), 300)}
 
 
@@ -262,11 +274,12 @@ def _new_sense(item, template, language_code, existing):
         'pos': pos,
         'level': level if LEVEL_RE.match(level) else None,
         'register': register or ['neutral'],
-        'ipas': ipas or (template.get('ipas') or []),  # cùng từ nên phát âm giống các nghĩa có sẵn
+        'ipas': (reading_ipas(template.get('word_value'), language_code, ipas or template.get('ipas')) if language_code in ROMAN_LANGS
+                 else ipas or (template.get('ipas') or [])),  # cùng từ nên phát âm giống các nghĩa có sẵn
         'contents': contents,
     }
-    if language_code == 'ja':
-        add_ruby(contents, language_code)
+    if language_code in ROMAN_LANGS:
+        add_readings(contents, language_code)
     return sense
 
 

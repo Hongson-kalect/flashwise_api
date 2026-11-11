@@ -2,17 +2,24 @@
 Luồng seed hàng loạt theo step (ai/seedflow). Các lệnh con:
 
   make-step  --source <file> --dir <thư mục> --per-step N [--lang en] [--threshold 50]   tạo step_NNNN.jsonl kế tiếp
-  start      <run> --step-file <step.jsonl> --lang en --base-languages en,vi --mode batch|online
+  start      <run> --step-file <step.jsonl> --lang en --base-languages en,vi,zh,es,fr --mode batch|online
+             online = luồng thường (gọi AI ngay, để thử); batch = luồng batch (Claude + Gemini Batch giảm 50%, chỉ concept online, để seed lớn)
   run        <run> [--until stage] [--no-wait] [--poll 30]                                chạy các giai đoạn còn lại
+  export     <run> --dir D     ghi D/INSTRUCTIONS.md + D/<từ>.in.json cho agent ngoài (vd subagent Haiku) viết trọn dữ liệu từ (ai/seedflow/external.py)
+  import     <run> --dir D     đọc D/<từ>.out.json, kiểm schema, dựng nghĩa vào trạng thái run (CHƯA ghi DB; kiểm bằng `report` rồi `run` mới save)
+  export-verify  <run> --dir D [--redo]   agent ngoài kiểm bản dịch thay Haiku (đặt cờ để stage verify chờ); import-verify <run> --dir D nhận kết quả
+  export-concept <run> --dir D            agent ngoài judge concept thay Gemini (embedding vẫn gọi API); import-concept <run> --dir D nhận kết quả
   status     <run>
   report     <run>                                                                       từng từ: nghĩa, bản dịch, vấn đề
 
 Ví dụ:
   manage.py seed_flow make-step --source fixtures/wordlists/en_top1000_ref.jsonl --dir seed_runs/en_steps --per-step 20
-  manage.py seed_flow start step1 --step-file seed_runs/en_steps/step_0001.jsonl --lang en --base-languages en,vi --mode online
+  manage.py seed_flow start step1 --step-file seed_runs/en_steps/step_0001.jsonl --lang en --base-languages en,vi,zh,es,fr --mode online
   manage.py seed_flow run step1
 """
 import json
+
+from django.conf import settings
 
 from django.core.management.base import BaseCommand, CommandError
 
@@ -37,13 +44,43 @@ class Command(BaseCommand):
         p.add_argument('run')
         p.add_argument('--step-file', required=True)
         p.add_argument('--lang', default='en')
-        p.add_argument('--base-languages', default='en,vi')
-        p.add_argument('--mode', choices=['batch', 'online'], default='batch')
+        p.add_argument('--base-languages', default=','.join(settings.TRANSLATE_LANGUAGES))
+        p.add_argument('--mode', choices=['batch', 'online'], default='batch', help='online: luồng thường, mọi giai đoạn gọi ngay (thử); batch: luồng batch, chỉ concept online (seed lớn)')
         p = sub.add_parser('run')
         p.add_argument('run')
         p.add_argument('--until', choices=flow.STAGES)
         p.add_argument('--no-wait', action='store_true')
         p.add_argument('--poll', type=int, default=30)
+        p = sub.add_parser('pipeline')
+        p.add_argument('--runs', default='', help='Danh sách run đã start, cách nhau dấu phẩy (chạy lệch pha theo thứ tự)')
+        p.add_argument('--source', help='Hoặc: tự tạo step kế tiếp từ file nguồn (cùng --dir / --per-step / --steps / --prefix)')
+        p.add_argument('--dir')
+        p.add_argument('--per-step', type=int, default=1000)
+        p.add_argument('--steps', type=int, default=1, help='Số step tối đa sẽ tạo')
+        p.add_argument('--prefix', default='p')
+        p.add_argument('--lang', default='en')
+        p.add_argument('--base-languages', default=','.join(settings.TRANSLATE_LANGUAGES))
+        p.add_argument('--max-active', type=int, default=2)
+        p.add_argument('--admit-after', choices=flow.STAGES, default='draft', help='Chỉ nhận step kế khi mọi step đang chạy đã qua stage này')
+        p.add_argument('--poll', type=int, default=60)
+        p = sub.add_parser('concept-worker')
+        p.add_argument('--lang', required=True, help='Ngôn ngữ của nghĩa (mỗi ngôn ngữ một consumer)')
+        p.add_argument('--once', action='store_true', help='Xử lý hết hàng rồi thoát (mặc định chờ việc mới tới khi Ctrl+C)')
+        p.add_argument('--limit', type=int)
+        p.add_argument('--idle', type=int, default=5)
+        p.add_argument('--retry-failed', action='store_true', help='Đưa các nghĩa nối lỗi về cuối hàng trước khi chạy')
+        sub.add_parser('concept-status')
+        for name in ('export', 'import'):
+            p = sub.add_parser(name)
+            p.add_argument('run')
+            p.add_argument('--dir', required=True)
+        for name in ('export-verify', 'import-verify', 'export-concept', 'import-concept'):
+            p = sub.add_parser(name)
+            p.add_argument('run')
+            p.add_argument('--dir', required=True)
+            if name == 'export-verify':
+                p.add_argument('--redo', action='store_true', help='Kiểm lại cả nghĩa đã có verify_state')
+                p.add_argument('--no-flag', action='store_true', help='Không đặt cờ agent_verify (chỉ để đánh giá, không thay stage verify)')
         for name in ('status', 'report'):
             sub.add_parser(name).add_argument('run')
 
@@ -80,6 +117,107 @@ class Command(BaseCommand):
         if waiting:
             self.stdout.write(f'Đang chờ batch ở giai đoạn {waiting}; chạy lại lệnh run sau.')
 
+    def do_pipeline(self, o):
+        out = self.stdout.write
+        if o['runs']:
+            names = [n.strip() for n in o['runs'].split(',') if n.strip()]
+            queue = iter(names)
+
+            def next_run():
+                name = next(queue, None)
+                return self._run(name) if name else None
+        else:
+            if not o['source'] or not o['dir']:
+                raise CommandError('Cần --runs hoặc --source + --dir')
+            base = [c.strip() for c in o['base_languages'].split(',') if c.strip()]
+            made = {'n': 0}
+
+            def next_run():
+                if made['n'] >= o['steps']:
+                    return None
+                try:
+                    info = make_step_file(o['source'], o['dir'], o['per_step'], language_code=o['lang'])
+                except ValueError as e:
+                    out(f'pipeline: dừng tạo step: {e}')
+                    return None
+                made['n'] += 1
+                name = f"{o['prefix']}{info['step']:04d}"
+                existing = flow.Run(name)
+                if existing.state:
+                    return existing
+                return flow.Run.create(name, f"{o['dir']}/{info['file']}", o['lang'], base, 'batch')
+        result = flow.pipeline(next_run, max_active=o['max_active'], admit_after=o['admit_after'], poll_seconds=o['poll'], say=out)
+        out(f"Pipeline xong: {result}")
+
+    def do_concept_worker(self, o):
+        from utils.concept import queue
+        from utils.concept.linker import link_sense_id
+        lang = o['lang']
+        if o['retry_failed']:
+            self.stdout.write(f'Đưa lại {queue.requeue_failed(lang)} nghĩa lỗi vào hàng')
+        self.stdout.write(f'concept-worker {lang}: {queue.depth(lang)}')
+        try:
+            result = queue.consume(lang, link_sense_id, stop_when_empty=o['once'], idle_seconds=o['idle'], limit=o['limit'],
+                                   on_item=lambda sid, outcome, n: self.stdout.write(f'  {n}. {sid} {outcome}') if n % 20 == 0 else None)
+        except KeyboardInterrupt:
+            self.stdout.write('Dừng; nghĩa đang làm dở sẽ được trả về hàng ở lần chạy sau.')
+            return
+        per = round(result['seconds'] / result['processed'], 2) if result['processed'] else 0
+        self.stdout.write(f"Xong: {result['processed']} nghĩa trong {result['seconds']}s ({per}s / nghĩa) {result['outcomes']}")
+
+    def do_concept_status(self, o):
+        from utils.concept import queue
+        langs = queue.languages()
+        if not langs:
+            self.stdout.write('Không có hàng concept nào.')
+        for lang in langs:
+            self.stdout.write(f'{lang}: {queue.depth(lang)}')
+
+    def do_export(self, o):
+        from ai.seedflow import external
+        run = self._run(o['run'])
+        if run.state['stages'].get('prepare') != 'done':
+            raise CommandError('Chạy `run <run> --until prepare` trước (cần id từ)')
+        self.stdout.write(f"Đã ghi {external.export_words(run, o['dir'])} từ vào {o['dir']} (đọc INSTRUCTIONS.md trước)")
+
+    def do_import(self, o):
+        from ai.seedflow import external
+        run = self._run(o['run'])
+        report = external.import_words(run, o['dir'], flow.sanitize_senses, flow.missing_enrichment)
+        self.stdout.write(f"Nhập {len(report['imported'])} từ, từ chối {len(report['rejected'])}, chưa có file {len(report['missing'])}, sai {len(report['invalid'])}")
+        for word, error in report['invalid']:
+            self.stdout.write(f'  ! {word}: {error}')
+        if report['missing']:
+            self.stdout.write('  chưa có file ra: ' + ', '.join(report['missing']))
+        self.stdout.write('Chưa ghi DB. Kiểm bằng `seed_flow report`, rồi `seed_flow run <run>` để save → verify → ảnh → concept.')
+
+    def do_export_verify(self, o):
+        from ai.seedflow import external
+        run = self._run(o['run'])
+        n = external.export_verify(run, o['dir'], redo=o['redo'], set_flag=not o['no_flag'])
+        self.stdout.write(f"Đã ghi {n} từ cần kiểm vào {o['dir']} (<từ>.verify.in.json)")
+
+    def do_import_verify(self, o):
+        from ai.seedflow import external
+        report = external.import_verify(self._run(o['run']), o['dir'])
+        self.stdout.write(f"Nhập {report['ok']} từ, chưa có file {len(report['missing'])}, sai {len(report['invalid'])}")
+        for word, error in report['invalid']:
+            self.stdout.write(f'  ! {word}: {error}')
+        self.stdout.write('Chạy `seed_flow run <run>` để stage verify áp kết quả.')
+
+    def do_export_concept(self, o):
+        from ai.seedflow import external
+        n = external.export_concept(self._run(o['run']), o['dir'])
+        self.stdout.write(f"Đã ghi {n} nghĩa cần judge vào {o['dir']} (<từ>.concept.in.json); nghĩa không có ứng viên sẽ tự tạo concept mới")
+
+    def do_import_concept(self, o):
+        from ai.seedflow import external
+        report = external.import_concept(self._run(o['run']), o['dir'])
+        self.stdout.write(f"Nhập {report['ok']} quyết định, chưa có file {len(report['missing'])}, sai {len(report['invalid'])}")
+        for word, error in report['invalid']:
+            self.stdout.write(f'  ! {word}: {error}')
+        self.stdout.write('Chạy `seed_flow run <run>` để stage concept áp kết quả.')
+
     def do_status(self, o):
         run = self._run(o['run'])
         st = run.state
@@ -91,6 +229,14 @@ class Command(BaseCommand):
         self.stdout.write(f'Từ: {counts}')
         if st.get('batch_progress'):
             self.stdout.write(f"Batch: {st['batch_progress']}")
+        for stage, info in (st.get('gbatches') or {}).items():
+            if info.get('provider') == 'claude':
+                self.stdout.write(f"Claude batch {stage}: {info['batch_id']}, {info['requests']} request")
+            else:
+                self.stdout.write(f"Gemini batch {stage}: {len(info['jobs'])} job, {info['requests']} request")
+        for name in ('enrich_batch', 'briefs_batch', 'concept_judge'):
+            if st.get(name):
+                self.stdout.write(f"{name}: {st[name]}")
         total = 0.0
         for stage, u in st['usage'].items():
             total += u['usd']

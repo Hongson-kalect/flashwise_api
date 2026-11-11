@@ -36,23 +36,78 @@ def link_lock():
             cur.execute('SELECT pg_advisory_unlock(%s)', [LOCK_ID])
 
 
+class _Pool:
+    """
+    Ma trận embedding của mọi concept đang dùng, giữ trong RAM từng tiến trình (20k concept x 3072 chiều ~ 234 MB).
+    Mỗi lần nối chỉ hỏi DB các concept đổi từ lần trước (updated_at >= mốc) và so số lượng; số lượng lệch (gộp / xoá concept, bản ghi bị lỡ)
+    thì nạp lại toàn bộ. Ghi (tạo concept, trộn vector ở _attach) đều diễn ra trong link_lock nên tiến trình nào cũng thấy bản mới ở lần gọi sau.
+    """
+
+    def __init__(self):
+        self.reset([])
+
+    def reset(self, rows):
+        self.ids = [str(r['id']) for r in rows]
+        self.index = {cid: i for i, cid in enumerate(self.ids)}
+        self.n = len(self.ids)
+        dim = len(from_bytes(rows[0]['embedding'])) if rows else 0
+        self.mat = np.zeros((max(self.n, 16), dim), dtype=np.float32)
+        for i, r in enumerate(rows):
+            self.mat[i] = from_bytes(r['embedding'])
+        stamps = [r['updated_at'] for r in rows if r.get('updated_at')]
+        self.since = max(stamps) if stamps else None
+
+    def put(self, cid, vec):
+        i = self.index.get(cid)
+        if i is None:
+            if self.n >= len(self.mat):
+                grown = np.zeros((max(int(len(self.mat) * 1.5), 16), len(vec)), dtype=np.float32)
+                grown[:self.n] = self.mat[:self.n]
+                self.mat = grown
+            i = self.n
+            self.n += 1
+            self.ids.append(cid)
+            self.index[cid] = i
+        self.mat[i] = vec
+
+    @property
+    def matrix(self):
+        return self.mat[:self.n]
+
+
+_POOL = _Pool()
+
+
+def _active_concepts():
+    return Concept.objects.filter(merged_into__isnull=True, is_deleted=False).exclude(embedding=None)
+
+
 def _load_pool():
-    rows = list(Concept.objects.filter(merged_into__isnull=True, is_deleted=False).exclude(embedding=None)
-                .values('id', 'label', 'description_en', 'status', 'pos_class', 'embedding'))
-    if not rows:
-        return [], np.zeros((0, 0), dtype=np.float32)
-    return rows, np.vstack([from_bytes(r['embedding']) for r in rows])
+    pool = _POOL
+    qs = _active_concepts()
+    if pool.n and pool.since is not None:
+        changed = list(qs.filter(updated_at__gte=pool.since).values('id', 'embedding', 'updated_at'))
+        for r in changed:
+            pool.put(str(r['id']), from_bytes(r['embedding']))
+        stamps = [r['updated_at'] for r in changed if r['updated_at']]
+        if stamps:
+            pool.since = max(pool.since, max(stamps))
+        if qs.count() == pool.n:
+            return pool
+    pool.reset(list(qs.values('id', 'embedding', 'updated_at')))
+    return pool
 
 
-def _candidates(sense, vec, rows, mat):
-    if not rows:
+def _candidates(sense, vec, pool):
+    if not pool.n:
         return [], []
     same_word = {str(c) for c in AISense.objects.filter(word_id=sense.word_id, concept__isnull=False).values_list('concept_id', flat=True)}
-    sims = mat @ vec
-    index = {str(r['id']): i for i, r in enumerate(rows)}
+    sims = pool.matrix @ vec
+    index = pool.index
     picked = {}
-    for i in np.argsort(-sims)[:MAX_CANDIDATES]:
-        cid = str(rows[i]['id'])
+    top_idx = np.argpartition(-sims, min(MAX_CANDIDATES, len(sims) - 1))[:MAX_CANDIDATES] if len(sims) > MAX_CANDIDATES else np.arange(len(sims))
+    for i in top_idx[np.argsort(-sims[top_idx])]:
+        cid = pool.ids[i]
         if sims[i] >= settings.CONCEPT_MIN_COS and cid not in same_word:
             picked[cid] = float(sims[i])
     for g in text.gloss_words(sense):  # concept của nghĩa tiếng Anh có headword đúng bằng gloss
@@ -61,10 +116,12 @@ def _candidates(sense, vec, rows, mat):
             if cid in index and cid not in same_word and cid not in picked and sims[index[cid]] >= HEADWORD_MIN_COS:
                 picked[cid] = float(sims[index[cid]])
     top = sorted(picked.items(), key=lambda kv: -kv[1])[:MAX_CANDIDATES]
+    meta = {str(r['id']): r for r in Concept.objects.filter(id__in=[cid for cid, _ in top]).values('id', 'label', 'description_en', 'pos_class')}
     out = []
     for cid, cos in top:
-        r = rows[index[cid]]
-        out.append({'id': cid, 'label': r['label'], 'pos': r['pos_class'] or '', 'description': r['description_en'], 'cos': round(cos, 4)})
+        r = meta.get(cid)
+        if r:
+            out.append({'id': cid, 'label': r['label'], 'pos': r['pos_class'] or '', 'description': r['description_en'], 'cos': round(cos, 4)})
     return out, top
 
 
@@ -117,7 +174,7 @@ def _create(sense, vec, definition):
     return concept
 
 
-def link_sense(sense, judge_fn=None, embed_fn=None, force=False):
+def link_sense(sense, judge_fn=None, embed_fn=None, force=False, model_label=None):
     judge_fn = judge_fn or run_judge
     embed_fn = embed_fn or embed
     if sense.concept_id and not force:
@@ -128,8 +185,8 @@ def link_sense(sense, judge_fn=None, embed_fn=None, force=False):
         return {'sense_id': str(sense.id), 'outcome': 'skipped', 'concept_id': None}
     vec = embed_fn([text.embed_text(sense)])[0]
     with link_lock():
-        rows, mat = _load_pool()
-        cands, top = _candidates(sense, vec, rows, mat)
+        pool = _load_pool()
+        cands, top = _candidates(sense, vec, pool)
         verdict = judge_fn({'head': text.head(sense), 'pos': sense.pos or '', 'definition': definition}, cands) if cands else {'concept_id': None, 'near': [], 'runs': [], 'agree': True}
         target = Concept.objects.filter(id=verdict['concept_id']).first() if verdict['concept_id'] else None
         if target:
@@ -140,9 +197,17 @@ def link_sense(sense, judge_fn=None, embed_fn=None, force=False):
             outcome = 'ambiguous_split' if not verdict['agree'] else ('created_gap' if concept.status == Concept.LEXICAL_GAP else 'created')
         best = cands[0]['cos'] if cands else None
         ConceptDecision.objects.create(sense=sense, concept=concept, outcome=outcome, cos=best, candidates=cands, runs=verdict['runs'], near=verdict['near'],
-                                       model=model_name())
+                                       model=model_label or model_name())
     changed = share_image(sense, concept)
     return {'sense_id': str(sense.id), 'outcome': outcome, 'concept_id': str(concept.id), 'image_changed': changed}
+
+
+def link_sense_id(sense_id, **kwargs):
+    """Cho consumer của hàng đợi Redis: nghĩa đã bị xoá / thôi chính thức thì bỏ qua, đã có concept thì link_sense trả 'already'."""
+    sense = AISense.objects.filter(id=sense_id).first()
+    if sense is None or not sense.is_official:
+        return {'sense_id': str(sense_id), 'outcome': 'gone', 'concept_id': None}
+    return link_sense(sense, **kwargs)
 
 
 def link_word(word_id, **kwargs):

@@ -23,6 +23,11 @@ ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 
 # Ngôn ngữ dịch sẵn cho mọi từ mới, cộng ngôn ngữ của người đang chờ từ đó. Ngôn ngữ khác dịch khi có người cần (get-word đẩy vào redis_trans);
 # lô seed truyền thêm 'base_languages' trong job để dịch nhiều ngôn ngữ cùng lúc
+# Ngôn ngữ dịch sẵn của mỗi nghĩa (luồng seed và dịch mặc định): 5 ngôn ngữ phổ biến nhất; ngôn ngữ khác dịch lười khi có người cần
+SEED_VERIFY_OK_MIN_SCORE = int(os.getenv('SEED_VERIFY_OK_MIN_SCORE', '80'))  # "ok" của Haiku có điểm thấp hơn thì coi là chưa chắc (flagged)
+SEED_VERIFY_FIX_MIN_SCORE = int(os.getenv('SEED_VERIFY_FIX_MIN_SCORE', '60'))  # bản sửa có điểm thấp hơn thì không áp dụng, chỉ gắn cờ
+SEED_VERIFY_ENABLED =os.getenv('SEED_VERIFY_ENABLED', 'true').lower() in ('1', 'true', 'yes')  # seed_flow có bước verify: Claude Haiku kiểm chéo bản dịch của Gemini
+TRANSLATE_LANGUAGES = [m.strip() for m in os.getenv('TRANSLATE_LANGUAGES', 'en,vi,zh,es,fr').split(',') if m.strip()]
 BASE_LANGUAGE = [m.strip() for m in os.getenv('BASE_LANGUAGE', 'en').split(',') if m.strip()]
 
 MEDIA_URL = '/upload/'  # hoặc '/media/' nếu bạn thích
@@ -137,7 +142,9 @@ CONCEPT_EMBED_MODEL = os.getenv('CONCEPT_EMBED_MODEL', 'gemini-embedding-001')
 CONCEPT_EMBED_DIM = int(os.getenv('CONCEPT_EMBED_DIM', '0'))  # 0 = mặc định của model (3072, đã thử); đặt 768 để tiết kiệm (chưa thử)
 CONCEPT_MIN_COS = float(os.getenv('CONCEPT_MIN_COS', '0.70'))  # dưới ngưỡng này concept không được đưa cho judge
 # Model judge: flash chặt hơn flash-lite rõ rệt (phát lại 233 quyết định: đổi 41, hầu hết là nối sai / đáng ngờ của flash-lite), giá ~4 lần nhưng vẫn rẻ (~$0,0006 / quyết định)
+CONCEPT_JUDGE_PROVIDER = os.getenv('CONCEPT_JUDGE_PROVIDER', 'gemini').strip().lower()  # 'gemini' | 'claude' (Haiku, AI_REFINE_MODELS[0])
 CONCEPT_JUDGE_MODEL = os.getenv('CONCEPT_JUDGE_MODEL', 'gemini-3.5-flash-lite')
+CONCEPT_JUDGE_EARLY_EXIT = os.getenv('CONCEPT_JUDGE_EARLY_EXIT', 'true').lower() in ('1', 'true', 'yes')  # lần judge đầu chọn "không" thì bỏ các lần sau (nối cần mọi lần đồng ý)
 CONCEPT_JUDGE_RUNS = int(os.getenv('CONCEPT_JUDGE_RUNS', '2'))  # chỉ nối khi mọi lần judge (đảo thứ tự ứng viên) chọn cùng một concept
 PIXABAY_API_KEY = os.getenv('PIXABAY_API_KEY', '').strip() # rỗng = tạo từ không lấy ảnh minh hoạ
 
@@ -172,6 +179,14 @@ AI_REFINE_MODELS = _env_list('AI_REFINE_MODELS', 'claude-haiku-5-5')
 AI_REFINE_EFFORT = os.getenv('AI_REFINE_EFFORT', 'low')
 # Nội dung nghĩa, dịch, metadata: Gemini flash-lite (lặp tên model = gọi lại khi 503)
 GEMINI_API_MODEL = _env_list('GEMINI_API_MODEL', 'gemini-2.5-flash-lite,gemini-2.5-flash-lite')
+# Dịch nghĩa (định nghĩa, ví dụ, bản dịch): 3.1 Flash-Lite + pos cho kết quả tốt nhất ở bench 20 từ; model sau là dự phòng khi lỗi / quá hạn
+GEMINI_TRANSLATE_MODEL = _env_list('GEMINI_TRANSLATE_MODEL', 'gemini-3.1-flash-lite,gemini-2.5-flash-lite')
+# Luồng seed batch: ai viết bản dịch, metadata và brief ảnh. 'gemini' = Gemini Batch (flash-lite); 'claude' = Claude Message Batches (AI_REFINE_MODELS[0], Haiku).
+# Embedding concept luôn là Gemini; judge concept chọn riêng bằng CONCEPT_JUDGE_PROVIDER.
+SEED_ENRICH_PROVIDER = os.getenv('SEED_ENRICH_PROVIDER', 'gemini').strip().lower()
+# Stage concept của luồng seed: true = chỉ đẩy id nghĩa vào hàng Redis `concept_arr:<lang>` rồi đi tiếp (consumer `seed_flow concept-worker` nối sau);
+# false = nối tuần tự ngay trong stage như cũ.
+SEED_CONCEPT_QUEUE = os.getenv('SEED_CONCEPT_QUEUE', 'false').lower() in ('1', 'true', 'yes')
 
 # --- Tạo từ bằng AI theo 2 bước: draft (stream cho người tra đầu tiên) -> refine (kiểm tra / chuẩn hoá, rồi mới ghi DB) ---
 AI_REFINE_ENABLED = os.getenv('AI_REFINE_ENABLED', 'True').lower() in ('1', 'true', 'yes')

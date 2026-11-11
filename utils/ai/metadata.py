@@ -1,6 +1,7 @@
 import json
 import asyncio
-from utils.ai import usage
+from utils.ai import usage, gemini_batch
+from utils.ai.lists import dedupe
 from google import genai
 from google.genai import types
 from flashcardApi import settings
@@ -17,6 +18,9 @@ from .prompt import render_enhanced_prompt
 from .schema import render_enhanced_schema
 
 from utils.ai.schema import render_translate_schema
+
+# Metadata của 3 nghĩa chỉ vài trăm token; trần thấp để cắt sớm khi gemini-2.5-flash-lite lặp vô hạn một từ (r232: 6/10 lệnh batch ra 8180 token toàn lặp rồi cụt JSON)
+METADATA_MAX_TOKENS = 3000
 
 # 2. Hàm chia nhóm Senses
 def chunk_dict(data, size=3):
@@ -44,11 +48,15 @@ async def process_metadata(chunk, word, language_code, mapping_table, socket_roo
             attempts += 1
             async with local_client.aio as client:
                 try:
+                    hooked = await gemini_batch.intercept('metadata', model, prompt, schema, max_tokens=METADATA_MAX_TOKENS)  # luồng batch: ghi / phát lại thay vì gọi online
+                    if hooked is not None:
+                        data = hooked
+                        break
                     response = await asyncio.wait_for(client.models.generate_content(
                         model=model, # Đã cập nhật bản lite mới nhất 2026
                         contents=prompt,
                         config=types.GenerateContentConfig(
-                            max_output_tokens=8192,
+                            max_output_tokens=METADATA_MAX_TOKENS,
                             response_mime_type="application/json",
                             response_schema=schema,
                             thinking_config=types.ThinkingConfig(thinking_budget=0)
@@ -77,8 +85,8 @@ async def process_metadata(chunk, word, language_code, mapping_table, socket_roo
             image_metadata = {}
             metadata_obj = {
                 'id': id,
-                'tags': s_metadata.pop('tags', []),
-                'image_keywords' : s_metadata.pop('image_keywords', []),
+                'tags': dedupe(s_metadata.pop('tags', [])),
+                'image_keywords' : dedupe(s_metadata.pop('image_keywords', [])),
                 'image_metadata': image_metadata,
             }
 
@@ -86,7 +94,7 @@ async def process_metadata(chunk, word, language_code, mapping_table, socket_roo
 
             for key, value in s_metadata.items():
                 if not value: continue
-                advanced[key] = value
+                advanced[key] = dedupe(value)
 
             metadata_obj['advanced'] = advanced
             

@@ -9,7 +9,7 @@ def render_translate_schema(word, word_lang, sense_object: dict, translate_lang:
         lang_props = {
             lang: {
                 "type": type
-            } if type == "STRING" else {"type": "ARRAY", "items": {"type": 'STRING'}} for lang in translate_lang
+            } if type == "STRING" else {"type": "ARRAY", "items": {"type": 'STRING'}, "maxItems": 5} for lang in translate_lang
         }
         return {
             "type": "OBJECT",
@@ -23,7 +23,7 @@ def render_translate_schema(word, word_lang, sense_object: dict, translate_lang:
         lang_props = {
             lang: {
                 "type": type
-            } if type == "STRING" else {"type": "ARRAY", "items": {"type": 'STRING'}} for lang in translate_lang
+            } if type == "STRING" else {"type": "ARRAY", "items": {"type": 'STRING'}, "maxItems": 5} for lang in translate_lang
         }
         return {
             "type": "OBJECT",
@@ -42,6 +42,9 @@ def render_translate_schema(word, word_lang, sense_object: dict, translate_lang:
         need_translate = True
         
         for key, item in sense.items():
+
+            if key == 'pos':
+                continue  # chỉ gửi kèm trong prompt để model biết từ loại, không dịch
 
             if key =='translations':
                 # item ở đây là định nghĩa của sense hiện tại
@@ -204,17 +207,21 @@ def render_enhanced_schema(sense_ids):
     sense_ids: List các ID hoặc Index từ Query 1 (ví dụ: ["sense_1", "sense_2"])
     """
     properties = {}
+    # maxItems chặn model nhỏ lặp vô hạn một từ trong danh sách mở (r232: 6/10 lệnh batch gemini-2.5-flash-lite ra 8180 token toàn lặp); prompt đã dặn tối đa 5 nhưng chỉ schema mới ép được
+    def items(limit):
+        return {"type": "ARRAY", "items": {"type": "STRING"}, "maxItems": limit}
+
     for s_id in sense_ids:
         properties[s_id] = {
             "type": "OBJECT",
             "properties": {
-                "collocations": {"type": "ARRAY", "items": {"type": "STRING"}},
-                "idioms": {"type": "ARRAY", "items": {"type": "STRING"}},
-                "relateds": {"type": "ARRAY", "items": {"type": "STRING"}},
-                "synonyms": {"type": "ARRAY", "items": {"type": "STRING"}},
-                "antonyms": {"type": "ARRAY", "items": {"type": "STRING"}},
-                "tags": {"type": "ARRAY", "items": {"type": "STRING"}},
-                "image_keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "collocations": items(5),
+                "idioms": items(5),
+                "relateds": items(5),
+                "synonyms": items(5),
+                "antonyms": items(5),
+                "tags": items(5),
+                "image_keywords": items(5),
             },
             "required": ["tags", "image_keywords"] # Ép AI không được bỏ sót
         }

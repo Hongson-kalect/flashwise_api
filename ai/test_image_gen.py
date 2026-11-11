@@ -374,26 +374,39 @@ class BriefTests(ImageGenBase):
         self.assertEqual((len(ask.calls), result['subject']), (2, 'soup ladle'))
         self.assertIn('unusable', ask.calls[1])
 
-    def test_still_unusable_falls_back_to_a_scene_from_the_definition(self):
+    def test_still_unusable_becomes_manual_instead_of_a_blank_fallback_picture(self):
         bad = {'image_kind': 'object', 'image_subject': 'graph envelope', 'image_prompt': 'A black line graph showing a curve.'}
         result = async_to_sync(brief.make_brief)('zzbriefgraph', 'noun', 'A boundary of limits.', ask=self.fake({'zzbriefgraph': bad}))
-        self.assertEqual(result['kind'], 'scene')
-        self.assertIn('zzbriefgraph', result['subject'])
-        self.assertTrue(len(result['prompt']) >= brief.MIN_PROMPT_CHARS and not brief.undrawable(result['subject'], result['prompt']))
+        self.assertEqual(result, {'kind': 'manual', 'subject': '', 'prompt': ''})
 
-    def test_fallback_drops_a_definition_that_mentions_charts(self):
-        result = brief.fallback_brief('envelope', 'noun', 'A boundary shown on a graph of limits.')
-        self.assertFalse(brief.undrawable(result['subject'], result['prompt']))
-        self.assertIn('envelope', result['prompt'])
+    def test_model_may_answer_manual_without_subject_or_prompt(self):
+        ask = self.fake({'zzbriefthe': {'image_kind': 'manual'}})
+        result = async_to_sync(brief.make_brief)('zzbriefthe', 'article', 'Used before a noun.', ask=ask)
+        self.assertEqual((result['kind'], result['subject'], result['prompt']), ('manual', '', ''))
+        self.assertEqual(len(ask.calls), 1)  # manual hợp lệ: không hỏi lại
 
-    def test_none_empty_or_generic_answers_never_leave_a_sense_without_brief(self):
+    def test_no_readable_answer_returns_none_so_it_is_retried_later(self):
+        async def ask(text):
+            return 'not json'
+        self.assertIsNone(async_to_sync(brief.make_brief)('zzbriefnet', 'noun', 'A net.', ask=ask))
+
+    def test_subject_that_does_not_match_the_prompt_is_rejected(self):
+        wrong = {'image_kind': 'scene', 'image_subject': 'inkwell', 'image_prompt': 'A fairytale house with tall towers and a wide moat around it.'}
+        self.assertFalse(brief.consistent('inkwell', wrong['image_prompt']))
+        self.assertTrue(brief.consistent('theatrical masks', 'Two classic theatre masks, one smiling and one frowning.'))
+        self.assertTrue(brief.consistent('person feeling sad', 'A round-faced cartoon person with a tear.'))
+        result = async_to_sync(brief.make_brief)('zzbriefink', 'adverb', 'In a strict way.', ask=self.fake({'zzbriefink': wrong}))
+        self.assertEqual(result['kind'], 'manual')
+
+    def test_none_abstract_or_empty_answers_become_manual_and_generic_subjects_are_replaced(self):
         for answer in ({'image_kind': 'none', 'image_subject': '', 'image_prompt': ''},
-                       {'image_kind': 'abstract', 'image_subject': 'idea', 'image_prompt': 'x'},
-                       {'image_kind': 'scene', 'image_subject': 'idea', 'image_prompt': 'A stick-figure person standing next to a bright light bulb.'}):
+                       {'image_kind': 'abstract', 'image_subject': 'idea', 'image_prompt': 'x'}):
             result = async_to_sync(brief.make_brief)('zzbriefhope', 'noun', 'A feeling of expectation.', ask=self.fake({'zzbriefhope': answer}))
-            self.assertIn(result['kind'], ('object', 'action', 'scene'))
-            self.assertTrue(result['subject'] and result['prompt'])
-            self.assertNotEqual(result['subject'], 'idea')
+            self.assertEqual(result['kind'], 'manual')
+        generic = {'image_kind': 'scene', 'image_subject': 'idea', 'image_prompt': 'A stick-figure person standing next to a bright light bulb.'}
+        result = async_to_sync(brief.make_brief)('zzbriefhope', 'noun', 'A feeling of expectation.', ask=self.fake({'zzbriefhope': generic}))
+        self.assertEqual(result['kind'], 'scene')
+        self.assertNotEqual(result['subject'], 'idea')
 
 
     # --- danh sách cấm đã nới: chỉ chặn khi brief ĐÒI VẼ chữ / biểu đồ ---
@@ -452,6 +465,63 @@ class BriefTests(ImageGenBase):
         self.assertEqual(brief.reusable_briefs(drafts, polished, 'en', strict=True), {})
         repos = [{'id': 'a', 'pos': 'verb', 'contents': {'definition': {'en': 'Rough text.'}}}]
         self.assertEqual(brief.reusable_briefs(drafts, repos, 'en', strict=False), {})
+
+
+class BatchedBriefTests(SimpleTestCase):
+    """Gộp nhiều nghĩa của một từ vào một lệnh (make_briefs)."""
+    OK = {'image_kind': 'object', 'image_subject': 'Soup Ladle', 'image_prompt': 'A metal soup ladle with a deep round bowl and a long handle.'}
+    ITEMS = [{'key': k, 'pos': 'noun', 'definition': f'meaning {k}', 'example': ''} for k in ('a', 'b', 'c')]
+
+    def test_all_senses_in_one_call(self):
+        calls = []
+
+        async def ask_batch(text):
+            calls.append(text)
+            return json.dumps({'briefs': [{'n': i, **self.OK} for i in (1, 2, 3)]})
+
+        out = async_to_sync(brief.make_briefs)('zzbatch', self.ITEMS, ask_batch=ask_batch)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(set(out), {'a', 'b', 'c'})
+        self.assertIn('1. (noun) meaning a', calls[0])
+        self.assertIn('3. (noun) meaning c', calls[0])
+
+    def test_missing_or_bad_item_is_asked_again_alone(self):
+        singles = []
+
+        async def ask_batch(text):
+            return json.dumps({'briefs': [{'n': 1, **self.OK}, {'n': 2, 'image_kind': 'object', 'image_subject': 'x', 'image_prompt': 'a chart with labels'}]})
+
+        async def ask(text):
+            singles.append(text)
+            return json.dumps(self.OK)
+
+        out = async_to_sync(brief.make_briefs)('zzbatch', self.ITEMS, ask_batch=ask_batch, ask=ask)
+        self.assertEqual(set(out), {'a', 'b', 'c'})
+        self.assertEqual(len(singles), 2)  # b (vẽ biểu đồ) và c (thiếu trong kết quả)
+        self.assertTrue(all('meaning b' in t or 'meaning c' in t for t in singles))
+
+    def test_failed_batch_falls_back_to_single_calls(self):
+        async def ask_batch(text):
+            raise RuntimeError('boom')
+
+        async def ask(text):
+            return json.dumps(self.OK)
+
+        out = async_to_sync(brief.make_briefs)('zzbatch', self.ITEMS, ask_batch=ask_batch, ask=ask)
+        self.assertEqual(set(out), {'a', 'b', 'c'})
+
+    def test_more_than_batch_size_is_split(self):
+        calls = []
+        items = [{'key': str(i), 'pos': 'noun', 'definition': f'm{i}', 'example': ''} for i in range(10)]
+
+        async def ask_batch(text):
+            calls.append(text)
+            count = len(text.splitlines()) - 2
+            return json.dumps({'briefs': [{'n': i, **self.OK} for i in range(1, count + 1)]})
+
+        out = async_to_sync(brief.make_briefs)('zzbatch', items, ask_batch=ask_batch)
+        self.assertEqual(len(calls), 2)  # 8 + 2
+        self.assertEqual(len(out), 10)
 
 
 class BackfillTests(ImageGenBase):
@@ -585,6 +655,9 @@ class UsageCounterTests(SimpleTestCase):
     def setUp(self):
         from utils.ai import usage
         self.usage = usage
+        patcher = mock.patch.object(usage, 'HASH', 'ai_usage_test')  # không đụng bộ đếm thật (trước đây test xoá số đo của run đang chạy)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         usage.reset()
         self.addCleanup(usage.reset)
 

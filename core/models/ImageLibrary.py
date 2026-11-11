@@ -72,6 +72,9 @@ class ImageContext(models.Model):
     contributor = models.ForeignKey('auth.User', on_delete=models.SET_NULL, null=True, blank=True) 
     
     created_at = models.DateTimeField(auto_now_add=True)
+    # Ảnh của một chủ thể dùng chung cho mọi nghĩa / concept trỏ tới nó: verify = người đã xem ảnh khớp nghĩa, ai_verify = model thị giác đồng ý (chưa có bước kiểm tự động)
+    verify = models.JSONField(default=list, blank=True)     # ['*'] = người đã xem ảnh khớp nghĩa
+    ai_verify = models.JSONField(default=list, blank=True)  # ['*'] = model thị giác đồng ý
 
     class Meta:
         # Một ảnh không nên có 2 bản ghi cùng 1 description trùng lặp

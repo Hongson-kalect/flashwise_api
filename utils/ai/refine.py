@@ -143,7 +143,7 @@ def render_refine_prompt(word, language_code, senses, reference=None):
 {drafts}
 </draft>{reference_block}
 
-Change only what is wrong. Each change is re-translated into 10 languages, so leave correct text exactly as it is: do not reword, shorten or polish it.
+Change only what is wrong. Each change is re-translated into several languages, so leave correct text exactly as it is: do not reword, shorten or polish it.
 
 <checks>
 1. Meaning: the definition is accurate for its pos and is a real meaning of '{word}'. Remove invented or wrong senses. If a sense blends two unrelated meanings, fix it to the more common one.

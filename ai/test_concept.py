@@ -191,7 +191,7 @@ class JudgeTests(SimpleTestCase):
         def ask(prompt):
             seen.append(prompt)
             # lần 1 thứ tự A,B -> chọn 1 (A); lần 2 thứ tự B,A -> chọn 2 (A)
-            return {'choice': 1 if len(seen) == 1 else 2, 'near': [], 'why': ''}
+            return {'choice': 1 if len(seen) == 1 else 2, 'near': []}
         with mock.patch.object(judge_module, '_ask', side_effect=ask):
             r = judge_module.judge({'head': 'x', 'pos': 'n', 'definition': 'd'}, self.cands(), runs=2)
         self.assertEqual((r['concept_id'], r['agree']), ('A', True))
@@ -199,17 +199,83 @@ class JudgeTests(SimpleTestCase):
         self.assertLess(seen[1].index('1. b'), seen[1].index('2. a'))
 
     def test_disagreement_returns_no_concept_and_reports_near(self):
-        answers = iter([{'choice': 1, 'near': [], 'why': ''}, {'choice': 1, 'near': [], 'why': ''}])  # lần 2 đảo: 1 = B
+        answers = iter([{'choice': 1, 'near': []}, {'choice': 1, 'near': []}])  # lần 2 đảo: 1 = B
         with mock.patch.object(judge_module, '_ask', side_effect=lambda p: next(answers)):
             r = judge_module.judge({'head': 'x', 'pos': 'n', 'definition': 'd'}, self.cands(), runs=2)
         self.assertEqual((r['concept_id'], r['agree']), (None, False))
         self.assertEqual(set(r['near']), {'A', 'B'})
+
+    def test_first_run_none_skips_second_run_but_keeps_near(self):
+        calls = []
+
+        def ask(prompt):
+            calls.append(prompt)
+            return {'choice': 0, 'near': [2]}
+        with mock.patch.object(judge_module, '_ask', side_effect=ask):
+            r = judge_module.judge({'head': 'x', 'pos': 'n', 'definition': 'd'}, self.cands(), runs=2)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual((r['concept_id'], r['agree'], r['near']), (None, True, ['B']))
+
+    @override_settings(CONCEPT_JUDGE_EARLY_EXIT=False)
+    def test_early_exit_can_be_turned_off(self):
+        calls = []
+        with mock.patch.object(judge_module, '_ask', side_effect=lambda p: calls.append(p) or {'choice': 0, 'near': []}):
+            judge_module.judge({'head': 'x', 'pos': 'n', 'definition': 'd'}, self.cands(), runs=2)
+        self.assertEqual(len(calls), 2)
+
+    def test_first_run_choice_still_gets_second_run(self):
+        calls = []
+        with mock.patch.object(judge_module, '_ask', side_effect=lambda p: calls.append(p) or {'choice': 1, 'near': []}):
+            judge_module.judge({'head': 'x', 'pos': 'n', 'definition': 'd'}, self.cands(), runs=2)
+        self.assertEqual(len(calls), 2)
 
     def test_no_candidates_makes_no_call(self):
         with mock.patch.object(judge_module, '_ask') as ask:
             r = judge_module.judge({'head': 'x', 'pos': 'n', 'definition': 'd'}, [])
         ask.assert_not_called()
         self.assertEqual((r['concept_id'], r['agree']), (None, True))
+
+
+@override_settings(CONCEPT_MIN_COS=0.7)
+class PoolCacheTests(TestCase):
+    """Ma trận embedding giữ trong RAM, cập nhật theo thay đổi ở DB."""
+
+    def link(self, sense, mapping=None):
+        return linker.link_sense(sense, judge_fn=judge_picks(mapping or {}), embed_fn=fake_embed)
+
+    def setUp(self):
+        linker._POOL.reset([])
+
+    def test_new_concept_and_attached_vector_show_up_without_full_reload(self):
+        self.link(make_sense('apple', 'en', 'A round fruit.'))
+        pool = linker._load_pool()
+        self.assertEqual(pool.n, 1)
+        before = pool.matrix[0].copy()
+        with mock.patch.object(linker._POOL, 'reset', wraps=linker._POOL.reset) as reset:
+            self.link(make_sense('manzana', 'es', 'A round fruit.', gloss=['manzana']), {'manzana': 'apple'})  # nối: trộn vector
+            self.link(make_sense('bank', 'en', 'Money place.'))  # concept mới
+            pool = linker._load_pool()
+            reset.assert_not_called()
+        self.assertEqual(pool.n, 2)
+        self.assertFalse(np.allclose(before, pool.matrix[pool.index[str(Concept.objects.get(label='apple').id)]]))  # vector đã trộn với manzana
+
+    def test_merge_or_delete_triggers_full_reload(self):
+        self.link(make_sense('apple', 'en', 'A round fruit.'))
+        self.link(make_sense('bank', 'en', 'Money place.'))
+        self.assertEqual(linker._load_pool().n, 2)
+        Concept.objects.filter(label='bank').update(is_deleted=True)
+        self.assertEqual(linker._load_pool().n, 1)
+
+    def test_matches_a_fresh_load_after_many_additions(self):
+        for name in ('apple', 'bank', 'huge', 'hello', 'sobremesa'):
+            self.link(make_sense(name, 'en', f'{name} definition.'))
+            linker._load_pool()
+        cached = linker._POOL
+        fresh = linker._Pool()
+        fresh.reset(list(Concept.objects.filter(is_deleted=False).values('id', 'embedding', 'updated_at')))
+        self.assertEqual(set(cached.ids), set(fresh.ids))
+        for cid in fresh.ids:
+            self.assertTrue(np.allclose(cached.matrix[cached.index[cid]], fresh.matrix[fresh.index[cid]]))
 
 
 class TextTests(SimpleTestCase):

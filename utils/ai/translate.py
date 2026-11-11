@@ -1,6 +1,7 @@
 import json
 import asyncio
-from utils.ai import usage
+from utils.ai import usage, gemini_batch
+from utils.ai.lists import dedupe
 from google import genai
 from google.genai import types
 from flashcardApi import settings
@@ -39,6 +40,12 @@ def get_minified_schema(sense_ids, langs):
         "required": list(sense_props.keys())
     }
 
+def thinking_off(model):
+    """Tắt suy nghĩ: 2.5 dùng thinking_budget=0; 3.x trả 400 với budget=0 nên dùng thinkingLevel=minimal (SDK 1.47 chưa có trường này, đi qua extra_body)."""
+    if str(model).startswith('gemini-2.5'):
+        return {'thinking_config': types.ThinkingConfig(thinking_budget=0)}
+    return {'http_options': types.HttpOptions(extra_body={'generationConfig': {'thinkingConfig': {'thinkingLevel': 'minimal'}}})}
+
 # 2. Hàm chia nhóm Senses
 def chunk_dict(data, size=3):
     it = iter(data.items())
@@ -65,10 +72,11 @@ Content (JSON, keys are sense ids):
 Rules:
 - definition, usage, examples: translate faithfully and naturally, keeping this sense's meaning. Do not explain or add anything.
 - translations: for each language, 1-5 words a bilingual dictionary lists for '{word}' in THIS sense (the one its definition describes), most common first. Single words or short phrases only; never a sentence, the definition, or a word for another meaning.
+- pos is the part of speech of the sense: every translation item must be of that part of speech (a verb sense gets verbs, a noun sense gets nouns).
 - Fill every language code the schema asks for."""
 
 
-        models = settings.GEMINI_API_MODEL
+        models = settings.GEMINI_TRANSLATE_MODEL
         attempts = 0
         while attempts < len(models):
             local_client = genai.Client(api_key=settings.GEMINI_API_KEY)
@@ -76,6 +84,10 @@ Rules:
             attempts += 1
             async with local_client.aio as client:
                 try:
+                    hooked = await gemini_batch.intercept('translate', model, prompt, schema)  # luồng batch: ghi / phát lại thay vì gọi online
+                    if hooked is not None:
+                        data = hooked
+                        break
                     response = await asyncio.wait_for(client.models.generate_content(
                         model=model, # Đã cập nhật bản lite mới nhất 2026
                         contents=prompt,
@@ -83,7 +95,7 @@ Rules:
                             max_output_tokens=8192,
                             response_mime_type="application/json",
                             response_schema=schema,
-                            thinking_config=types.ThinkingConfig(thinking_budget=0)
+                            **thinking_off(model)
                         )
                     ), timeout=settings.AI_GEMINI_TIMEOUT)
                     usage.record_gemini('translate', response)
@@ -130,7 +142,7 @@ Rules:
 
                 if key == 'translations':
                     current_trans = merge_content.get('translations', {})
-                    merge_content['translations'] = {**current_trans, **content}
+                    merge_content['translations'] = {**current_trans, **{l: dedupe(v) for l, v in content.items()}}
 
                     continue
                 #     merge_content[key] = {
@@ -253,6 +265,9 @@ async def ai_create_translate_sema(props, translate_base_language=True):
             
             # Xử lý Examples bên trong Sense
             temp_sense={}
+            pos = (mapping_sense.get(s_uuid) or {}).get('pos')
+            if pos:
+                temp_sense['pos'] = pos  # đứng đầu để model đọc từ loại trước định nghĩa
             temp_examples = {}
             for e_idx, (e_uuid, e_val) in enumerate(s_data.get('examples', {}).items(), 1):
                 e_key = f"e{s_idx}_{e_idx}" # Ví dụ: e1_1, e1_2
@@ -362,7 +377,7 @@ async def render_translate(
             "examples": temp_examples
         }
 
-    base_lang = ['en','zh','es','fr','ar','ja','ko','de','pt','vi'] # Sau còn cần kiểm tra xem đã dịch những ngôn ngữ nào nữa...
+    base_lang = list(settings.TRANSLATE_LANGUAGES)
 
     # B1: Gộp 2 list và chuyển thành set để lọc trùng
     merged_set = set(user_language_code + base_lang)

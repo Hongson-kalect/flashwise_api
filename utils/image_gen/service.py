@@ -149,8 +149,11 @@ BACKFILL_COOLDOWN = 600  # giây: tra lại 1 từ chưa đủ ảnh thì cách 
 
 
 def _needs_image(sense):
-    """Nghĩa còn đáng xếp vẽ: mọi nghĩa đều cần 1 ảnh (kể cả từ ngữ pháp, nghĩa trừu tượng: brief vẽ cảnh người que theo câu ví dụ)."""
-    return not sense.image_preview
+    """Nghĩa còn đáng xếp vẽ: chưa có ảnh và brief không đánh dấu `manual` (không có tranh phù hợp, chờ ảnh thêm tay)."""
+    if sense.image_preview:
+        return False
+    meta = sense.metadata.image_metadata if sense.metadata_id and sense.metadata else None
+    return (meta or {}).get('kind') != 'manual'
 
 
 def request_missing_images(word_id, payload=None):

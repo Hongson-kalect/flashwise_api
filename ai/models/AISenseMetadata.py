@@ -11,6 +11,8 @@ class AISenseMetadata(BaseModel):
     tags = models.JSONField(default=list, blank=True)
     image_keywords = models.JSONField(null=True, blank=True, default=list)
     image_metadata = models.JSONField(default=dict, null=True, blank=True)  # {width, height, size, format}
+    verify = models.JSONField(default=list, blank=True)     # ['*'] = người đã kiểm synonyms / collocations / tags / brief ảnh (['*'] = cả dòng, không theo ngôn ngữ)
+    ai_verify = models.JSONField(default=list, blank=True)  # ['*'] = model thứ hai đồng ý (chưa có bước kiểm tự động cho bảng này)
 
     class Meta:
         db_table = "sense_metadata"

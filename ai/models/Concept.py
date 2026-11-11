@@ -20,6 +20,8 @@ class Concept(BaseModel):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=PROVISIONAL, db_index=True)
     pos_class = models.CharField(max_length=20, blank=True, default='')
     merged_into = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='merged_from')
+    verify = models.JSONField(default=list, blank=True)     # ['*'] = người đã kiểm các nghĩa trong concept thật sự giống hệt nhau
+    ai_verify = models.JSONField(default=list, blank=True)  # ['*'] = model thứ hai đồng ý (chưa có bước kiểm tự động cho bảng này)
 
     def __str__(self):
         return f'{self.label} [{self.status}]'

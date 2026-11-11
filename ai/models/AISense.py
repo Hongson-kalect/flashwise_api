@@ -36,6 +36,11 @@ class AISense(BaseModel):
         ('flagged', 'Flagged'),   # Bị report hoặc vote xấu, cần xem lại
     ]
     quality_status = models.CharField(max_length=20, choices=QUALITY_CHOICES, default='draft', db_index=True)
+    # Xác nhận dữ liệu đúng: verify = người (admin / thuê) đã kiểm; ai_verify = model THỨ HAI (khác nhà sinh) đồng ý, nghĩa là 2 nhà cùng đồng ý.
+    # ai_verify chỉ True khi model kiểm trả "ổn"; model kiểm sửa lại thì áp bản sửa và ai_verify = False (chờ người kiểm).
+    verify = models.JSONField(default=list, blank=True)  # mã ngôn ngữ đã được NGƯỜI kiểm (gồm cả ngôn ngữ nguồn); AI không bao giờ sửa trường này
+    ai_verify = models.JSONField(default=list, blank=True)  # mã ngôn ngữ mà model thứ hai đồng ý (state ok, điểm đủ cao); rỗng nếu bản gốc bị báo sense_issue
+    verify_state = models.JSONField(default=dict, blank=True)  # chi tiết từng ngôn ngữ: {vi: {state: ok|fixed|flagged, ai_verify, model, at, changes: [...]}}, _issues: vấn đề ở bản gốc
     ai_pass = models.SmallIntegerField(default=1) # Số lần AI đã xử lý nội dung này
     ai_model = models.CharField(max_length=100, blank=True, null=True) # Model của lần xử lý cuối, vd: gemini-2.5-flash
     ai_review = models.JSONField(default=dict, blank=True) # Lần 2 trả về: các chỗ đã sửa, lý do, điểm tự đánh giá

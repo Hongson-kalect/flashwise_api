@@ -238,3 +238,21 @@ class SanitizeTests(SimpleTestCase):
         self.assertEqual(c['translations']['es'], [{'value': 'que'}])
         self.assertEqual(fixed['foreign_translation'], 3)
         self.assertGreaterEqual(fixed['zero_width'], 2)
+
+
+class DedupeTests(SimpleTestCase):
+    def test_dedupe_helper_keeps_order_drops_duplicates_and_caps(self):
+        from utils.ai.lists import dedupe
+        self.assertEqual(dedupe(['a', 'A ', 'b', '', 'b', 'c', 'd', 'e', 'f']), ['a', 'b', 'c', 'd', 'e'])
+        self.assertEqual(dedupe([{'value': 'x'}, {'value': 'X'}, {'value': 'y'}]), [{'value': 'x'}, {'value': 'y'}])
+        self.assertEqual(dedupe(None), None)
+
+    def test_sanitize_dedupes_translations_and_metadata_lists(self):
+        sense = {'contents': {'translations': {'vi': ['mèo', 'Mèo', 'con mèo'], 'zh': ['猫', '猫']}},
+                 'metadata': {'tags': ['pet', 'pet'], 'image_keywords': ['cat'] * 3, 'advanced': {'synonyms': ['kitty', 'Kitty', 'puss'], 'idioms': []}}}
+        fixed = flow.sanitize_senses([sense], 'en')
+        self.assertEqual(sense['contents']['translations'], {'vi': ['mèo', 'con mèo'], 'zh': ['猫']})
+        self.assertEqual(sense['metadata']['tags'], ['pet'])
+        self.assertEqual(sense['metadata']['image_keywords'], ['cat'])
+        self.assertEqual(sense['metadata']['advanced']['synonyms'], ['kitty', 'puss'])
+        self.assertEqual(fixed['duplicate_items'], 1 + 1 + 1 + 2 + 1)

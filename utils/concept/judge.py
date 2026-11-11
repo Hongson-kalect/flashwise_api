@@ -25,10 +25,12 @@ SYSTEM = (
 )
 SCHEMA = {
     "type": "OBJECT",
-    "properties": {"choice": {"type": "INTEGER"}, "near": {"type": "ARRAY", "items": {"type": "INTEGER"}}, "why": {"type": "STRING"}},
-    "required": ["choice", "near", "why"],
+    "properties": {"choice": {"type": "INTEGER"}, "near": {"type": "ARRAY", "items": {"type": "INTEGER"}}},
+    "required": ["choice", "near"],
 }
 _client = None
+_claude = None
+LAST_USAGE = (0, 0)
 
 
 def _get_client():
@@ -39,10 +41,37 @@ def _get_client():
 
 
 def model_name():
+    if getattr(settings, 'CONCEPT_JUDGE_PROVIDER', 'gemini') == 'claude':
+        return settings.AI_REFINE_MODELS[0]
     return getattr(settings, 'CONCEPT_JUDGE_MODEL', '') or settings.GEMINI_API_MODEL[0]
 
 
+def _ask_claude(prompt):
+    """Haiku (Anthropic sync client) trả cùng dạng JSON; tắt thinking, effort thấp."""
+    from anthropic import Anthropic
+    from utils.ai import claude
+    global _claude
+    if _claude is None:
+        _claude = Anthropic(api_key=settings.ANTHROPIC_API_KEY, max_retries=2)
+    resp = _claude.messages.create(
+        model=settings.AI_REFINE_MODELS[0], max_tokens=200, system=SYSTEM,
+        messages=[{'role': 'user', 'content': prompt}], thinking={'type': 'disabled'},
+        output_config=claude.output_config(copy.deepcopy(SCHEMA), effort='low'))
+    usage.record_claude('concept_judge', resp)
+    return json.loads(next(b.text for b in resp.content if b.type == 'text'))
+
+
 def _ask(prompt):
+    if getattr(settings, 'CONCEPT_JUDGE_PROVIDER', 'gemini') == 'claude':
+        last = None
+        for attempt in range(4):
+            try:
+                return _ask_claude(prompt)
+            except Exception as e:
+                last = e
+                logger.warning('Judge concept (Claude) lỗi (lần %s): %s', attempt + 1, e)
+                time.sleep(1.5 * (attempt + 1))
+        raise last
     last = None
     for attempt in range(4):
         try:
@@ -82,7 +111,9 @@ def judge(sense_info, candidates, runs=None):
         ch = data.get('choice') or 0
         chosen = shown[ch - 1]['id'] if 1 <= ch <= len(shown) else None
         near = [shown[n - 1]['id'] for n in (data.get('near') or []) if 1 <= n <= len(shown) and n != ch]
-        results.append({'chosen': chosen, 'near': near, 'why': (data.get('why') or '')[:200]})
+        results.append({'chosen': chosen, 'near': near})
+        if chosen is None and getattr(settings, 'CONCEPT_JUDGE_EARLY_EXIT', True):
+            break  # lần 1 đã bảo "không": nối cần mọi lần cùng chọn nên không cần chạy tiếp (near của lần này vẫn giữ)
     chosen = {r['chosen'] for r in results}
     agree = len(chosen) == 1
     near = []

@@ -145,8 +145,14 @@ class SenseApiTests(APITestCase):
         payload.update(body)
         return self.client.post('/api/ai-senses/create-sense/', payload, format='json')
 
-    def test_create_sense_validates_input(self):
+    def test_create_sense_is_admin_only(self):
+        self.assertEqual(self.create().status_code, 401)  # chưa đăng nhập
         self.login(self.alice)
+        self.assertEqual(self.create().status_code, 403)  # người dùng thường: dùng propose, không thêm nghĩa tự do
+        self.assertEqual(AISense.objects.count(), 0)
+
+    def test_create_sense_validates_input(self):
+        self.login(self.admin)
         self.assertEqual(self.create(word_id='nope').status_code, 400)
         self.assertEqual(self.create(user_lang='x;y').status_code, 400)
         self.assertEqual(self.create(contents={'definition': {'vi': {'value': 'chỉ có tiếng Việt'}}}).status_code, 400)
@@ -156,7 +162,7 @@ class SenseApiTests(APITestCase):
 
     def test_create_sense_cannot_forge_ids_or_owner(self):
         victim = AISenseMetadata.objects.create(tags=['original'])
-        self.login(self.alice)
+        self.login(self.admin)
         res = self.create(metadata={'id': str(victim.id), 'created_by': self.bob.id, 'tags': ['mine']})
         self.assertEqual(res.status_code, 206)
 
@@ -164,12 +170,12 @@ class SenseApiTests(APITestCase):
         self.assertEqual(victim.tags, ['original'])  # trước đây AISenseMetadata(**metadata).save() ghi đè metadata của nghĩa khác
         sense = AISense.objects.get(id=res.data['data']['id'])
         self.assertNotEqual(sense.metadata_id, victim.id)
-        self.assertEqual((sense.created_by_id, sense.metadata.created_by_id), (self.alice.id, self.alice.id))
+        self.assertEqual((sense.created_by_id, sense.metadata.created_by_id), (self.admin.id, self.admin.id))
         self.assertEqual(sense.metadata.tags, ['mine'])
         self.assertFalse(sense.is_official)
 
     def test_create_sense_stores_only_clean_contents_and_queues_missing(self):
-        self.login(self.alice)
+        self.login(self.admin)
         res = self.create(contents={'definition': {'en': {'value': 'A place for money.', 'evil': 1}}, 'junk': {'a': 1}})
         self.assertEqual(res.status_code, 206)
         sense = AISense.objects.get(id=res.data['data']['id'])

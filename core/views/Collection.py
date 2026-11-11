@@ -10,7 +10,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from ai.bulk import best_official_senses, clean_words, sort_words, start_words
+from ai.bulk import best_official_senses, clean_words, fold_forms, sort_words, start_words
 from ai.models import AISense, AIWord
 from ai.queries import visible_senses
 from ai.validators import is_lang, is_uuid
@@ -288,6 +288,7 @@ class CollectionViewSet(SoftDeleteViewSet):
             return _bad_request("No valid words")
         if len(cleaned) > settings.BULK_MAX_WORDS_PER_REQUEST:
             return _bad_request("At most %s words per request" % settings.BULK_MAX_WORDS_PER_REQUEST)
+        cleaned, form_of = fold_forms(cleaned, language_code)  # dạng chia -> từ gốc (killed -> kill); bộ chứa nghĩa của từ gốc
 
         found, invalid, pending, to_start, existing = sort_words(cleaned, language_code)
         # Mỗi từ mới tốn tiền nên tính vào hạn mức theo ngày
@@ -307,6 +308,6 @@ class CollectionViewSet(SoftDeleteViewSet):
         start_words(user, to_start, existing, language_code, user_language_code, collection_id=collection.id)
 
         return Response(
-            {"user_collection": user_collection.id, **CollectionBasicSerializer(collection).data, "pending_words": pending, "invalid_words": invalid},
+            {"user_collection": user_collection.id, **CollectionBasicSerializer(collection).data, "pending_words": pending, "invalid_words": invalid, "form_of": form_of},
             status=status.HTTP_201_CREATED,
         )

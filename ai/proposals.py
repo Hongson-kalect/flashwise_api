@@ -6,6 +6,7 @@ Nghĩa được tạo với is_frozen=True và ai_review['proposal'] ghi lại p
 """
 from django.db import transaction
 
+from ai.forms import refresh_forms
 from ai.models.AISense import AISense
 from ai.models.AISenseMetadata import AISenseMetadata
 from ai.validators import clean_contents, clean_metadata
@@ -76,4 +77,5 @@ def create_proposed_sense(user, word, result, text, user_language_code):
         )
     if official:
         best_effort(WordCacheManager().cache_word_clear_specific, word.language_code, word.value)
+        refresh_forms(word.id)  # nghĩa mới có thể thuộc loại từ mới (danh từ thêm nghĩa động từ): bổ sung dạng chia
     return sense

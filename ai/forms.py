@@ -2,15 +2,18 @@
 Bảng dạng biến cách (WordForm): dựng từ thư viện biến cách (utils/morph) và tra chuỗi gõ vào về từ gốc.
 
   build_forms(word)                 sinh bảng chia của 1 từ gốc cho từng loại từ của nghĩa chính thức (lặp lại an toàn)
-  forms_of(word_id)                 các dạng của 1 từ để trả cho app; chưa có thì dựng rồi trả
+  refresh_forms(word_id)            dựng / bổ sung bảng dạng chia khi nghĩa chính thức của từ đổi (tạo từ, thêm nghĩa, duyệt nghĩa); không bao giờ ném lỗi
+  forms_of(word_id)                 các dạng của 1 từ để trả cho app; chưa có thì dựng rồi trả (đường dự phòng, bảng thường đã dựng lúc tạo nghĩa)
   resolve_form(form, lang)          chuỗi đã chuẩn hoá -> các (từ gốc, loại từ, nhãn) mà nó là dạng biến cách; chưa có trong bảng thì
                                     nhờ thư viện nhận ra, chỉ ghi khi từ gốc đã có trong DB (dữ liệu đã kiểm chứng, không bao giờ ghi vì người dùng gõ)
+  guess_lemmas(form, lang)          dạng biến cách mà từ gốc CHƯA có trong DB: thư viện đoán từ gốc để app mở từ gốc (get-word tạo online) thay vì
+                                    tạo mục riêng cho dạng đó
 """
 from dataclasses import dataclass
 
 from ai.models import AISense, AIWord, WordForm
 from utils import morph
-from utils.utils.normalize import normalize_lookup
+from utils.utils.normalize import is_lookup_word, normalize_lookup
 
 MAX_CANDIDATES = 5
 
@@ -40,6 +43,21 @@ def build_forms(word):
     ]
     WordForm.objects.bulk_create(rows, ignore_conflicts=True)
     return len(rows)
+
+
+def refresh_forms(word_id):
+    """
+    Gọi sau khi nghĩa chính thức của từ được ghi (utils/ai/word_render.save_sense: seed và tạo online; ai/proposals: nghĩa người dùng đề xuất; promote),
+    để bảng WordForm có sẵn từ lần tra đầu (dạng của từ gốc nhận ra được, `also_form_of` hiện đúng) chứ không đợi ai mở trang từ. Chạy theo luật,
+    không tốn AI; lặp lại an toàn; lỗi chỉ ghi log vì việc chính (lưu nghĩa) đã xong.
+    """
+    import logging
+    try:
+        word = AIWord.objects.filter(id=word_id).first()
+        return build_forms(word) if word else 0
+    except Exception:
+        logging.getLogger(__name__).exception('Dựng bảng dạng chia cho từ %s lỗi', word_id)
+        return 0
 
 
 def forms_of(word):
@@ -72,6 +90,49 @@ def resolve_form(form, language_code, analyze=True):
             )
             found.append(Candidate(word, guess.pos or '', guess.tag))
     return list(dict.fromkeys(found))[:MAX_CANDIDATES]
+
+
+# Nhãn nhận dạng kém tin cậy (number -> so sánh của "numb", best -> good / well): không tự tạo từ gốc từ chúng, chỉ nhận khi từ gốc đã có sẵn
+UNRELIABLE_TAGS = ('adj.comparative', 'adj.superlative', 'adv.comparative', 'adv.superlative')
+
+
+@dataclass(frozen=True)
+class Guess:
+    lemma: str
+    pos: str
+    tag: str
+
+
+def guess_lemmas(form, language_code):
+    """
+    `form` (đã normalize_lookup) là dạng biến cách của từ gốc nào, kể cả từ gốc chưa có trong DB. Rỗng khi: ngôn ngữ không có bộ sinh dạng chia
+    đủ tin cậy (chỉ en, ru, uk), chuỗi không phải dạng chia, từ gốc là mục bị từ chối / cấm, hoặc nhãn kém tin cậy (so sánh, so sánh nhất).
+    """
+    if not morph.supports_paradigm(language_code):
+        return []
+    found = []
+    for guess in morph.analyze(form, language_code):
+        lemma = normalize_lookup(guess.lemma)
+        if not lemma or lemma == form or not is_lookup_word(lemma) or guess.tag in UNRELIABLE_TAGS:
+            continue
+        found.append(Guess(lemma, guess.pos or '', guess.tag))
+    found = list(dict.fromkeys(found))
+    if not found:
+        return []
+    blocked = set(
+        AIWord.objects.filter(language_code=language_code, value__in={g.lemma for g in found}, status__in=('REJECTED', 'BANNED'))
+        .values_list('value', flat=True)
+    )
+    return [g for g in found if g.lemma not in blocked][:MAX_CANDIDATES]
+
+
+def form_of_guess_payload(form, guesses):
+    """Như form_of_payload, cho từ gốc chưa có trong DB (chưa có AIWord): dùng khi get-word trả `redirect`."""
+    first = guesses[0]
+    return {
+        'form': form, 'lemma': first.lemma, 'pos': first.pos, 'tag': first.tag, 'own_entry': False,
+        'candidates': [{'lemma': g.lemma, 'pos': g.pos, 'tag': g.tag} for g in guesses],
+    }
 
 
 def form_of_payload(form, candidates, own_entry):

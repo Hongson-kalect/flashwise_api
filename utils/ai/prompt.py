@@ -73,6 +73,7 @@ def render_word_prompt(word, language_code, reference=None):
 <rules>
 - Validity: set should_be_saved to false and return no senses if '{word}' is a typo, gibberish, not a real {language_name} word or expression, OR an ordinary sentence or question that someone just wrote. Save only a single word, a compound, a phrasal verb or other fixed multi-word expression, an idiom, a proverb or saying, or a common set phrase that dictionaries list.
 - Senses: cover the meanings a learner dictionary (Oxford, Cambridge, Longman) lists for the word, most common first, each with its own pos. Include standard everyday and scientific meanings; skip rare, archaic, slang and idiom-only ones. One sense = one meaning: never merge two unrelated meanings, never split one into near-duplicates.
+- Inflected forms: never write a sense whose only meaning is 'plural / past tense / participle / -ing form / comparative of another word': those forms are generated elsewhere. If '{word}' is itself an inflected form of another word, write only the senses it has as a word of its own (for example 'saying' as a noun, 'killed' as an adjective).
 - Language: definition, usage and examples in {language_name}; pos, level and register in English.
 - pos: lowercase English term (noun, verb, adjective, adverb, ...). A noun used before another noun (kitchen table) stays a noun: no adjective sense for it.
 - definition: one clear sentence, in simpler words than '{word}'; never use '{word}' or its forms in it.

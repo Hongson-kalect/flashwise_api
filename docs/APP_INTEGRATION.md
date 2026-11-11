@@ -93,6 +93,7 @@ Kết quả `{detail, status, data}`:
 | HTTP | Ý nghĩa | `data` |
 |---|---|---|
 | 200 | Có đủ | từ + `senses` (object `{sense_id: nghĩa}`), nội dung chỉ ngôn ngữ gốc + `user_lang` |
+| 200, `detail: "FORM_OF"` | Chuỗi là dạng biến cách (`killed`, `ran`) của từ gốc CHƯA có trong DB (chỉ en / ru / uk; không nhận nhãn so sánh / so sánh nhất vì nhận nhầm kiểu `number` → `numb`) | `{redirect: từ gốc, form_of: {form, lemma, pos, tag, own_entry: false, candidates}}`, không có `senses`. App tra tiếp `redirect` (get-word của từ gốc tạo online như từ mới, đăng ký phòng socket của TỪ GỐC) và giữ `form_of` để hiện "là dạng … của …" + ví dụ riêng của dạng đã tra (`ai-senses/form-example`). Server không tạo mục riêng cho dạng chia. Từ gốc đã có thì get-word trả luôn từ gốc kèm `data.form_of` (không qua redirect) |
 | 206 | Có từ nhưng thiếu bản dịch sang `user_lang` | như 200; phần dịch thiếu về qua socket `PARTIAL_TRANSLATE` / lần tra sau |
 | 201 | Từ mới: vừa bắt đầu tạo bằng AI | `{id, value, language_code, senses}` → mở socket chờ |
 | 202 | Đang tạo (người khác khởi tạo) | trạng thái cache, có `stage`: `draft` / `refine` → mở socket chờ |
@@ -138,7 +139,7 @@ Từ khác:
 
 | API | Ghi chú |
 |---|---|
-| `POST ai-senses/create-sense/` | `{word_id, user_lang, contents, metadata: {}, audio?, image?}`; `contents.definition[ngôn ngữ của từ]` bắt buộc. 201, hoặc 206 khi đang dịch phần còn lại |
+| `POST ai-senses/create-sense/` | **Chỉ admin** (người dùng thường 403): người dùng đề xuất nghĩa mới qua `ai-senses/propose/`, không thêm tự do. `{word_id, user_lang, contents, metadata: {}, audio?, image?}`; `contents.definition[ngôn ngữ của từ]` bắt buộc. 201, hoặc 206 khi đang dịch phần còn lại |
 | `PUT ai-senses/update-sense/` | `{sense_id, user_lang, delta, metadata?, image?, audio?}`. Nghĩa chính thức / của người khác → tạo bản riêng mới (trả nghĩa mới, `original_id` = nghĩa gốc); nghĩa riêng của mình → sửa tại chỗ |
 | `DELETE ai-senses/{id}/` | Nghĩa riêng chưa phát hành (đã nằm trong bộ phát hành: 409) |
 | `POST/DELETE ai-senses/{id}/hide/` | Ẩn / hiện 1 nghĩa với riêng mình |

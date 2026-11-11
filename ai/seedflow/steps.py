@@ -3,7 +3,7 @@ Chia danh sách từ nguồn thành các "step": mỗi step là 1 file JSONL (st
 
 - word_source: file xếp theo độ thông dụng giảm dần. Nhận .jsonl (mỗi dòng {"w", "rank", "n_senses", "entries"} như words_ref.jsonl của
   flashwise/data/seed) hoặc .txt / .tsv (cột đầu là từ; dòng đầu "rank<TAB>word..." thì lấy cột `word`).
-- Từ nhiều nghĩa (Wiktionary >= multi_sense_threshold nghĩa) KHÔNG vào step: đưa sang multi_sense.jsonl để thêm sau bằng admin,
+- Từ nhiều nghĩa (Wiktionary >= multi_sense_threshold nghĩa, mặc định 40) KHÔNG vào step: đưa sang multi_sense.jsonl để thêm sau bằng admin,
   vì AI liệt kê hết sẽ tràn token ra (8192) hoặc đẻ nghĩa hiếm.
 - Từ đã có trong DB (xong / đang tạo / bị từ chối) bỏ qua; từ không phải mục từ bị bỏ.
 - manifest.json nhớ con trỏ (hạng nguồn đã duyệt) nên chạy step k+1 tiếp ngay sau step k; chạy lại step đã có thì trả lại file cũ.
@@ -11,7 +11,7 @@ Chia danh sách từ nguồn thành các "step": mỗi step là 1 file JSONL (st
 import json
 from pathlib import Path
 
-MULTI_SENSE_THRESHOLD = 50
+MULTI_SENSE_THRESHOLD = 40  # hạ từ 50 (2026-11-11): nhiều nghĩa Wiktionary là nghĩa hiếm; step đã tạo trước đó giữ nguyên
 DONE_STATUSES = ('COMPLETED', 'PROCESSING', 'REJECTED', 'BANNED')
 
 

@@ -348,7 +348,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
         (bộ chung không nhận từ chờ của người khác) mà trả trong `unavailable`.
         Body: words, user_lang.
         """
-        from ai.bulk import clean_words, sort_words, start_words
+        from ai.bulk import clean_words, fold_forms, sort_words, start_words
 
         user = request.user
         words, user_language_code = request.data.get('words'), request.data.get('user_lang')
@@ -364,6 +364,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
             return Response(status=status.HTTP_404_NOT_FOUND, data={"message": "Collection not found"})
         is_author = collection.created_by_id == user.id
 
+        cleaned, form_of = fold_forms(cleaned, collection.language_code)  # dạng chia -> từ gốc
         found, invalid, pending, to_start, existing = sort_words(cleaned, collection.language_code)
         if not is_author:
             to_start = []
@@ -385,9 +386,9 @@ class UserCollectionViewSet(SoftDeleteViewSet):
                 locked.save(update_fields=['pending_words', 'invalid_words', 'updated_at'])
 
         if not is_author:
-            return Response({"added": added, "pending_words": [], "invalid_words": [], "unavailable": [*invalid, *pending]})
+            return Response({"added": added, "pending_words": [], "invalid_words": [], "unavailable": [*invalid, *pending], "form_of": form_of})
         start_words(user, to_start, existing, collection.language_code, user_language_code, collection_id=collection.id)
-        return Response({"added": added, "pending_words": pending, "invalid_words": invalid, "unavailable": []})
+        return Response({"added": added, "pending_words": pending, "invalid_words": invalid, "unavailable": [], "form_of": form_of})
 
     @action(detail=True, methods=['post'], url_path='reorder')
     def reorder(self, request, pk=None):

@@ -2,8 +2,10 @@
 Tạo / kiểm tra từ hàng loạt. Là phần của từ điển (ai-words/bulk-create), bộ từ gọi lại các hàm này
 (collections/bulk-create, user-collections/{id}/add-words) và truyền thêm collection_id để từ tạo xong được thêm vào bộ.
 """
+from ai.forms import guess_lemmas, resolve_form
 from ai.generation import GenerationError, start_word_generation
 from ai.models import AISense, AIWord
+from utils import morph
 from utils.redis.client import get_queue_client
 from utils.redis.word_init import WordCacheManager
 from utils.utils.normalize import is_lookup_word, lookup_entry_problem, normalize_lookup
@@ -52,6 +54,40 @@ def sense_brief(sense, user_language_code):
 def clean_words(words):
     """Danh sách từ client gửi -> từ đã chuẩn hoá (giống get-word / worker, không bỏ ký tự), bỏ trùng, giữ thứ tự."""
     return list(dict.fromkeys(w for w in (normalize_lookup(w) for w in words if isinstance(w, str)) if is_lookup_word(w)))
+
+
+def fold_forms(words, language_code):
+    """
+    Dạng biến cách (killed, ran, books) chưa có mục riêng thì đổi thành từ gốc (kill, run, book): từ gốc đã có thì dùng nghĩa của nó, chưa có thì
+    tạo từ gốc, không tạo mục riêng cho dạng chia (cùng luật với get-word, ai/forms.py). Chuỗi đã có mục riêng (kể cả đang tạo / bị từ chối) giữ nguyên.
+    Chỉ ngôn ngữ có bộ sinh dạng chia đủ tin cậy (en, ru, uk). `words` đã qua clean_words.
+    Trả (từ sau khi đổi, bỏ trùng, giữ thứ tự; {dạng: từ gốc}).
+    """
+    if not words or not morph.supports_paradigm(language_code):
+        return list(words), {}
+    have = set(
+        AISense.objects.filter(language_code=language_code, word_value__in=words, is_official=True).exclude(is_deleted=True)
+        .values_list('word_value', flat=True)
+    ) | set(AIWord.objects.filter(language_code=language_code, value__in=words).exclude(is_deleted=True).values_list('value', flat=True))
+    form_of = {}
+    for word in words:
+        if word in have:
+            continue
+        candidates = resolve_form(word, language_code)
+        lemma = candidates[0].word.value if candidates else None
+        if lemma is None:
+            guesses = guess_lemmas(word, language_code)
+            lemma = guesses[0].lemma if guesses else None
+        if lemma and lemma != word:
+            form_of[word] = lemma
+    return list(dict.fromkeys(form_of.get(w, w) for w in words)), form_of
+
+
+def apply_form_of(results, form_of):
+    """Kết quả theo từ gốc (describe_words) -> thêm dòng cho dạng đã gõ: cùng trạng thái với từ gốc kèm `form_of`."""
+    for form, lemma in form_of.items():
+        results[form] = {**{k: v for k, v in results.get(lemma, {'status': 'unknown'}).items() if k != 'senses'}, 'form_of': lemma}
+    return results
 
 
 def sort_words(words, language_code):

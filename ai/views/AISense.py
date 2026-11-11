@@ -21,6 +21,7 @@ from ai.models.AISenseMetadata import AISenseMetadata
 from ai.models.AIWord import AIWord
 from ai.models import SenseFormExample
 from ai import form_examples
+from ai.forms import refresh_forms
 from ai.proposals import create_proposed_sense, duplicate_sense, existing_senses_of
 from ai.queries import not_pending_proposal_q, published_sense_ids, visible_sense_q
 from core.bundle import pick_languages
@@ -171,7 +172,7 @@ def clear_word_cache(sense):
 class AISenseViewSet(SoftDeleteViewSet):
     queryset = AISense.objects.select_related('metadata', 'original')
     serializer_class = AISenseSerializer
-    # CRUD trực tiếp lên sense hệ thống chỉ admin, user tạo / sửa sense custom qua create-sense / update-sense
+    # CRUD trực tiếp lên sense hệ thống chỉ admin; user đề xuất nghĩa mới qua propose (cổng AI), sửa nghĩa của mình qua update-sense; create-sense chỉ admin
     permission_classes = [IsAdminOrReadOnly]
 
     def get_permissions(self):
@@ -288,6 +289,7 @@ class AISenseViewSet(SoftDeleteViewSet):
             if sense.created_by_id and sense.created_by_id != request.user.id:
                 record(sense.created_by, 'sense_promoted', 'sense', sense.pk, by=request.user)
         clear_word_cache(sense)
+        refresh_forms(sense.word_id)
         return Response({'id': str(sense.id), 'is_official': True, 'replaced': replaced})
 
     @action(detail=False, methods=['get'], url_path='top')
@@ -658,9 +660,13 @@ class AISenseViewSet(SoftDeleteViewSet):
         data['contents'] = self._user_contents(sense, user_language_code)
         return Response(data)
 
-    @action(detail=False, methods=['post'], url_path='create-sense', permission_classes=[IsAuthenticated])
+    @action(detail=False, methods=['post'], url_path='create-sense', permission_classes=[IsAdminUser])
     def create_sense(self, request, *args, **kwargs):
-        # params: word_id, user_lang, contents{definition{<lang>{value}}, usage{}, examples[{}], translations{}}, metadata
+        """
+        Chỉ admin (dữ liệu mẫu, nhập tay): tạo nghĩa riêng không qua cổng AI. Người dùng KHÔNG thêm nghĩa tự do nữa: họ gửi đề xuất qua
+        ai-senses/propose, cổng AI quyết định official / pending / duplicate / rejected.
+        params: word_id, user_lang, contents{definition{<lang>{value}}, usage{}, examples[{}], translations{}}, metadata
+        """
         user = request.user
         word_id = request.data.get('word_id')
         user_language_code = request.data.get('user_lang')

@@ -448,6 +448,8 @@ def save_sense(sense_obj, word_id, replace_ids=(), word_ipas=None):
             AISense.objects.filter(id__in=list(replace_ids), word_id=word_id).update(is_official=False, updated_at=timezone.now())
         word_update = {'ipas': word_ipas} if word_ipas else {}  # không nghĩa nào có phát âm thì giữ cái đang có (admin / seeder đã nhập)
         AIWord.objects.filter(id=word_id).update(status='COMPLETED', updated_at=timezone.now(), **word_update)
+    from ai.forms import refresh_forms
+    refresh_forms(word_id)  # bảng dạng chia (ran, running của run) dựng ngay khi nghĩa được ghi, không đợi lúc trả từ cho người dùng
 
 async def ai_create_new_word(user, word_instance, language_code, user_language_code, socket_room):
     print('create new word')

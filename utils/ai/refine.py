@@ -146,7 +146,7 @@ def render_refine_prompt(word, language_code, senses, reference=None):
 Change only what is wrong. Each change is re-translated into several languages, so leave correct text exactly as it is: do not reword, shorten or polish it.
 
 <checks>
-1. Meaning: the definition is accurate for its pos and is a real meaning of '{word}'. Remove invented or wrong senses. If a sense blends two unrelated meanings, fix it to the more common one.
+1. Meaning: the definition is accurate for its pos and is a real meaning of '{word}'. Remove invented or wrong senses, and any sense whose only meaning is an inflected form of another word (plural, past tense, participle, -ing form, comparative: those forms are generated elsewhere). If a sense blends two unrelated meanings, fix it to the more common one.
 2. Duplicates: remove a sense with the same meaning and pos as another (keep the better one). Check again after your own fixes.
 3. Form: pos is a lowercase English term (noun, verb, adjective, ...; a noun used before another noun stays a noun); level is CEFR A1-C2 (JLPT N5-N1 for Japanese, TOPIK1-6 for Korean); definition is one clear sentence that does not use '{word}' itself.
 4. usage: only a short note on grammar, prepositions / particles, collocations or register, about this sense only. If it holds an example sentence, is wrong, or describes another sense, rewrite it or return "" to delete it.

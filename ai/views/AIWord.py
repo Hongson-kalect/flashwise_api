@@ -17,10 +17,10 @@ from ai.models.AISenseContent import AISenseContent
 from ai.models.AISenseMetadata import AISenseMetadata
 from ai.models.AIWord import AIWord
 from ai.models.TranslateLog import TranslateLog
-from ai.bulk import clean_words, describe_words, ranked_official_senses, sense_brief, sort_words, start_words
+from ai.bulk import apply_form_of, clean_words, describe_words, fold_forms, ranked_official_senses, sense_brief, sort_words, start_words
 from ai.generation import GenerationError, start_word_generation
 from ai.jobs import queue_translation
-from ai.forms import form_of_payload, forms_of, resolve_form
+from ai.forms import form_of_guess_payload, form_of_payload, forms_of, guess_lemmas, resolve_form
 from ai.models import WordForm
 from ai.queries import load_word, official_senses, personalize_word
 from ai.serializers.AIWord import AIWordSerializer
@@ -218,6 +218,7 @@ class AIWordViewSet(SoftDeleteViewSet):
 
         Thứ tự: cache Redis -> DB -> tạo mới bằng AI (draft rồi refine, xem utils/ai/word_render.py).
         200 đủ dữ liệu, 206 thiếu bản dịch (đang dịch bù), 201 vừa nhận việc tạo từ, 202 đang tạo,
+        200 với detail FORM_OF: chuỗi là dạng biến cách (ran, killed) của từ gốc chưa có trong DB, data = {redirect: từ gốc, form_of}: app tra tiếp từ gốc,
         404 từ không hợp lệ, 429 tạo từ mới quá nhiều, 500 lần tạo lỗi.
         """
         raw_word = request.GET.get('value')
@@ -256,6 +257,11 @@ class AIWordViewSet(SoftDeleteViewSet):
                 if isinstance(response.data.get('data'), dict):
                     response.data['data']['form_of'] = form_of_payload(word, candidates, own_entry=False)
                 return _personal(request, response)
+            # Dạng biến cách mà từ gốc chưa có trong DB: không tạo mục riêng cho dạng này; trả `redirect` để app tra từ gốc (get-word của từ gốc
+            # tạo online như mọi từ mới) và giữ `form_of` để hiện "là dạng ... của X" và ví dụ riêng của dạng đã tra
+            guesses = guess_lemmas(word, language_code)
+            if guesses:
+                return _word_response('FORM_OF', 200, {'redirect': guesses[0].lemma, 'form_of': form_of_guess_payload(word, guesses)})
 
         if word_instance is not None:
             state = word_instance.status
@@ -306,11 +312,13 @@ class AIWordViewSet(SoftDeleteViewSet):
         if len(words) > settings.BULK_MAX_WORDS_PER_REQUEST:
             return Response({'detail': 'At most %s words per request' % settings.BULK_MAX_WORDS_PER_REQUEST}, status=status.HTTP_400_BAD_REQUEST)
 
-        found, invalid, pending, to_start, existing = sort_words(clean_words(words), language_code)
+        folded, form_of = fold_forms(clean_words(words), language_code)  # dạng chia -> từ gốc (killed -> kill), không tạo mục riêng cho dạng chia
+        found, invalid, pending, to_start, existing = sort_words(folded, language_code)
         if to_start and not consume_daily_quota(request.user, 'bulk_words', len(to_start), settings.BULK_WORDS_PER_DAY):
             return Response({'detail': 'Daily new-word limit reached', 'errorCode': 'bulk_quota_exceeded'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
         started = start_words(request.user, to_start, existing, language_code, user_language_code)
-        return Response({'results': describe_words(words, language_code, found, invalid, pending, to_start, existing, started)})
+        results = describe_words([*words, *folded], language_code, found, invalid, pending, to_start, existing, started)
+        return Response({'results': apply_form_of(results, form_of)})
 
     @action(detail=False, methods=['post'], url_path='check', permission_classes=[IsAuthenticated])
     def check(self, request):
@@ -320,8 +328,9 @@ class AIWordViewSet(SoftDeleteViewSet):
             return Response({'detail': 'lang and words are required'}, status=status.HTTP_400_BAD_REQUEST)
         if len(words) > MAX_CHECK_WORDS:
             return Response({'detail': f'At most {MAX_CHECK_WORDS} words'}, status=status.HTTP_400_BAD_REQUEST)
-        found, invalid, pending, to_start, existing = sort_words(clean_words(words), language_code)
-        results = describe_words(words, language_code, found, invalid, pending, to_start, existing)
+        folded, form_of = fold_forms(clean_words(words), language_code)
+        found, invalid, pending, to_start, existing = sort_words(folded, language_code)
+        results = apply_form_of(describe_words([*words, *folded], language_code, found, invalid, pending, to_start, existing), form_of)
         # Dạng biến cách đã biết của từ có sẵn (bought -> buy) mở được ngay nên cũng là "đã có"; form_of cho app biết từ gốc
         unknown = [key for key, r in results.items() if r['status'] == 'unknown']
         if unknown:
@@ -349,8 +358,9 @@ class AIWordViewSet(SoftDeleteViewSet):
             return Response({'detail': 'lang and words are required'}, status=status.HTTP_400_BAD_REQUEST)
         if len(raw) > MAX_CHECK_WORDS:
             return Response({'detail': f'At most {MAX_CHECK_WORDS} words'}, status=status.HTTP_400_BAD_REQUEST)
-        found, invalid, pending, to_start, existing = sort_words(clean_words(raw), language_code)
-        results = describe_words(raw, language_code, found, invalid, pending, to_start, existing)
+        folded, form_of = fold_forms(clean_words(raw), language_code)
+        found, invalid, pending, to_start, existing = sort_words(folded, language_code)
+        results = describe_words([*raw, *folded], language_code, found, invalid, pending, to_start, existing)
         by_word = {}
         for sense in ranked_official_senses(list(found), language_code):
             by_word.setdefault(sense.word_value, []).append(sense)
@@ -359,6 +369,8 @@ class AIWordViewSet(SoftDeleteViewSet):
             for index, brief in enumerate(briefs):
                 brief['best'] = index == 0
             results[word]['senses'] = briefs
+        for form, lemma in form_of.items():  # dạng chia dùng chung nghĩa của từ gốc
+            results[form] = {**results.get(lemma, {'status': 'unknown'}), 'form_of': lemma}
         return Response({'results': results})
 
     @action(detail=False, methods=['get'], url_path='search')

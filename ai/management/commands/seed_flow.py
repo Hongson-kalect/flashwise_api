@@ -1,7 +1,8 @@
 """
 Luồng seed hàng loạt theo step (ai/seedflow). Các lệnh con:
 
-  make-step  --source <file> --dir <thư mục> --per-step N [--lang en] [--threshold 50]   tạo step_NNNN.jsonl kế tiếp
+  make-step  --source <file> --dir <thư mục> --per-step N [--lang en] [--threshold 40]   tạo step_NNNN.jsonl kế tiếp
+  lemmas     --source <file.jsonl> --out <file.jsonl> [--lang en] [--keep w1,w2] [--min-senses 8]   lọc dạng chia (went, killed, men...), chỉ giữ từ gốc có trong nguồn; ghi thêm <out>.dropped.tsv
   start      <run> --step-file <step.jsonl> --lang en --base-languages en,vi,zh,es,fr --mode batch|online
              online = luồng thường (gọi AI ngay, để thử); batch = luồng batch (Claude + Gemini Batch giảm 50%, chỉ concept online, để seed lớn)
   run        <run> [--until stage] [--no-wait] [--poll 30]                                chạy các giai đoạn còn lại
@@ -40,6 +41,12 @@ class Command(BaseCommand):
         p.add_argument('--lang', default='en')
         p.add_argument('--step', type=int, default=None)
         p.add_argument('--threshold', type=int, default=MULTI_SENSE_THRESHOLD, help='Từ có từ ngần này nghĩa Wiktionary trở lên thì để file multi_sense.jsonl')
+        p = sub.add_parser('lemmas')
+        p.add_argument('--source', required=True)
+        p.add_argument('--out', required=True)
+        p.add_argument('--lang', default='en')
+        p.add_argument('--min-senses', type=int, default=8, help='Dạng chia có từ ngần này nghĩa riêng ở nguồn trở lên thì giữ (0 = tắt)')
+        p.add_argument('--keep', default='', help='Từ luôn giữ dù là dạng chia, cách nhau dấu phẩy (hoặc @file, mỗi dòng một từ)')
         p = sub.add_parser('start')
         p.add_argument('run')
         p.add_argument('--step-file', required=True)
@@ -99,6 +106,16 @@ class Command(BaseCommand):
         except ValueError as e:
             raise CommandError(str(e))
         self.stdout.write(json.dumps(info, ensure_ascii=False))
+
+    def do_lemmas(self, o):
+        from ai.seedflow import lemmas
+        keep = o['keep']
+        if keep.startswith('@'):
+            keep = ','.join(open(keep[1:], encoding='utf-8').read().split())
+        rows = lemmas.read_rows(o['source'])
+        kept, dropped, lexical = lemmas.split_forms(rows, o['lang'], keep=keep.split(','), min_senses=o['min_senses'])
+        table = lemmas.write_outputs(kept, dropped, lexical, o['out'])
+        self.stdout.write(f"Nguồn {len(rows)} dòng: giữ {len(kept)} (gồm {len(lexical)} dạng giữ vì có nghĩa riêng ở loại từ khác), loại {len(dropped)} dạng chia. Danh sách: {o['out']}; bảng bị loại: {table}")
 
     def do_start(self, o):
         base = [c.strip() for c in o['base_languages'].split(',') if c.strip()]

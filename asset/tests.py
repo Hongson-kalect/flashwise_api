@@ -119,6 +119,8 @@ class SenseMediaTests(MediaTestBase):
         self.assertIsNone(AISense.objects.get(pk=res.data['id']).audio)
 
     def test_create_sense_keeps_advanced_content(self):
+        from django.contrib.auth import get_user_model
+        self.client.force_authenticate(get_user_model().objects.create_user('curator', is_staff=True))  # create-sense chỉ admin
         res = self.client.post('/api/ai-senses/create-sense/', {
             'word_id': str(self.word.id), 'user_lang': 'en', 'metadata': {},
             'contents': {

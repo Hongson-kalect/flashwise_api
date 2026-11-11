@@ -400,11 +400,35 @@ def build_word_payload(word_id):
     return AIWordSerializer(load_word(id=word_id)).data
 
 
+# Khi ghi đè nghĩa / metadata đã có (enrich lại một từ): các cột này giữ nguyên, vì do bước khác hoặc người dùng ghi
+KEEP_ON_OVERWRITE_SENSE = {'id', 'concept_id', 'image_context_id', 'image_preview', 'created_at', 'created_by_id', 'verify', 'is_official',
+                           'voted', 'devoted', 'views', 'score', 'like_count', 'main_count', 'learner_count', 'versions',
+                           'global_forget_count', 'global_remember_count', 'global_difficulty', 'recommended_by_id', 'recommended_at',
+                           'is_deleted', 'deleted_at', 'updated_by_id', 'is_active', 'quality_status', 'audio'}
+KEEP_ON_OVERWRITE_METADATA = {'id', 'created_at', 'created_by_id', 'image_link', 'image_metadata', 'verify', 'is_deleted', 'deleted_at', 'updated_by_id', 'is_active'}
+
+
+def _overwrite(model, instances, keep):
+    """Ghi `instances` vào DB: id đã có thì cập nhật các cột trừ `keep`, chưa có thì tạo mới (bulk_create). Trả số dòng cập nhật."""
+    existing = {str(x) for x in model.objects.filter(id__in=[i.id for i in instances]).values_list('id', flat=True)}  # i.id có thể là str hoặc UUID
+    fresh = [i for i in instances if str(i.id) not in existing]
+    model.objects.bulk_create(fresh)
+    stale = [i for i in instances if str(i.id) in existing]
+    if stale:
+        for i in stale:
+            i.updated_at = timezone.now()
+        fields = [f.attname for f in model._meta.concrete_fields if f.attname not in keep and not f.primary_key]
+        model.objects.bulk_update(stale, fields)
+    return len(stale)
+
+
 def save_sense(sense_obj, word_id, replace_ids=(), word_ipas=None):
     """
     Ghi các nghĩa (đã chuẩn hoá) và metadata của chúng trong 1 transaction, rồi đánh dấu từ COMPLETED.
     replace_ids: nghĩa của lần tạo trước, thôi là nghĩa chính thức (không xoá: bộ từ đang trỏ tới).
     Nghĩa thiếu metadata (bước metadata lỗi) vẫn được lưu, phần thiếu sẽ do app / lần tra sau bổ sung.
+    Chạy lại với nghĩa đã lưu (seed: enrich lại một từ) thì GHI ĐÈ nội dung: bản dịch, metadata, phát âm... lấy theo bản mới; concept, ảnh, lượt
+    xem / thích, cột `verify` của người giữ nguyên. Nội dung đổi nên `ai_verify` / `verify_state` của nghĩa bị xoá để bước verify kiểm lại.
     """
     metadata_instances = []
     sense_instances = []
@@ -416,8 +440,10 @@ def save_sense(sense_obj, word_id, replace_ids=(), word_ipas=None):
         sense_instances.append(AISense(**s))
 
     with transaction.atomic():
-        AISenseMetadata.objects.bulk_create(metadata_instances)
-        AISense.objects.bulk_create(sense_instances)
+        _overwrite(AISenseMetadata, metadata_instances, KEEP_ON_OVERWRITE_METADATA)
+        for inst in sense_instances:  # bản mới không mang kết quả kiểm cũ
+            inst.ai_verify, inst.verify_state = [], {}
+        _overwrite(AISense, sense_instances, KEEP_ON_OVERWRITE_SENSE)
         if replace_ids:
             AISense.objects.filter(id__in=list(replace_ids), word_id=word_id).update(is_official=False, updated_at=timezone.now())
         word_update = {'ipas': word_ipas} if word_ipas else {}  # không nghĩa nào có phát âm thì giữ cái đang có (admin / seeder đã nhập)

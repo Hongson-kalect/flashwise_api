@@ -1,6 +1,7 @@
 """Luồng seed theo step (ai/seedflow): chia step, lọc từ nhiều nghĩa, các giai đoạn draft / refine với Claude giả."""
 import json
 import tempfile
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -165,6 +166,34 @@ class FlowStageTests(TestCase):
         self.assertEqual(AISense.objects.filter(word_value='zzcat').count(), 1)
         self.assertEqual(AIWord.objects.get(value='zzxqv').status, 'REJECTED')
         self.assertEqual(AIWord.objects.get(value='zzbad').status, 'FAILED')
+
+    def test_save_again_overwrites_content_and_keeps_links(self):
+        """Enrich lại một từ đã lưu: save lần hai trước đây IntegrityError (trùng id); nay ghi đè nội dung, giữ concept / ảnh / verify người."""
+        from ai.models import AISenseMetadata, Concept
+        with mock.patch.object(flow, '_batch_or_online', return_value=(self._draft_results(), True)):
+            flow.stage_draft(self.run_)
+        sid = self.run_.senses['zzcat'][0]['id']
+        self.run_.senses['zzcat'][0]['metadata'] = {'id': str(uuid.uuid4()), 'tags': ['old']}
+        self.run_.mark('zzcat', 'enriched')
+        flow.stage_save(self.run_)
+        concept = Concept.objects.create(label='cat', description_en='cat', embedding=b'x', member_count=1, status=Concept.ANCHORED)
+        AISense.objects.filter(id=sid).update(concept=concept, verify=['vi'], ai_verify=['vi'], verify_state={'vi': {'state': 'ok'}}, views=7, image_preview='http://img')
+        AISenseMetadata.objects.filter(senses__id=sid).update(image_link='http://m', verify=['*'])
+
+        again = self.run_.senses['zzcat'][0]
+        again['contents']['definition']['en']['value'] = 'New definition.'
+        again['metadata']['tags'] = ['new']
+        self.run_.mark('zzcat', 'enriched')
+        flow.stage_save(self.run_)  # không lỗi
+
+        sense = AISense.objects.get(id=sid)
+        self.assertEqual(AISense.objects.filter(word_value='zzcat').count(), 1)
+        self.assertEqual(sense.contents['definition']['en']['value'], 'New definition.')
+        self.assertEqual((sense.concept_id, sense.verify, sense.views, sense.image_preview), (concept.id, ['vi'], 7, 'http://img'))
+        self.assertEqual((sense.ai_verify, sense.verify_state), ([], {}))  # nội dung đổi: bước verify kiểm lại
+        meta = AISenseMetadata.objects.get(senses__id=sid)
+        self.assertEqual((meta.tags, meta.image_link, meta.verify), (['new'], 'http://m', ['*']))
+        self.assertEqual(AIWord.objects.get(value='zzcat').status, 'COMPLETED')
 
     def test_missing_enrichment_reports_gaps(self):
         sense = {'pos': 'noun', 'contents': {'definition': {'en': {'value': 'x'}, 'vi': {'value': 'y'}}}, 'metadata': {'id': 'm'}}

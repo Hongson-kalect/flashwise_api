@@ -396,6 +396,9 @@ def execute_bulk_db(batch_data, config):
                 last = CollectionItem.objects.filter(collection=collection).aggregate(last=Max("display_order"))["last"]
                 CollectionItem.objects.bulk_create(make_items(collection.id, to_add, 0 if last is None else last + 1, collection.created_by))
                 created += len(to_add)
+                # Đếm lại thay vì cộng dồn: hai đường (atoms_update và đây) chạy lệch pha, cộng dồn làm item_count lệch số nghĩa thật
+                collection.item_count = CollectionItem.objects.filter(collection=collection).exclude(is_deleted=True).values('original_id').distinct().count()
+                collection.save(update_fields=['item_count', 'updated_at'])
             logger.info(f"[COLLECTION-ITEMS] Đã thêm {created} dòng vào bộ từ.")
             return created
 
@@ -442,6 +445,8 @@ def execute_bulk_db(batch_data, config):
                 ))
 
             table = Model._meta.db_table
+            from core.models import CollectionItem
+            items_table = CollectionItem._meta.db_table
 
             # =========================================================
             # STEP 3: SINGLE ATOMIC UPDATE
@@ -468,7 +473,11 @@ def execute_bulk_db(batch_data, config):
                         ELSE c.invalid_words
                     END,
 
-                    item_count = c.item_count + v.valid_count
+                    item_count = (
+                        SELECT COUNT(DISTINCT ci.original_id)
+                        FROM {items_table} AS ci
+                        WHERE ci.collection_id = c.id AND ci.is_deleted IS NOT TRUE
+                    )
 
                 FROM (
                     VALUES %s

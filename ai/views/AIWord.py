@@ -398,6 +398,28 @@ class AIWordViewSet(SoftDeleteViewSet):
             )
         return Response([{'id': w.id, 'value': w.value, 'language_code': w.language_code} for w in found])
 
+    @action(detail=False, methods=['get'], url_path='suggest')
+    def suggest(self, request):
+        """
+        Gợi ý khi thêm từ vào bộ. Query: q, lang (ngôn ngữ đang học), user_lang, mode = word | meaning, limit (≤ 20, mặc định 10).
+        word: từ bắt đầu bằng q (rồi từ gần giống). meaning: q là nghĩa viết bằng user_lang ("nồi cơm"), trả từ của lang có bản dịch / định nghĩa khớp
+        (thêm ngược khi chưa biết từ). Mỗi dòng {id (word_id), value, language_code, sense_id, pos, gloss, image_preview, matched}. Chỉ từ đã tạo xong.
+        """
+        from ai import suggest as suggestions
+
+        q = (request.query_params.get('q') or '').strip()
+        language_code = request.query_params.get('lang')
+        user_language_code = request.query_params.get('user_lang') or ''
+        mode = request.query_params.get('mode') or 'word'
+        if not q or not is_lang(language_code) or mode not in ('word', 'meaning') or (user_language_code and not is_lang(user_language_code)):
+            return Response({'detail': 'q, lang and mode (word | meaning) are required'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            limit = max(1, min(int(request.query_params.get('limit', 10)), 20))
+        except ValueError:
+            limit = 10
+        rows = (suggestions.by_meaning if mode == 'meaning' else suggestions.by_word)(q, language_code, user_language_code, limit)
+        return Response(rows)
+
     @action(detail=True, methods=['post'], permission_classes=[IsAdminUser])
     def regenerate(self, request, pk=None):
         """

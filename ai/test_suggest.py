@@ -248,3 +248,10 @@ class OffensiveFilterTests(APITestCase):
         self.enable()
         self.assertIn('Rude', listed())
         self.assertEqual(self.client.get(f'/api/collections/{col.id}/').status_code, 200)
+
+    def test_senses_list_hides_offensive_unless_enabled(self):
+        get = lambda: self.client.get('/api/ai-words/senses/', {'lang': 'en', 'user_lang': 'vi', 'words': 'damn'}).data['results']['damn'].get('senses') or []
+        self.assertEqual(get(), [])
+        self.enable()
+        rows = get()
+        self.assertEqual([r['offensive'] for r in rows], [True])

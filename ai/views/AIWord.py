@@ -362,7 +362,12 @@ class AIWordViewSet(SoftDeleteViewSet):
         found, invalid, pending, to_start, existing = sort_words(folded, language_code)
         results = describe_words([*raw, *folded], language_code, found, invalid, pending, to_start, existing)
         by_word = {}
+        from user.prefs import allow_offensive
+
+        show_offensive = allow_offensive(request.user)  # chưa bật thô tục thì không liệt kê nghĩa is_offensive
         for sense in ranked_official_senses(list(found), language_code):
+            if sense.is_offensive and not show_offensive:
+                continue
             by_word.setdefault(sense.word_value, []).append(sense)
         for word, rows in by_word.items():
             briefs = [sense_brief(s, user_language_code) for s in rows]

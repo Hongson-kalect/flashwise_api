@@ -48,7 +48,7 @@ def sense_brief(sense, user_language_code):
         'definition': text(definition.get(user_language_code)) or text(definition.get(lang)),
         'translations': translations.get(user_language_code) or [],
         'example': text((examples[0] or {}).get(lang)),
-        'image_preview': sense.image_preview,
+        'image_preview': sense.image_preview, 'offensive': bool(sense.is_offensive),
     }
 
 

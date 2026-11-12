@@ -231,6 +231,7 @@ SENSE_ITEMS_MAX_WORDS = int(os.getenv('SENSE_ITEMS_MAX_WORDS', '10')) # số t�
 SENSE_ITEMS_MAX_TOTAL = int(os.getenv('SENSE_ITEMS_MAX_TOTAL', '50')) # số từ tối đa của 1 danh sách đồng nghĩa / trái nghĩa / liên quan trong 1 nghĩa
 FORM_EXAMPLES_PER_DAY = int(os.getenv('FORM_EXAMPLES_PER_DAY', '40')) # ví dụ mới theo dạng biến cách / người dùng / ngày
 BULK_WORDS_PER_DAY = int(os.getenv('BULK_WORDS_PER_DAY', '500')) # số từ mới / người dùng / ngày
+MEANING_LOOKUPS_PER_DAY = int(os.getenv('MEANING_LOOKUPS_PER_DAY', '150')) # lượt hỏi AI tìm từ theo nghĩa (ai/meaning_lookup.py) / người dùng / ngày; cụm đã cache không tính
 
 REDIS_HOST = os.getenv('REDIS_HOST', 'redis')
 REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))

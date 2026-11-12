@@ -10,7 +10,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from ai.bulk import best_official_senses, clean_words, fold_forms, sort_words, start_words
+from ai.bulk import apply_sense_choices, best_official_senses, clean_words, fold_forms, sort_words, start_words
 from ai.models import AISense, AIWord
 from ai.queries import visible_senses
 from ai.validators import is_lang, is_uuid
@@ -291,6 +291,7 @@ class CollectionViewSet(SoftDeleteViewSet):
         cleaned, form_of = fold_forms(cleaned, language_code)  # dạng chia -> từ gốc (killed -> kill); bộ chứa nghĩa của từ gốc
 
         found, invalid, pending, to_start, existing = sort_words(cleaned, language_code)
+        apply_sense_choices(found, data.get('senses'), language_code)  # nghĩa người dùng đã chọn khi gợi ý (từ đã có)
         # Mỗi từ mới tốn tiền nên tính vào hạn mức theo ngày
         if to_start and not consume_daily_quota(user, 'bulk_words', len(to_start), settings.BULK_WORDS_PER_DAY):
             return Response({"detail": "Daily new-word limit reached", "errorCode": "bulk_quota_exceeded"}, status=status.HTTP_429_TOO_MANY_REQUESTS)

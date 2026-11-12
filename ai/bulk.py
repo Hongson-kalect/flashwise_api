@@ -5,6 +5,7 @@ Tạo / kiểm tra từ hàng loạt. Là phần của từ điển (ai-words/bu
 from ai.forms import guess_lemmas, resolve_form
 from ai.generation import GenerationError, start_word_generation
 from ai.models import AISense, AIWord
+from ai.validators import is_uuid
 from utils import morph
 from utils.redis.client import get_queue_client
 from utils.redis.word_init import WordCacheManager
@@ -104,6 +105,25 @@ def sort_words(words, language_code):
     pending = [w for w in missing if w not in invalid]
     to_start = [w for w in pending if w not in existing or existing[w].status == 'FAILED']
     return found, invalid, pending, to_start, existing
+
+
+def apply_sense_choices(found, choices, language_code):
+    """
+    Người dùng đã chọn đúng nghĩa cho một số từ (gợi ý theo nghĩa tiếng mẹ đẻ): `choices` {từ: sense_id}. Thay nghĩa "tốt nhất" bằng
+    nghĩa đã chọn khi nó là nghĩa chính thức của đúng từ đó; chọn sai / không hợp lệ thì giữ nghĩa mặc định. Sửa `found` tại chỗ.
+    """
+    if not isinstance(choices, dict) or not choices:
+        return found
+    wanted = {normalize_lookup(str(w)): str(s) for w, s in list(choices.items())[:500] if is_uuid(str(s))}
+    wanted = {w: s for w, s in wanted.items() if w in found}
+    if not wanted:
+        return found
+    senses = {str(s.id): s for s in AISense.objects.filter(id__in=wanted.values(), language_code=language_code, is_official=True).exclude(is_deleted=True).exclude(is_active=False)}
+    for word, sense_id in wanted.items():
+        sense = senses.get(sense_id)
+        if sense is not None and sense.word_value == word:
+            found[word] = sense
+    return found
 
 
 def start_words(user, to_start, existing, language_code, user_language_code, collection_id=None):

@@ -346,9 +346,9 @@ class UserCollectionViewSet(SoftDeleteViewSet):
         từ bị từ chối vào invalid_words, từ còn lại vào pending_words (đẩy AI tạo, tính hạn mức ngày).
         Tác giả: như trên. Người đã tải (chuẩn bị remix): chỉ thêm được từ đã có nghĩa chính thức; từ chưa có không tạo AI
         (bộ chung không nhận từ chờ của người khác) mà trả trong `unavailable`.
-        Body: words, user_lang.
+        Body: words, user_lang, senses (tuỳ chọn, {từ: sense_id} nghĩa đã chọn sẵn cho từ đã có).
         """
-        from ai.bulk import clean_words, fold_forms, sort_words, start_words
+        from ai.bulk import apply_sense_choices, clean_words, fold_forms, sort_words, start_words
 
         user = request.user
         words, user_language_code = request.data.get('words'), request.data.get('user_lang')
@@ -366,6 +366,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
 
         cleaned, form_of = fold_forms(cleaned, collection.language_code)  # dạng chia -> từ gốc
         found, invalid, pending, to_start, existing = sort_words(cleaned, collection.language_code)
+        apply_sense_choices(found, request.data.get('senses'), collection.language_code)  # nghĩa người dùng đã chọn khi gợi ý (từ đã có)
         if not is_author:
             to_start = []
         if to_start and not consume_daily_quota(user, 'bulk_words', len(to_start), settings.BULK_WORDS_PER_DAY):

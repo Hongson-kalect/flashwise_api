@@ -418,7 +418,17 @@ class AIWordViewSet(SoftDeleteViewSet):
         except ValueError:
             limit = 10
         rows = (suggestions.by_meaning if mode == 'meaning' else suggestions.by_word)(q, language_code, user_language_code, limit)
-        return Response(rows)
+        # ai=1 (chỉ mode meaning, app tự gửi khi kết quả từ DB còn ít): thêm từ AI gợi ý sau khi kiểm duyệt cụm gõ. Từ chối / hết hạn mức / lỗi AI
+        # không làm hỏng kết quả: vẫn trả phần từ DB, kèm `ai_reason` (mã lý do) để app biết.
+        ai_reason = None
+        if mode == 'meaning' and request.query_params.get('ai') == '1' and user_language_code and request.user.is_authenticated:
+            from ai import meaning_lookup
+
+            looked = meaning_lookup.lookup(request.user, q, language_code, user_language_code)
+            ai_reason = looked['reason_code']
+            have = {r['value'] for r in rows}
+            rows = rows + [r for r in looked['rows'] if r['value'] not in have]
+        return Response({'results': rows, 'ai_reason': ai_reason})
 
     @action(detail=True, methods=['post'], permission_classes=[IsAdminUser])
     def regenerate(self, request, pk=None):

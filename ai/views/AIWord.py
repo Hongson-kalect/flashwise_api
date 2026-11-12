@@ -417,14 +417,17 @@ class AIWordViewSet(SoftDeleteViewSet):
             limit = max(1, min(int(request.query_params.get('limit', 10)), 20))
         except ValueError:
             limit = 10
-        rows = (suggestions.by_meaning if mode == 'meaning' else suggestions.by_word)(q, language_code, user_language_code, limit)
+        from user.prefs import allow_offensive
+
+        offensive = allow_offensive(request.user)  # mặc định ẩn từ thô tục; người dùng bật `show_offensive` trong cài đặt mới thấy
+        rows = (suggestions.by_meaning if mode == 'meaning' else suggestions.by_word)(q, language_code, user_language_code, limit, offensive)
         # ai=1 (chỉ mode meaning, app tự gửi khi kết quả từ DB còn ít): thêm từ AI gợi ý sau khi kiểm duyệt cụm gõ. Từ chối / hết hạn mức / lỗi AI
         # không làm hỏng kết quả: vẫn trả phần từ DB, kèm `ai_reason` (mã lý do) để app biết.
         ai_reason = None
         if mode == 'meaning' and request.query_params.get('ai') == '1' and user_language_code and request.user.is_authenticated:
             from ai import meaning_lookup
 
-            looked = meaning_lookup.lookup(request.user, q, language_code, user_language_code)
+            looked = meaning_lookup.lookup(request.user, q, language_code, user_language_code, offensive)
             ai_reason = looked['reason_code']
             have = {r['value'] for r in rows}
             rows = rows + [r for r in looked['rows'] if r['value'] not in have]

@@ -185,3 +185,66 @@ class SenseChoiceTests(APITestCase):
         other = AIWord.objects.create(value='door', language_code='en', status='COMPLETED')
         foreign = AISense.objects.create(word=other, word_value='door', language_code='en', pos='noun', is_official=True)
         self.assertEqual(self.create({'window': str(foreign.id)}), [str(self.top.id)])
+
+
+class OffensiveFilterTests(APITestCase):
+    """Từ thô tục: mặc định ẩn khỏi gợi ý và bộ công khai; bật `show_offensive` mới thấy (kèm cờ). Nội dung nhạy cảm bị từ chối hẳn."""
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.user = User.objects.create_user('offender')
+        self.client.force_authenticate(self.user)
+        self.rude = make_word('damn', ['chết tiệt'])
+        AISense.objects.filter(word=self.rude).update(is_offensive=True)
+        make_word('dam', ['đập'])
+
+    def suggest(self, q, mode='word'):
+        return [r['value'] for r in self.client.get('/api/ai-words/suggest/', {'q': q, 'lang': 'en', 'user_lang': 'vi', 'mode': mode}).data['results']]
+
+    def enable(self):
+        from user.models import UserSetting
+
+        UserSetting.objects.create(user=self.user, key='show_offensive', value=True)
+
+    def test_hidden_by_default_shown_when_enabled(self):
+        self.assertEqual(self.suggest('dam'), ['dam'])
+        self.assertEqual(self.suggest('chết', 'meaning'), [])
+        self.enable()
+        self.assertEqual(self.suggest('dam'), ['dam', 'damn'])
+        rows = self.client.get('/api/ai-words/suggest/', {'q': 'chết', 'lang': 'en', 'user_lang': 'vi', 'mode': 'meaning'}).data['results']
+        self.assertEqual([(r['value'], r['offensive']) for r in rows], [('damn', True)])
+
+    def test_vulgar_ai_candidate_filtered_unless_enabled(self):
+        from unittest import mock
+
+        data = {'valid': True, 'reason_code': 'ok', 'candidates': [{'word': 'bastard', 'pos': 'noun', 'gloss': 'đồ khốn', 'vulgar': True}]}
+        url = {'q': 'đồ khốn', 'lang': 'en', 'user_lang': 'vi', 'mode': 'meaning', 'ai': '1'}
+        with mock.patch('ai.meaning_lookup.ask_ai', return_value=data):
+            self.assertEqual(self.client.get('/api/ai-words/suggest/', url).data['results'], [])
+            self.enable()
+            self.assertEqual([r['value'] for r in self.client.get('/api/ai-words/suggest/', url).data['results']], ['bastard'])
+
+    def test_sensitive_phrase_rejected_outright(self):
+        from unittest import mock
+
+        data = {'valid': False, 'reason_code': 'sensitive', 'candidates': []}
+        with mock.patch('ai.meaning_lookup.ask_ai', return_value=data):
+            self.enable()  # bật thô tục cũng không mở được nội dung nhạy cảm
+            res = self.client.get('/api/ai-words/suggest/', {'q': 'xyz', 'lang': 'en', 'user_lang': 'vi', 'mode': 'meaning', 'ai': '1'})
+        self.assertEqual((res.data['ai_reason'], res.data['results']), ('sensitive', []))
+
+    def test_offensive_collection_blocked_unless_enabled(self):
+        from core.models import Collection, CollectionItem
+
+        author = User.objects.create_user('author')
+        col = Collection.objects.create(name='Rude', language_code='en', created_by=author, released=True, is_active=True, version=1)
+        CollectionItem.objects.create(collection=col, sense=AISense.objects.get(word=self.rude), released=True, version=1, created_by=author)
+        listed = lambda: [c['name'] for c in self.client.get('/api/collections/', {'lang': 'en'}).data['results']]
+        self.assertNotIn('Rude', listed())
+        self.assertEqual(self.client.get(f'/api/collections/{col.id}/').status_code, 403)
+        self.assertEqual(self.client.post(f'/api/user-collections/{col.id}/download/').data['errorCode'], 'offensive_collection')
+        self.enable()
+        self.assertIn('Rude', listed())
+        self.assertEqual(self.client.get(f'/api/collections/{col.id}/').status_code, 200)

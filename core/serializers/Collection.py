@@ -5,13 +5,14 @@ from core.models.Collection import Collection
 from utils.models.Tag import Tag
 
 LIST_FIELDS = ['id', 'name', 'description', 'image_url', 'cover_image', 'cover_word', 'senses_count', 'is_official', 'language_code', 'like_count',
-               'downloaded_count', 'view_count', 'tags', 'created_at']
+               'downloaded_count', 'view_count', 'tags', 'created_at', 'has_offensive']
 BASIC_FIELDS = ['id', 'name', 'description', 'image_url', 'is_official', 'item_count', 'language_code', 'version']
 
 
 # Dùng riêng cho hàm list (Cực nhẹ)
 class CollectionListSerializer(BaseModelSerializer):
     senses_count = serializers.IntegerField(read_only=True) # Nhận từ annotate
+    has_offensive = serializers.BooleanField(read_only=True, default=False)  # Nhận từ annotate: bộ có nghĩa thô tục
     # Ảnh bìa khi tác giả chưa đặt ảnh riêng: ảnh của nghĩa đầu tiên (theo thứ tự trong bộ) có ảnh; cover_word là từ của nghĩa đầu
     # để app tìm ảnh mở khi không nghĩa nào có ảnh. Cả trang được tính bằng 1 truy vấn (cache trên serializer con của ListSerializer).
     cover_image = serializers.SerializerMethodField()

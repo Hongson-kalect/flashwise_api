@@ -153,6 +153,7 @@ async def ai_create_new_word_sema(word_info):
         sense_objs = []
         valid = False
         rejected = False
+        reject_status = 'REJECTED'  # 'BANNED' khi từ nhạy cảm (xúc phạm / chính trị / lãnh thổ): chặn hẳn, không cho tạo lại
         draft_model = None
 
         # Tập hợp quản lý toàn bộ task chạy ngầm (Socket, Ảnh, Dịch, Metadata)
@@ -189,8 +190,10 @@ async def ai_create_new_word_sema(word_info):
                             if word_meta_str:
                                 word_meta = json.loads(word_meta_str)
                                 if not word_meta.get("should_be_saved", True):
-                                    # Từ sai chính tả / vô nghĩa: dừng stream, không tốn thêm token
+                                    # Từ sai chính tả / vô nghĩa / nhạy cảm: dừng stream, không tốn thêm token
                                     rejected = True
+                                    if word_meta.get("sensitive"):
+                                        reject_status = 'BANNED'
                                     break
                                 valid = True
                                 draft_model = model
@@ -278,7 +281,7 @@ async def ai_create_new_word_sema(word_info):
         marks['stream_end'] = time.monotonic()
 
         if rejected:
-            await _close_word(word_id, word_value, language_code, socket_room, cache, 'REJECTED', 'NOT_FOUND', 'REJECTED', 'Word rejected', keep_old=bool(replace_ids))
+            await _close_word(word_id, word_value, language_code, socket_room, cache, reject_status, 'NOT_FOUND', 'REJECTED', 'Word rejected', keep_old=bool(replace_ids))
             return {"id": word_id, "senses": [], "is_valid": False}
 
         if not valid or not sense_objs:

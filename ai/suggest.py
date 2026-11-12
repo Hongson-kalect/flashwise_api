@@ -34,17 +34,23 @@ def _sense_row(sense, word_value, user_language_code, matched=None):
     gloss = ', '.join(translations[:3]) or (definition.get('value') if isinstance(definition, dict) else '') or ''
     return {
         'id': str(sense.word_id), 'value': word_value, 'language_code': sense.language_code, 'sense_id': str(sense.id),
-        'pos': sense.pos, 'gloss': gloss, 'image_preview': sense.image_preview, 'matched': matched,
+        'pos': sense.pos, 'gloss': gloss, 'image_preview': sense.image_preview, 'matched': matched, 'offensive': bool(sense.is_offensive),
     }
 
 
-def _official_senses(language_code):
-    return AISense.objects.filter(
+def _official_senses(language_code, offensive=False):
+    """Nghĩa chính thức dùng để gợi ý. `offensive`: người dùng đã bật hiện nội dung thô tục (mặc định ẩn nghĩa is_offensive)."""
+    senses = AISense.objects.filter(
         language_code=language_code, is_official=True, word__status='COMPLETED',
-    ).exclude(is_deleted=True).exclude(is_active=False).exclude(is_offensive=True).exclude(word__is_deleted=True).exclude(word__is_active=False)
+    ).exclude(is_deleted=True).exclude(is_active=False).exclude(word__is_deleted=True).exclude(word__is_active=False)
+    return senses if offensive else senses.exclude(is_offensive=True)
 
 
-def by_word(q, language_code, user_language_code, limit):
+def has_offensive_sense(word_id, language_code):
+    return AISense.objects.filter(word_id=word_id, language_code=language_code, is_official=True, is_offensive=True).exclude(is_deleted=True).exists()
+
+
+def by_word(q, language_code, user_language_code, limit, offensive=False):
     q = normalize_lookup(q)[:MAX_Q]
     if not q:
         return []
@@ -53,17 +59,20 @@ def by_word(q, language_code, user_language_code, limit):
     if len(found) < limit and len(q) >= 2:
         seen = [w.id for w in found]
         found += list(words.exclude(id__in=seen).annotate(sim=TrigramSimilarity('value', q)).filter(sim__gt=0.3).order_by('-sim', 'value')[:limit - len(found)])
-    return [_first_sense_row(w, user_language_code) for w in found]
+    rows = [_first_sense_row(w, user_language_code, offensive) for w in found]
+    return [r for r in rows if r is not None]
 
 
-def _first_sense_row(word, user_language_code):
-    sense = _official_senses(word.language_code).filter(word_id=word.id).order_by('-score', '-like_count', 'id').first()
+def _first_sense_row(word, user_language_code, offensive=False):
+    sense = _official_senses(word.language_code, offensive).filter(word_id=word.id).order_by('-score', '-like_count', 'id').first()
     if sense is None:
+        if not offensive and has_offensive_sense(word.id, word.language_code):
+            return None  # từ chỉ có nghĩa thô tục: không gợi ý cho người chưa bật
         return {'id': str(word.id), 'value': word.value, 'language_code': word.language_code, 'sense_id': None, 'pos': None, 'gloss': '', 'image_preview': None, 'matched': None}
     return _sense_row(sense, word.value, user_language_code)
 
 
-def by_meaning(q, language_code, user_language_code, limit):
+def by_meaning(q, language_code, user_language_code, limit, offensive=False):
     """Từ của `language_code` có nghĩa khớp chuỗi `q` viết bằng `user_language_code`."""
     q_raw = ' '.join((q or '').lower().split())[:MAX_Q]
     q = fold(q_raw)
@@ -74,7 +83,7 @@ def by_meaning(q, language_code, user_language_code, limit):
     definition_text = Unaccent(Cast(KeyTextTransform('value', KeyTextTransform(user_language_code, KeyTextTransform('definition', 'contents'))), TextField()))
     # Khớp từ bắt đầu bằng q ở đầu một từ (không khớp giữa từ: "nhà" không khớp "nhẹ nhàng" ở giữa, nhưng gõ dở "nh" vẫn thấy "nhà")
     boundary = r'(^|[^[:alnum:]])' + re.escape(q)
-    candidates = _official_senses(language_code).select_related('word').annotate(tr_text=translations_text)         .filter(tr_text__iregex=boundary).order_by('id')[:300]
+    candidates = _official_senses(language_code, offensive).select_related('word').annotate(tr_text=translations_text)         .filter(tr_text__iregex=boundary).order_by('id')[:300]
     best = {}
     for sense in candidates:
         contents = sense.contents if isinstance(sense.contents, dict) else {}
@@ -98,7 +107,7 @@ def by_meaning(q, language_code, user_language_code, limit):
     if len(rows) < min(limit, 3):
         # Bản dịch ngắn khớp quá ít: thêm các từ có định nghĩa khớp (xếp sau, ít chính xác hơn nên chỉ lấp chỗ trống)
         seen = {r['id'] for r in rows}
-        extra = _official_senses(language_code).annotate(def_text=definition_text).filter(def_text__iregex=boundary).exclude(word_id__in=seen).order_by('id')[:limit * 3]
+        extra = _official_senses(language_code, offensive).annotate(def_text=definition_text).filter(def_text__iregex=boundary).exclude(word_id__in=seen).order_by('id')[:limit * 3]
         for sense in extra:
             if str(sense.word_id) in seen:
                 continue

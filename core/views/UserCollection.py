@@ -20,7 +20,7 @@ from core.models import Collection,CollectionItem, UserCollection
 from core.bundle import build_bundle, load_bundle, make_etag
 from interact.moderation import collection_ban
 from asset.media import clean_media_param
-from core.queries import current_items, live_items, visible_collections
+from core.queries import collection_has_offensive, current_items, live_items, offensive_blocked, visible_collections
 from core.serializers.UserCollection import UserCollectionSerializer
 from utils.utils.soft_delete_viewset import SoftDeleteViewSet
 from utils.utils.sense_handle import deep_merge
@@ -135,6 +135,8 @@ class UserCollectionViewSet(SoftDeleteViewSet):
     def download(self, request, pk=None):
         # pk ở URL là id của Collection gốc (không phải UserCollection)
         collection = get_object_or_404(visible_collections(request.user), pk=pk)
+        if offensive_blocked(request.user, collection):
+            return Response({"message": "Collection contains offensive content", "errorCode": "offensive_collection"}, status=status.HTTP_403_FORBIDDEN)
         
         # Tạo hoặc cập nhật trạng thái sở hữu
         user_col, created = UserCollection.objects.get_or_create(
@@ -146,11 +148,11 @@ class UserCollectionViewSet(SoftDeleteViewSet):
         
         # id của UserCollection để app gọi tiếp bundle
         if not created:
-            return Response({"detail": "Bạn đã sở hữu bộ sưu tập này rồi.", "id": user_col.id}, status=200)
+            return Response({"detail": "Bạn đã sở hữu bộ sưu tập này rồi.", "id": user_col.id, "offensive": False}, status=200)
 
         Collection.objects.filter(pk=collection.pk).update(downloaded_count=F('downloaded_count') + 1)
         refresh_collection_scores(pk=collection.pk)
-        return Response({"detail": "Tải bộ sưu tập thành công.", "id": user_col.id}, status=201)
+        return Response({"detail": "Tải bộ sưu tập thành công.", "id": user_col.id, "offensive": collection_has_offensive(collection)}, status=201)
 
     @action(detail=True, methods=['get'], url_path='bundle')
     def bundle(self, request, pk=None):
@@ -373,6 +375,7 @@ class UserCollectionViewSet(SoftDeleteViewSet):
             return Response(status=status.HTTP_429_TOO_MANY_REQUESTS, data={"detail": "Daily new-word limit reached", "errorCode": "bulk_quota_exceeded"})
 
         added = []
+        offensive_words = sorted(w for w in cleaned if w in found and found[w].is_offensive)  # app cảnh báo: bộ sẽ chứa nghĩa thô tục
         with transaction.atomic():
             user_collection = self.get_queryset().select_for_update().get(pk=user_collection.pk)
             for word in cleaned:
@@ -387,9 +390,9 @@ class UserCollectionViewSet(SoftDeleteViewSet):
                 locked.save(update_fields=['pending_words', 'invalid_words', 'updated_at'])
 
         if not is_author:
-            return Response({"added": added, "pending_words": [], "invalid_words": [], "unavailable": [*invalid, *pending], "form_of": form_of})
+            return Response({"added": added, "pending_words": [], "invalid_words": [], "unavailable": [*invalid, *pending], "form_of": form_of, "offensive_words": offensive_words})
         start_words(user, to_start, existing, collection.language_code, user_language_code, collection_id=collection.id)
-        return Response({"added": added, "pending_words": pending, "invalid_words": invalid, "unavailable": [], "form_of": form_of})
+        return Response({"added": added, "pending_words": pending, "invalid_words": invalid, "unavailable": [], "form_of": form_of, "offensive_words": offensive_words})
 
     @action(detail=True, methods=['post'], url_path='reorder')
     def reorder(self, request, pk=None):

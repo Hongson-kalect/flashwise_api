@@ -115,10 +115,14 @@ word_schema = {
                     "type": "BOOLEAN", 
                     "description": "False if the input is gibberish, a typo that doesn't exist, or non-linguistic noise." 
                 },
+                "sensitive": {
+                    "type": "BOOLEAN",
+                    "description": "True if the entry is a slur or insult aimed at a person or group, hate speech, or a politically or territorially sensitive name, slogan or label (leaders, disputed territories, extremist or propaganda terms). Ordinary profanity is NOT sensitive."
+                },
                 "is_common": { "type": "BOOLEAN" },
                 "language_confidence": { "type": "NUMBER", "description": "0-1 score of how sure AI is about the language" }
             },
-            "required": ["should_be_saved", "is_common", "language_confidence"]
+            "required": ["should_be_saved", "sensitive", "is_common", "language_confidence"]
         },
         # Đập bỏ "entries", chuyển thẳng thành một mảng phẳng chứa toàn bộ các senses
         "senses": {

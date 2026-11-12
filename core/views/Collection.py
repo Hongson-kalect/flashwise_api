@@ -4,7 +4,7 @@ import uuid
 from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
-from django.db.models import Count, F, Max, Q
+from django.db.models import Count, Exists, F, Max, OuterRef, Q
 from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -15,7 +15,7 @@ from ai.models import AISense, AIWord
 from ai.queries import visible_senses
 from ai.validators import is_lang, is_uuid
 from core.models import Collection, CollectionItem, UserCollection
-from core.queries import live_items, visible_collections
+from core.queries import live_items, offensive_blocked, visible_collections
 from interact.likes import liked_versions, set_like, version_like_counts
 from core.serializers.Collection import (
     CollectionBasicSerializer, CollectionDetailSerializer, CollectionListSerializer, CollectionSerializer,
@@ -107,12 +107,22 @@ class CollectionViewSet(SoftDeleteViewSet):
                 queryset = queryset.order_by(ordering, '-id')
             else:
                 queryset = queryset.order_by('-score', '-created_at', '-id')  # core/scores.py
+            # Bộ chứa nghĩa thô tục (nghĩa is_offensive): người chưa bật `show_offensive` không thấy / không tìm được; người đã bật thấy kèm cờ để app cảnh báo
+            from user.prefs import allow_offensive
+
+            queryset = queryset.annotate(has_offensive=Exists(
+                CollectionItem.objects.filter(collection_id=OuterRef('pk'), released=True, sense__is_offensive=True).exclude(is_deleted=True)
+            ))
+            if not allow_offensive(self.request.user) and not params.get('mine') == 'true':
+                queryset = queryset.filter(has_offensive=False)
             # Số từ của bản đang hiệu lực (item_count, tính lúc tạo / phát hành); đếm thẳng bảng trung gian sẽ cộng cả nháp và mọi version
             queryset = queryset.annotate(senses_count=F('item_count')).prefetch_related('tags')
         return queryset
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
+        if offensive_blocked(request.user, instance):
+            return Response({"message": "Collection contains offensive content", "errorCode": "offensive_collection"}, status=status.HTTP_403_FORBIDDEN)
         count_view(request, instance)
         if instance.pending_words:
             instance = self._resolve_pending(instance)
@@ -309,6 +319,7 @@ class CollectionViewSet(SoftDeleteViewSet):
         start_words(user, to_start, existing, language_code, user_language_code, collection_id=collection.id)
 
         return Response(
-            {"user_collection": user_collection.id, **CollectionBasicSerializer(collection).data, "pending_words": pending, "invalid_words": invalid, "form_of": form_of},
+            {"user_collection": user_collection.id, **CollectionBasicSerializer(collection).data, "pending_words": pending, "invalid_words": invalid, "form_of": form_of,
+             "offensive_words": sorted(w for w, s in found.items() if s.is_offensive)},
             status=status.HTTP_201_CREATED,
         )

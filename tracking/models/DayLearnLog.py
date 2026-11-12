@@ -23,6 +23,9 @@ class DayLearnLog(BaseModel):
     xp_earned = models.PositiveIntegerField(default=0)
     sessions_count = models.PositiveIntegerField(default=0) # Nếu muốn lấy chi tiết thì query bảng LearnSession là ra
 
+    # Ngày nghỉ được khiên (shield) che: không có học nhưng vẫn tính là ngày giữ streak (app ghi theo habit/engine.ts)
+    is_shield = models.BooleanField(default=False)
+
     #  Những dữ liệu trên đều dễ lấy nếu query bảng LearnSession nhưng nếu làm dashboard thì sẽ phải xử lý 1 lúc => Cần các dữ liệu chính để dashboard
 
     class Meta:

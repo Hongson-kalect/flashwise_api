@@ -130,6 +130,22 @@ class PushTests(SyncTestBase):
         self.assertEqual(profile.current_streak, 3)  # hôm nay chưa học vẫn giữ chuỗi tới hôm qua
         self.assertEqual(profile.max_streak, 5)
 
+    def test_shield_days_keep_streak_and_merge_by_max(self):
+        profile = UserProfile.objects.get(user=self.user)
+        today = timezone.now().astimezone(ZoneInfo(profile.time_zone)).date()
+        # Học hôm kia và 3 ngày trước, nghỉ 2 ngày được khiên che (không có học) => chuỗi liền 4 ngày tới hôm kia, hôm qua chưa học
+        rows = [{'date': str(today - timedelta(days=n)), 'words_learned': 1} for n in (2, 5)]
+        rows += [{'date': str(today - timedelta(days=n)), 'is_shield': True} for n in (3, 4)]
+        res = self.push(day_learn_log=rows)
+        self.assertEqual(res.data['results']['day_learn_log']['accepted'], 4)
+        profile.refresh_from_db()
+        self.assertEqual(profile.current_streak, 0)  # hôm kia: cách hôm nay 2 ngày => chuỗi đã đứt
+        self.assertEqual(profile.max_streak, 4)
+        # Gửi lại với is_shield = False không gỡ cờ (cờ chỉ tăng)
+        self.push(day_learn_log=[{'date': str(today - timedelta(days=3)), 'is_shield': False}])
+        self.assertTrue(DayLearnLog.objects.get(user=self.user, date=today - timedelta(days=3)).is_shield)
+        self.assertEqual(self.push(day_learn_log=[{'date': str(today), 'is_shield': 'có'}]).data['results']['day_learn_log']['rejected'][0]['reason'], 'invalid:is_shield')
+
     def test_learn_session(self):
         sid, s1 = str(uuid7()), str(uuid7())
         item = {'id': sid, 'type': 'review', 'start_at': iso(-30), 'end_at': iso(-20), 'time': 600, 'senses': [s1]}

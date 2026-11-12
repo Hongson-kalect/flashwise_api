@@ -162,7 +162,7 @@ Nội dung nâng cao trong `contents` (user / admin gõ, AI không sinh): `pro_t
 Bảng: `user_sense_progress`, `review_log`, `day_learn_log`, `learn_session`, `user_note`, `user_settings`, `user_profile` (object, chỉ push).
 Trả `{server_time, results: {bảng: {accepted, skipped, rejected: [{id, reason}]}}}`; dòng bị từ chối không chặn dòng khác.
 Luật gộp: progress / note / setting bản `client_updated_at` mới hơn thắng (progress còn xét `last_reviewed_at`); review_log chỉ thêm;
-day_learn_log lấy max từng bộ đếm; session ghi đè. Push `day_learn_log` thì server tính lại XP / streak.
+day_learn_log lấy max từng bộ đếm; session ghi đè. Push `day_learn_log` thì server tính lại XP / streak. `day_learn_log.is_shield` (bool, chỉ tăng): ngày nghỉ được khiên che ở app (không có học), server tính là ngày có hoạt động nên streak khớp với app; thiết kế khiên / habit ở `docs/habit-design.md` của app flashwise.
 
 `GET /api/sync/pull/?tables=a,b&limit=500&cursors={"bảng":"<con trỏ>"}` (cursors là JSON):
 trả `{server_time, tables: {bảng: {items, has_more, cursor}}, user_profile}`. Còn `has_more` thì gọi lại với `cursor` mới

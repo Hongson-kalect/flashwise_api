@@ -228,6 +228,7 @@ DAY_SPEC = {
     'words_learned': (int, 0, 10**5), 'words_relearned': (int, 0, 10**5),
     'learn_time': (int, 0, 86400), 'app_time': (int, 0, 86400),
     'xp_earned': (int, 0, 10**7), 'sessions_count': (int, 0, 10**4),
+    'is_shield': ('bool',),
 }
 
 
@@ -474,7 +475,8 @@ def refresh_stats(user):
         zone = ZoneInfo('UTC')
     logs = DayLearnLog.objects.filter(user=user).exclude(is_deleted=True)
     total_xp = logs.aggregate(total=Sum('xp_earned'))['total'] or 0
-    days = set(logs.filter(Q(words_learned__gt=0) | Q(words_relearned__gt=0) | Q(learn_time__gt=0)).values_list('date', flat=True))
+    # Ngày khiên che (is_shield) tính như ngày có học để giữ streak
+    days = set(logs.filter(Q(words_learned__gt=0) | Q(words_relearned__gt=0) | Q(learn_time__gt=0) | Q(is_shield=True)).values_list('date', flat=True))
 
     today = timezone.now().astimezone(zone).date()
     day = today if today in days else today - timedelta(days=1)  # hôm nay chưa học thì streak vẫn giữ tới hết hôm nay
@@ -518,7 +520,7 @@ PULL_TABLES = {
         'id', 'original_sense_id', 'sense_id', 'session_id', 'rating', 'mode', 'is_fsrs', 'level', 'hint_count', 'attempts',
         'duration_ms', 'state', 'elapsed_days', 'scheduled_days', 'stability', 'difficulty', 'reviewed_at', 'created_at']),
     'day_learn_log': (DayLearnLog, 'updated_at', [
-        'id', 'date', 'words_learned', 'words_relearned', 'learn_time', 'app_time', 'xp_earned', 'sessions_count',
+        'id', 'date', 'words_learned', 'words_relearned', 'learn_time', 'app_time', 'xp_earned', 'sessions_count', 'is_shield',
         'created_at', 'updated_at']),
     'learn_session': (LearnSession, 'updated_at', [
         'id', 'type', 'status', 'mode', 'collection_id', 'methods', 'start_at', 'end_at', 'time', 'senses', 'sense_count',

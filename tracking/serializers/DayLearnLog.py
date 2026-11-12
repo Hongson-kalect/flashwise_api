@@ -16,7 +16,7 @@ class DayLearnLogSerializer(BaseModelSerializer):
             'user', 'date',
             'words_learned', 'words_relearned',
             'learn_time', 'app_time',
-            'xp_earned', 'sessions_count',
+            'xp_earned', 'sessions_count', 'is_shield',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']

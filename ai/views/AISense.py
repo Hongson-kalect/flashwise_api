@@ -376,7 +376,11 @@ class AISenseViewSet(SoftDeleteViewSet):
         if decision == 'reject':
             if result['abuse']:
                 record(user, 'sense_abuse', 'word', word.id)
-            return Response({'result': 'rejected', 'reason': claude['reason'], 'abuse': result['abuse']})
+            code = claude.get('reason_code') or 'not_a_meaning'
+            if result['abuse'] and code not in sense_gate.ABUSE_REASON_CODES:
+                code = 'injection' if claude.get('injection_attempt') else 'spam'
+            # `reason_code` cho app dịch ra ngôn ngữ người dùng; `reason` (tiếng Anh) chỉ để log / admin
+            return Response({'result': 'rejected', 'reason': claude['reason'], 'reason_code': code, 'abuse': result['abuse']})
 
         if decision == 'duplicate':
             existing = duplicate_sense(result)

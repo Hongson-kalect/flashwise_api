@@ -248,8 +248,8 @@ class AIWordViewSet(SoftDeleteViewSet):
 
         word_instance = load_word(value=word, language_code=language_code)
 
-        if word_instance is None:
-            # Chưa có mục riêng: nếu là dạng biến cách (số nhiều, quá khứ...) của từ đã có thì trả từ gốc kèm form_of
+        if word_instance is None or word_instance.status in ('REJECTED', 'BANNED'):
+            # Chưa có mục riêng (hoặc mục riêng bị từ chối, vd `comes` chỉ có nghĩa lạ): nếu là dạng biến cách (số nhiều, quá khứ...) của từ đã có thì trả từ gốc kèm form_of
             candidates = resolve_form(word, language_code)
             if candidates:
                 lemma = load_word(id=candidates[0].word.id)

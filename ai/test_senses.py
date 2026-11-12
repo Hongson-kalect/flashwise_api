@@ -380,7 +380,8 @@ class PersonalSenseTests(APITestCase):
         mine.refresh_from_db()
         self.assertTrue(mine.is_deleted)
         self.assertFalse(CollectionItem.objects.filter(sense=mine).exists())  # dòng nháp trỏ tới nghĩa đã xoá bị bỏ
-        self.assertEqual(self.client.post(f'/api/ai-senses/{frozen.id}/hide/').status_code, 400)  # nghĩa của mình thì xoá, không ẩn
+        self.assertEqual(self.client.post(f'/api/ai-senses/{frozen.id}/hide/').status_code, 200)  # nghĩa của mình đã đóng băng: không xoá được thì ẩn
+        self.assertEqual(self.client.post(f'/api/ai-senses/{mine.id}/hide/').status_code, 404)  # đã xoá thì không còn để ẩn
         self.client.force_authenticate(None)
         self.assertIn(self.client.delete(f'/api/ai-senses/{self.s1.id}/').status_code, (401, 403))
 

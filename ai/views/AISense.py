@@ -211,9 +211,12 @@ class AISenseViewSet(SoftDeleteViewSet):
 
     @action(detail=True, methods=['post', 'delete'], url_path='hide', permission_classes=[IsAuthenticated])
     def hide(self, request, pk=None):
-        """POST: ẩn nghĩa (thường là nghĩa chính thức) khỏi get-word của riêng mình, DELETE: bỏ ẩn. Nghĩa của mình thì xoá chứ không ẩn."""
+        """
+        POST: ẩn nghĩa khỏi get-word của riêng mình, DELETE: bỏ ẩn. Nghĩa tuỳ chỉnh của mình chưa đóng băng thì xoá chứ không ẩn;
+        đã đóng băng (đã phát hành, người khác còn gọi theo id) thì chỉ ẩn được.
+        """
         sense = self.get_object()
-        if sense.created_by_id == request.user.id and not sense.is_official:
+        if sense.created_by_id == request.user.id and not sense.is_official and not sense.is_frozen and request.method == 'POST':
             return _bad_request("Delete your own sense instead of hiding it")
         want = request.method == 'POST'
         UserInteraction.objects.update_or_create(
@@ -341,6 +344,8 @@ class AISenseViewSet(SoftDeleteViewSet):
             return _bad_request("Invalid word_id or user_lang")
         if not isinstance(definition, str) or not isinstance(pos, str):
             return _bad_request("definition must be a string")
+        # Emoji / ký hiệu hình không phải một phần của định nghĩa (và làm nhiễu bước kiểm tra AI): bỏ trước khi đếm độ dài
+        definition = re.sub(r'[🀀-🫿☀-➿️‍]', '', definition)
         definition = re.sub(r'\s+', ' ', definition).strip()
         low, high = self.PROPOSE_TEXT
         if not low <= len(definition) <= high:

@@ -53,6 +53,12 @@ class Command(BaseCommand):
         p.add_argument('--lang', default='en')
         p.add_argument('--base-languages', default=','.join(settings.TRANSLATE_LANGUAGES))
         p.add_argument('--mode', choices=['batch', 'online'], default='batch', help='online: luồng thường, mọi giai đoạn gọi ngay (thử); batch: luồng batch, chỉ concept online (seed lớn)')
+        p = sub.add_parser('backfill', help='Bù các bước còn thiếu (dịch ngôn ngữ chính, verify, ảnh, concept) cho từ đã có trong DB')
+        p.add_argument('run')
+        p.add_argument('--words', required=True, help='Các từ COMPLETED cần bù, cách nhau dấu phẩy')
+        p.add_argument('--lang', default='en')
+        p.add_argument('--base-languages', default=','.join(settings.TRANSLATE_LANGUAGES))
+        p.add_argument('--mode', choices=['batch', 'online'], default='batch')
         p = sub.add_parser('run')
         p.add_argument('run')
         p.add_argument('--until', choices=flow.STAGES)
@@ -126,6 +132,16 @@ class Command(BaseCommand):
         except ValueError as e:
             raise CommandError(str(e))
         self.stdout.write(self.style.SUCCESS(f"Run {run.name}: {len(run.state['words'])} từ, mode {o['mode']}, thư mục {run.dir}"))
+
+    def do_backfill(self, o):
+        base = [c.strip() for c in o['base_languages'].split(',') if c.strip()]
+        words = [w.strip() for w in o['words'].split(',') if w.strip()]
+        try:
+            run = flow.Run.create_backfill(o['run'], words, o['lang'], base, o['mode'])
+        except ValueError as e:
+            raise CommandError(str(e))
+        n = sum(len(v) for v in run.senses.values())
+        self.stdout.write(self.style.SUCCESS(f"Run bù {run.name}: {len(words)} từ, {n} nghĩa, mode {o['mode']}, thư mục {run.dir}. Chạy `seed_flow run {run.name}` để bù."))
 
     def do_run(self, o):
         run = self._run(o['run'])

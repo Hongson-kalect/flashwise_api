@@ -76,6 +76,32 @@ class Run:
         run.save()
         return run
 
+    @classmethod
+    def create_backfill(cls, name, words, language_code, base_languages, mode):
+        """
+        Run bù cho từ ĐÃ có trong DB (vd từ tạo bằng luồng online cũ thiếu bản dịch / verify / concept): bỏ qua prepare / draft / refine,
+        nạp nghĩa hiện có vào `senses` rồi chạy enrich (dịch các ngôn ngữ còn thiếu, giữ metadata có sẵn), save kiểu ghi bù (chỉ cập nhật
+        `contents`, không đụng cột khác), verify, images, concept như luồng thường.
+        """
+        run = cls(name)
+        if run.state:
+            raise ValueError(f'Run {name} đã có')
+        found = {w.value: w for w in AIWord.objects.filter(language_code=language_code, value__in=list(words), status='COMPLETED')}
+        missing = [w for w in words if w not in found]
+        if missing:
+            raise ValueError(f'Không phải từ COMPLETED trong DB: {", ".join(missing)}')
+        run.dir.mkdir(parents=True, exist_ok=True)
+        run.state = {
+            'name': name, 'kind': 'backfill', 'step_file': '', 'language_code': language_code, 'base_languages': base_languages, 'mode': mode,
+            'created_at': timezone.now().isoformat(), 'batches': {}, 'usage': {}, 'issues': [], 'log': [],
+            'stages': {'prepare': 'done', 'draft': 'done', 'refine': 'done'},
+            'words': {v: {'id': str(w.id), 'status': 'refined', 'reason': 'bù', 'reference': [], 'rank': None} for v, w in found.items()},
+        }
+        for value, w in found.items():
+            run.senses[value] = backfill_senses(w)
+        run.save()
+        return run
+
     def save(self):
         self.state_path.write_text(json.dumps(self.state, ensure_ascii=False, indent=1), encoding='utf-8', newline='\n')
         self.senses_path.write_text(json.dumps(self.senses, ensure_ascii=False), encoding='utf-8', newline='\n')
@@ -478,7 +504,47 @@ def stage_enrich(run):
 
 # ---------------------------------------------------------------- save / images / concept
 
+def backfill_senses(word):
+    """Nghĩa đang dùng của từ đã lưu, dạng dict như luồng seed (id, pos, contents...). Metadata có sẵn thì chỉ giữ id để enrich không sinh lại."""
+    out = []
+    for s in AISense.objects.filter(word=word, is_deleted=False, is_official=True).order_by('created_at', 'id'):
+        out.append({'id': str(s.id), 'word_id': str(word.id), 'word_value': word.value, 'language_code': s.language_code, 'pos': s.pos,
+                    'level': s.level, 'register': s.register, 'ipas': s.ipas, 'contents': copy.deepcopy(s.contents or {}),
+                    'metadata': {'id': str(s.metadata_id)} if s.metadata_id else None})
+    return out
+
+
+def _definition_text(contents, lang):
+    node = (contents.get('definition') or {}).get(lang)
+    return json.dumps(node, sort_keys=True, ensure_ascii=False)
+
+
+def save_backfill(word_id, senses):
+    """Ghi bù: chỉ cập nhật `contents` (+ tạo metadata nếu nghĩa chưa có), giữ mọi cột khác. Ngôn ngữ nào bản dịch đổi thì bỏ verify của ngôn ngữ đó."""
+    from ai.models import AISenseMetadata
+    from utils.image_gen.service import _recache_word
+    from utils.utils.best_effort import best_effort
+    for s in senses:
+        inst = AISense.objects.get(id=s['id'])
+        new = s['contents']
+        for lang in list((inst.verify_state or {}).keys()):
+            if _definition_text(inst.contents or {}, lang) != _definition_text(new, lang):
+                inst.verify_state.pop(lang, None)
+        inst.contents = new
+        meta = s.get('metadata') or {}
+        if not inst.metadata_id and len(meta) > 1:
+            AISenseMetadata(**meta).save()
+            inst.metadata_id = meta['id']
+        inst.save(update_fields=['contents', 'verify_state', 'metadata', 'updated_at'])
+    best_effort(_recache_word, word_id)
+
+
 def stage_save(run):
+    if run.state.get('kind') == 'backfill':
+        for word in run.words_in('enriched'):
+            save_backfill(run.state['words'][word]['id'], run.senses[word])
+            run.mark(word, 'saved', run.state['words'][word]['reason'])
+        return True
     for word in run.words_in('enriched'):
         info = run.state['words'][word]
         senses = run.senses[word]

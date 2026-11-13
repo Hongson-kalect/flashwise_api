@@ -285,3 +285,47 @@ class DedupeTests(SimpleTestCase):
         self.assertEqual(sense['metadata']['image_keywords'], ['cat'])
         self.assertEqual(sense['metadata']['advanced']['synonyms'], ['kitty', 'puss'])
         self.assertEqual(fixed['duplicate_items'], 1 + 1 + 1 + 2 + 1)
+
+
+class BackfillTests(TestCase):
+    """Run bù cho từ đã có trong DB: nạp nghĩa hiện có, ghi bù chỉ đổi `contents`."""
+
+    def setUp(self):
+        self.user = get_user_model().objects.create(username=f'bf-{uuid.uuid4().hex[:6]}')
+        self.word = AIWord.objects.create(value='plan', language_code='en', status='COMPLETED', created_by=self.user)
+        self.sense = AISense.objects.create(
+            word=self.word, word_value='plan', language_code='en', pos='noun', level='A1', is_official=True, quality_status='refined',
+            score=7, like_count=3, image_preview='img.png',
+            contents={'definition': {'en': {'value': 'A scheme.'}}, 'translations': {'vi': ['kế hoạch']}},
+            verify_state={'vi': {'status': 'ok'}, 'es': {'status': 'ok'}})
+        self.tmp = tempfile.mkdtemp()
+
+    def _run(self, name=None):
+        with mock.patch.object(flow, 'RUNS_DIR', Path(self.tmp)):
+            run = flow.Run.create_backfill(name or f'bf{uuid.uuid4().hex[:4]}', ['plan'], 'en', ['en', 'vi', 'es'], 'online')
+        return run
+
+    def test_nap_nghia_hien_co_va_bo_qua_ba_giai_doan_dau(self):
+        run = self._run()
+        self.assertEqual(run.state['kind'], 'backfill')
+        self.assertEqual([run.state['stages'][s] for s in ('prepare', 'draft', 'refine')], ['done'] * 3)
+        self.assertEqual(run.state['words']['plan']['status'], 'refined')
+        [s] = run.senses['plan']
+        self.assertEqual((s['id'], s['pos']), (str(self.sense.id), 'noun'))
+        self.assertEqual(s['contents']['translations'], {'vi': ['kế hoạch']})
+
+    def test_tu_chua_xong_khong_bu_duoc(self):
+        AIWord.objects.filter(id=self.word.id).update(status='PROCESSING')
+        with mock.patch.object(flow, 'RUNS_DIR', Path(self.tmp)), self.assertRaises(ValueError):
+            flow.Run.create_backfill('bf-x', ['plan'], 'en', ['en', 'vi'], 'online')
+
+    def test_ghi_bu_chi_doi_contents_va_bo_verify_ngon_ngu_da_doi(self):
+        new = {'definition': {'en': {'value': 'A scheme.'}, 'es': {'value': 'Un plan.'}}, 'translations': {'vi': ['kế hoạch'], 'es': ['plan']}}
+        # định nghĩa en giữ, thêm es (es đã có verify_state cũ: bản dịch đổi nên phải bỏ), vi không đổi nên giữ verify
+        with mock.patch('utils.image_gen.service._recache_word'):
+            flow.save_backfill(str(self.word.id), [{'id': str(self.sense.id), 'contents': new, 'metadata': None}])
+        self.sense.refresh_from_db()
+        self.assertEqual(self.sense.contents, new)
+        self.assertNotIn('es', self.sense.verify_state)
+        self.assertIn('vi', self.sense.verify_state)
+        self.assertEqual((self.sense.score, self.sense.like_count, self.sense.image_preview, self.sense.quality_status), (7, 3, 'img.png', 'refined'))

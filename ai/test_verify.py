@@ -230,3 +230,46 @@ class VerifyDbTests(TestCase):
         self.assertEqual(totals['failed'], 1)
         self.assertEqual(sense.verify_state, {})
         self.assertEqual(sense.ai_verify, [])
+
+
+class OnlineVerifyTests(TestCase):
+    """Luồng online (get-word) có bước verify như luồng batch: utils/ai/online_verify.verify_word_online."""
+
+    def test_tat_thi_khong_goi_ai(self):
+        import asyncio
+        from unittest import mock
+        from django.test import override_settings
+        from utils.ai import online_verify
+        with override_settings(ONLINE_VERIFY_ENABLED=False), mock.patch('ai.seedflow.llm.run_online') as run:
+            self.assertIsNone(asyncio.run(online_verify.verify_word_online('x', 'en', ['en', 'vi'])))
+            run.assert_not_called()
+
+    def test_bat_thi_dung_build_requests_va_apply_results(self):
+        import asyncio
+        from unittest import mock
+        from django.test import override_settings
+        from utils.ai import online_verify
+        meta = {'w1': ('plan', [], ['en', 'vi'])}
+
+        async def fake_run(requests, concurrency=1):
+            return {'w1': {'ok': True}}
+
+        with override_settings(ONLINE_VERIFY_ENABLED=True, SEED_VERIFY_ENABLED=True), \
+                mock.patch('ai.seedflow.verify_db.build_requests', return_value=([{'custom_id': 'w1'}], meta)) as build, \
+                mock.patch('ai.seedflow.llm.run_online', side_effect=fake_run), \
+                mock.patch('ai.seedflow.verify_db.apply_results', return_value={'ok': 3, 'fixed': 0, 'flagged': 1, 'skipped': 0, 'issues': 0, 'failed': 0}) as apply:
+            counts = asyncio.run(online_verify.verify_word_online('w1', 'en', ['en', 'vi']))
+        build.assert_called_once()
+        apply.assert_called_once()
+        self.assertEqual(counts['flagged'], 1)
+
+    def test_khong_co_gi_de_kiem_thi_bo_qua(self):
+        import asyncio
+        from unittest import mock
+        from django.test import override_settings
+        from utils.ai import online_verify
+        with override_settings(ONLINE_VERIFY_ENABLED=True, SEED_VERIFY_ENABLED=True), \
+                mock.patch('ai.seedflow.verify_db.build_requests', return_value=([], {})), \
+                mock.patch('ai.seedflow.llm.run_online') as run:
+            self.assertIsNone(asyncio.run(online_verify.verify_word_online('w1', 'en', ['en'])))
+            run.assert_not_called()

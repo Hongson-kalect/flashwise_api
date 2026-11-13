@@ -112,6 +112,11 @@ async def handle_task(job, sema, task_type, raw=None, queue=None):
                 if word_id and isinstance(user_language, str) and not job.get('lazy'):
                     await redis_client.delete(f"trans_lock:{word_id}:{job.get('language_code')}:{user_language}")
 
+        elif task_type == 'sense_post':
+            # Nghĩa người dùng đề xuất vừa được chấp nhận: dịch, verify, ảnh, concept (ai/postprocess.py)
+            from ai.postprocess import finish_sense
+            await finish_sense(job)
+
         elif task_type == 'collection_word':
             # Tạo word mới
             results = await ai_create_new_word_sema(job)
@@ -546,6 +551,7 @@ async def main():
     image_sema = asyncio.Semaphore(IMAGE_SEMA_LIMIT)
     image_gen_sema = asyncio.Semaphore(settings.IMAGE_GEN_CONCURRENCY)
     trans_sema = asyncio.Semaphore(TRANS_SEMA_LIMIT)
+    sense_post_sema = asyncio.Semaphore(3)  # hoàn thiện nghĩa người dùng đề xuất: ít, mỗi việc gọi vài lần AI
 
     # Đăng ký các bánh răng chạy đồng thời
     tasks = [
@@ -554,6 +560,7 @@ async def main():
         consume_queue("redis_image", image_sema, "image"),
         consume_queue(settings.IMAGE_GEN_QUEUE, image_gen_sema, "image_gen"),
         consume_queue("redis_trans", trans_sema, "translate"),
+        consume_queue("redis_sense_post", sense_post_sema, "sense_post"),
         
         *([consume_lazy(asyncio.Semaphore(1), [(word_sema, WORD_SEMA_LIMIT), (collection_word_sema, COLLECTION_WORD_SEMA_LIMIT), (image_sema, IMAGE_SEMA_LIMIT), (trans_sema, TRANS_SEMA_LIMIT)])] if settings.LAZY_TRANS_ENABLED else []),  # dịch nền: tắt mặc định
 

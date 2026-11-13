@@ -550,6 +550,20 @@ def _gemini_result(verdict='accept', **over):
     return data
 
 
+_PUSHED = []
+
+
+def setUpModule():
+    # Test không được đẩy job thật vào Redis của worker đang chạy (hàng đợi redis_sense_post)
+    global _push_patcher
+    _push_patcher = mock.patch('ai.postprocess.push_job', side_effect=lambda queue, payload: _PUSHED.append((queue, payload)))
+    _push_patcher.start()
+
+
+def tearDownModule():
+    _push_patcher.stop()
+
+
 @override_settings(CACHES=LOCMEM_CACHE)
 class ProposeSenseApiTests(APITestCase):
     """POST ai-senses/propose: Claude chấm + viết, Gemini kiểm chéo song song, không chờ Gemini nếu Claude xong trước."""
@@ -593,6 +607,17 @@ class ProposeSenseApiTests(APITestCase):
         return AISense.objects.filter(word=self.word).exclude(pk=self.base.pk)
 
     # ---------- chính thức ----------
+
+    def test_official_xep_viec_hoan_thien_nghia_o_worker(self):
+        _PUSHED.clear()
+        res = self.run_propose()
+        self.assertEqual(res.data['result'], 'official')
+        self.assertEqual(_PUSHED, [('redis_sense_post', {'sense_id': res.data['sense']['id']})])
+
+    def test_pending_va_duplicate_khong_xep_viec(self):
+        _PUSHED.clear()
+        self.run_propose(claude=_claude_result(confidence=0.5))
+        self.assertEqual(_PUSHED, [])
 
     def test_both_accept_creates_official_sense_and_rewards_author(self):
         from user.models import ReputationEvent
@@ -791,3 +816,71 @@ class ProposeSenseApiTests(APITestCase):
         with mock.patch.object(SenseProposeThrottle, 'THROTTLE_RATES', rates):
             codes = [self.run_propose(claude=_claude_result('reject')).status_code for _ in range(3)]
         self.assertEqual(codes, [200, 200, 429])
+
+
+class FinishSenseTests(APITestCase):
+    """ai/postprocess.finish_sense: dịch ngôn ngữ chính còn thiếu → verify → cache → ảnh → concept cho nghĩa người dùng đề xuất."""
+
+    def setUp(self):
+        self.word = AIWord.objects.create(value='zzfinish', language_code='en', status='COMPLETED')
+        data = make_sense(str(uuid7()), definition='Alone.')
+        data.update(word_id=self.word.id, word_value='zzfinish', is_official=True)
+        self.sense = AISense.objects.create(**data)
+        self.sense.contents = {'definition': {'en': {'value': 'Alone.'}, 'vi': {'value': 'Một mình.'}}}
+        self.sense.save()
+
+    def run_finish(self, calls, **flags):
+        from asgiref.sync import async_to_sync
+        from django.test import override_settings
+        from ai import postprocess
+
+        async def translate(job, flag):
+            calls.append(('translate', job['user_language_code']))
+            return [{'id': str(self.sense.id), 'contents': {'definition': {'zh': {'value': '独自'}}}}]
+
+        async def verify(word_id, lang, langs):
+            calls.append(('verify', str(word_id)))
+
+        async def images(word_id, *a):
+            calls.append(('images', str(word_id)))
+
+        async def concept(word_id):
+            calls.append(('concept', str(word_id)))
+
+        opts = dict(ONLINE_BASE_LANGUAGES=['en', 'vi', 'zh'], IMAGE_GEN_ENABLED=True, CONCEPT_LINKING_ENABLED=True)
+        opts.update(flags)
+        with override_settings(**opts),                 mock.patch('utils.ai.translate.ai_create_translate_sema', translate),                 mock.patch('utils.celery.worker.save_translated_contents', lambda updated, lang: calls.append(('save', len(updated)))),                 mock.patch('utils.ai.online_verify.verify_word_online', verify),                 mock.patch('utils.image_gen.service._recache_word', lambda wid: calls.append(('recache', str(wid)))),                 mock.patch('utils.image_gen.service.prepare_and_enqueue', images),                 mock.patch('utils.concept.notify.link_word_and_notify', concept):
+            async_to_sync(postprocess.finish_sense)({'sense_id': str(self.sense.id)})
+
+    def test_chay_du_cac_buoc_theo_thu_tu(self):
+        calls = []
+        self.run_finish(calls)
+        wid = str(self.word.id)
+        self.assertEqual(calls, [('translate', ['zh']), ('save', 1), ('verify', wid), ('recache', wid), ('images', wid), ('concept', wid)])
+
+    def test_da_du_ngon_ngu_thi_khong_dich_va_tat_anh_concept_thi_bo_qua(self):
+        calls = []
+        self.run_finish(calls, ONLINE_BASE_LANGUAGES=['en', 'vi'], IMAGE_GEN_ENABLED=False, CONCEPT_LINKING_ENABLED=False)
+        self.assertEqual([c[0] for c in calls], ['verify', 'recache'])
+
+    def test_nghia_khong_chinh_thuc_thi_bo_qua(self):
+        AISense.objects.filter(id=self.sense.id).update(is_official=False)
+        calls = []
+        self.run_finish(calls)
+        self.assertEqual(calls, [])
+
+    def test_mot_buoc_loi_van_lam_buoc_sau(self):
+        from asgiref.sync import async_to_sync
+        from django.test import override_settings
+        from ai import postprocess
+        calls = []
+
+        async def boom(*a, **k):
+            raise RuntimeError('verify down')
+
+        async def concept(word_id):
+            calls.append('concept')
+
+        with override_settings(ONLINE_BASE_LANGUAGES=['en', 'vi'], IMAGE_GEN_ENABLED=False, CONCEPT_LINKING_ENABLED=True),                 mock.patch('utils.ai.online_verify.verify_word_online', boom),                 mock.patch('utils.image_gen.service._recache_word', lambda wid: None),                 mock.patch('utils.concept.notify.link_word_and_notify', concept):
+            async_to_sync(postprocess.finish_sense)({'sense_id': str(self.sense.id)})
+        self.assertEqual(calls, ['concept'])

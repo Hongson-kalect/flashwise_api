@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 
 from datetime import timedelta
 import os
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -28,6 +29,12 @@ SEED_VERIFY_OK_MIN_SCORE = int(os.getenv('SEED_VERIFY_OK_MIN_SCORE', '80'))  # "
 SEED_VERIFY_FIX_MIN_SCORE = int(os.getenv('SEED_VERIFY_FIX_MIN_SCORE', '60'))  # bản sửa có điểm thấp hơn thì không áp dụng, chỉ gắn cờ
 SEED_VERIFY_ENABLED =os.getenv('SEED_VERIFY_ENABLED', 'true').lower() in ('1', 'true', 'yes')  # seed_flow có bước verify: Claude Haiku kiểm chéo bản dịch của Gemini
 TRANSLATE_LANGUAGES = [m.strip() for m in os.getenv('TRANSLATE_LANGUAGES', 'en,vi,zh,es,fr').split(',') if m.strip()]
+# Luồng online (get-word) làm đủ các bước như luồng batch: dịch sẵn các ngôn ngữ này (mặc định = TRANSLATE_LANGUAGES, như seed), kiểm chéo
+# bản dịch (verify) sau khi lưu, rồi vẽ ảnh và nối concept (CONCEPT_LINKING_ENABLED). Muốn về kiểu cũ (chỉ dịch BASE_LANGUAGE + ngôn ngữ người tra):
+# ONLINE_BASE_LANGUAGES=en (không có tham số thì dùng TRANSLATE_LANGUAGES), ONLINE_VERIFY_ENABLED=false.
+ONLINE_BASE_LANGUAGES = [m.strip() for m in os.getenv('ONLINE_BASE_LANGUAGES', ','.join(TRANSLATE_LANGUAGES)).split(',') if m.strip()]
+ONLINE_VERIFY_ENABLED = os.getenv('ONLINE_VERIFY_ENABLED', 'false' if 'test' in sys.argv[1:2] else 'true').lower() in ('1', 'true', 'yes')  # chạy `manage.py test` thì mặc định tắt (test không gọi Claude thật)
+ONLINE_VERIFY_TIMEOUT = int(os.getenv('ONLINE_VERIFY_TIMEOUT', '90'))  # giây, quá hạn thì bỏ verify (từ đã lưu, lần sau chạy bù bằng verify_translations)
 BASE_LANGUAGE = [m.strip() for m in os.getenv('BASE_LANGUAGE', 'en').split(',') if m.strip()]
 
 MEDIA_URL = '/upload/'  # hoặc '/media/' nếu bạn thích

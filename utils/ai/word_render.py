@@ -42,6 +42,7 @@ from utils.utils.normalize import normalize_lookup
 from utils.utils.best_effort import best_effort
 from utils.ai import usage
 from utils.concept.notify import link_word_and_notify
+from utils.ai.online_verify import verify_word_online
 from utils.image_gen.brief import draft_briefs, reusable_briefs
 from utils.image_gen.service import early_enqueue, prepare_and_enqueue, prune_draft_senses
 from ai.queries import load_word
@@ -125,6 +126,10 @@ async def ai_create_new_word_sema(word_info):
          bản đã chuẩn hoá mới được ghi vào DB và cache.
     """
     cache = WordCacheManager()
+
+    # Như luồng batch: dịch sẵn các ngôn ngữ chính (job không nêu thì dùng ONLINE_BASE_LANGUAGES), không chỉ BASE_LANGUAGE + người tra
+    if not word_info.get('base_languages'):
+        word_info['base_languages'] = list(settings.ONLINE_BASE_LANGUAGES)
 
     word_id = word_info.get('word_id', None)
     word_value = normalize_lookup(word_info.get('value', ''))  # phải trùng chuỗi view dùng làm cache key / room
@@ -363,6 +368,13 @@ async def ai_create_new_word_sema(word_info):
             logger.error('Lỗi khi lưu DB / cache cho %s: %s', word_value, e)
             await _close_word(word_id, word_value, language_code, socket_room, cache, 'FAILED', 'ERROR', 'ERROR', str(e), keep_old=bool(replace_ids))
             raise
+
+        # Bước verify như luồng batch (lưu → verify → ảnh → concept): Haiku kiểm chéo bản dịch; lỗi / quá hạn không được làm hỏng từ đã lưu
+        try:
+            await asyncio.wait_for(verify_word_online(word_id, language_code, word_info['base_languages']), timeout=settings.ONLINE_VERIFY_TIMEOUT)
+            marks['verified'] = time.monotonic()
+        except Exception as e:
+            logger.warning('Không verify được bản dịch của từ %s: %s', word_value, e)
 
         if settings.IMAGE_GEN_ENABLED and not word_info.get('no_image'):
             # Haiku viết brief ảnh rồi xếp việc vẽ ảnh AI cho các nghĩa vừa lưu (ComfyUI trên máy host); lỗi ở đây không được làm hỏng từ đã lưu

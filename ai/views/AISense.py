@@ -22,6 +22,7 @@ from ai.models.AIWord import AIWord
 from ai.models import SenseFormExample
 from ai import form_examples
 from ai.forms import refresh_forms
+from ai.postprocess import queue_finish
 from ai.proposals import create_proposed_sense, duplicate_sense, existing_senses_of
 from ai.queries import not_pending_proposal_q, published_sense_ids, visible_sense_q
 from core.bundle import pick_languages
@@ -293,6 +294,7 @@ class AISenseViewSet(SoftDeleteViewSet):
                 record(sense.created_by, 'sense_promoted', 'sense', sense.pk, by=request.user)
         clear_word_cache(sense)
         refresh_forms(sense.word_id)
+        queue_finish(sense.id)  # nghĩa mới thành chính thức: bổ sung bản dịch, verify, ảnh, concept
         return Response({'id': str(sense.id), 'is_official': True, 'replaced': replaced})
 
     @action(detail=False, methods=['get'], url_path='top')
@@ -394,6 +396,7 @@ class AISenseViewSet(SoftDeleteViewSet):
         data['contents'] = promoted_contents(sense)
         if decision == 'official':
             record(user, 'sense_accepted', 'sense', sense.id)
+            queue_finish(sense.id)  # dịch ngôn ngữ chính, verify, ảnh, concept ở worker (không chặn phản hồi)
             return Response({'result': 'official', 'sense': data}, status=status.HTTP_201_CREATED)
         return Response({'result': 'pending', 'reasons': result['reasons'], 'sense': data}, status=status.HTTP_201_CREATED)
 

@@ -59,6 +59,9 @@ class Command(BaseCommand):
         p.add_argument('--lang', default='en')
         p.add_argument('--base-languages', default=','.join(settings.TRANSLATE_LANGUAGES))
         p.add_argument('--mode', choices=['batch', 'online'], default='batch')
+        p = sub.add_parser('import-senses', help='Nạp nghĩa do agent viết (file JSON {từ: [nghĩa]}) thay cho stage draft; refine vẫn chạy')
+        p.add_argument('run')
+        p.add_argument('--file', required=True)
         p = sub.add_parser('run')
         p.add_argument('run')
         p.add_argument('--until', choices=flow.STAGES)
@@ -142,6 +145,23 @@ class Command(BaseCommand):
             raise CommandError(str(e))
         n = sum(len(v) for v in run.senses.values())
         self.stdout.write(self.style.SUCCESS(f"Run bù {run.name}: {len(words)} từ, {n} nghĩa, mode {o['mode']}, thư mục {run.dir}. Chạy `seed_flow run {run.name}` để bù."))
+
+    def do_import_senses(self, o):
+        run = self._run(o['run'])
+        try:
+            data = json.loads(open(o['file'], encoding='utf-8').read())
+        except (OSError, ValueError) as e:
+            raise CommandError(f'Không đọc được {o["file"]}: {e}')
+        if not isinstance(data, dict):
+            raise CommandError('File phải là object {từ: [nghĩa]}')
+        report = flow.import_agent_senses(run, data)
+        for word, n in report['imported'].items():
+            self.stdout.write(self.style.SUCCESS(f'{word}: nạp {n} nghĩa'))
+        for e in report['errors']:
+            self.stdout.write(self.style.WARNING(f'  ! {e}'))
+        if report['unknown']:
+            self.stdout.write(self.style.WARNING(f'Không có trong run (chưa chạy prepare?): {", ".join(report["unknown"])}'))
+        self.stdout.write('Chạy `seed_flow run <run>` để refine → enrich → verify → ảnh → concept.')
 
     def do_run(self, o):
         run = self._run(o['run'])

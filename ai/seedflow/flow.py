@@ -211,6 +211,86 @@ def stage_draft(run):
     return True
 
 
+LEVELS = {'A1', 'A2', 'B1', 'B2', 'C1', 'C2'}
+REGISTERS = {'neutral', 'formal', 'informal', 'slang', 'vulgar', 'technical', 'literary', 'archaic', 'dialect', 'humorous'}
+MAX_IMPORT_SENSES = 25
+
+
+def _text(node):
+    """Chuỗi hoặc {'value': chuỗi} (dạng của schema draft) -> chuỗi gọn."""
+    if isinstance(node, dict):
+        node = node.get('value')
+    return node.strip() if isinstance(node, str) else ''
+
+
+def normalize_agent_senses(word, raw):
+    """
+    Nghĩa do người / agent viết (file JSON: {từ: [nghĩa]}) -> dạng giống kết quả Claude của stage draft, kèm danh sách lỗi.
+    Mỗi nghĩa: pos, definition, usage (có thể rỗng), examples (1-2 câu), level A1-C2, register (tuỳ chọn), ipas (tuỳ chọn), is_offensive (tuỳ chọn).
+    definition / usage / examples nhận chuỗi hoặc {'value': ...}. Nghĩa lỗi bị bỏ kèm lý do; không nghĩa nào hợp lệ thì trả [] .
+    """
+    errors, out = [], []
+    if not isinstance(raw, list):
+        return [], [f'{word}: cần danh sách nghĩa']
+    if len(raw) > MAX_IMPORT_SENSES:
+        errors.append(f'{word}: {len(raw)} nghĩa, chỉ nhận tối đa {MAX_IMPORT_SENSES}')
+        raw = raw[:MAX_IMPORT_SENSES]
+    for i, s in enumerate(raw, 1):
+        tag = f'{word}#{i}'
+        if not isinstance(s, dict):
+            errors.append(f'{tag}: không phải object')
+            continue
+        pos = str(s.get('pos') or '').strip().lower()
+        definition = _text(s.get('definition'))
+        examples = [_text(e) for e in (s.get('examples') or [])]
+        examples = [e for e in examples if e][:2]
+        level = str(s.get('level') or '').strip().upper()
+        if not pos or not definition:
+            errors.append(f'{tag}: thiếu pos / definition')
+            continue
+        if not examples:
+            errors.append(f'{tag}: cần ít nhất 1 ví dụ')
+            continue
+        if level not in LEVELS:
+            errors.append(f'{tag}: level phải là A1-C2')
+            continue
+        if word.lower() in definition.lower().split():
+            errors.append(f'{tag}: định nghĩa dùng chính từ đang tra')
+            continue
+        register = [r for r in (s.get('register') or ['neutral']) if r in REGISTERS] or ['neutral']
+        ipas = [{'value': _text(i.get('value')), 'label': _text(i.get('label')) or 'US'} for i in (s.get('ipas') or []) if isinstance(i, dict) and _text(i.get('value'))]
+        out.append({'pos': pos, 'definition': {'value': definition}, 'usage': {'value': _text(s.get('usage'))},
+                    'examples': [{'value': e} for e in examples], 'is_offensive': bool(s.get('is_offensive')),
+                    'level': level, 'register': register, 'ipas': ipas})
+    return out, errors
+
+
+def import_agent_senses(run, data):
+    """
+    Đặt nghĩa do agent viết vào run như đã qua stage draft: từ ở trạng thái 'new' thành 'drafted'. Refine (Claude, độc lập với người viết),
+    enrich, verify, ảnh, concept chạy tiếp như thường. Trả {'imported': {từ: số nghĩa}, 'errors': [...], 'unknown': [từ không có trong run]}.
+    """
+    report = {'imported': {}, 'errors': [], 'unknown': []}
+    for word, raw in data.items():
+        info = run.state['words'].get(word)
+        if info is None or not info.get('id'):
+            report['unknown'].append(word)
+            continue
+        if info['status'] != 'new':
+            report['errors'].append(f'{word}: đang ở trạng thái {info["status"]}, không nạp lại')
+            continue
+        senses, errors = normalize_agent_senses(word, raw)
+        report['errors'] += errors
+        built = [build_sense_obj(s, info['id'], word, run.lang) for s in senses]
+        if not built:
+            continue
+        run.senses[word] = built
+        run.mark(word, 'drafted', 'agent viết nghĩa')
+        report['imported'][word] = len(built)
+    run.save()
+    return report
+
+
 def _keep_draft(senses, model):
     for sense in senses:
         sense['quality_status'] = 'draft'

@@ -329,3 +329,48 @@ class BackfillTests(TestCase):
         self.assertNotIn('es', self.sense.verify_state)
         self.assertIn('vi', self.sense.verify_state)
         self.assertEqual((self.sense.score, self.sense.like_count, self.sense.image_preview, self.sense.quality_status), (7, 3, 'img.png', 'refined'))
+
+
+class AgentSensesTests(SimpleTestCase):
+    """seed_flow import-senses: nghĩa do agent viết được kiểm tra rồi dựng như kết quả stage draft."""
+
+    def good(self, **over):
+        s = {'pos': 'verb', 'level': 'A1', 'definition': 'To move from one place to another.', 'usage': 'Used with to.',
+             'examples': ['We go home.', {'value': 'She went out.'}, 'thừa ví dụ thứ ba'], 'ipas': [{'label': 'US', 'value': '/ɡoʊ/'}]}
+        s.update(over)
+        return s
+
+    def test_nghia_hop_le_duoc_chuan_hoa_nhu_ket_qua_claude(self):
+        out, errors = flow.normalize_agent_senses('go', [self.good()])
+        self.assertEqual(errors, [])
+        [s] = out
+        self.assertEqual(s['definition'], {'value': 'To move from one place to another.'})
+        self.assertEqual(s['examples'], [{'value': 'We go home.'}, {'value': 'She went out.'}])  # tối đa 2 ví dụ, nhận cả chuỗi lẫn {'value'}
+        self.assertEqual((s['level'], s['register'], s['is_offensive']), ('A1', ['neutral'], False))
+
+    def test_nghia_loi_bi_bo_kem_ly_do(self):
+        bad = [self.good(pos=''), self.good(examples=[]), self.good(level='Z9'), self.good(definition='To go somewhere.'), self.good(level='b2')]
+        out, errors = flow.normalize_agent_senses('go', bad)
+        self.assertEqual([s['level'] for s in out], ['B2'])  # chỉ nghĩa cuối hợp lệ (level được viết hoa)
+        self.assertEqual(len(errors), 4)
+
+    def test_qua_25_nghia_bi_cat(self):
+        out, errors = flow.normalize_agent_senses('go', [self.good() for _ in range(30)])
+        self.assertEqual(len(out), 25)
+        self.assertIn('tối đa 25', errors[0])
+
+
+class ImportAgentSensesTests(TestCase):
+    def test_tu_new_thanh_drafted_va_tu_la_bi_bao(self):
+        tmp = Path(tempfile.mkdtemp())
+        step = tmp / 'step.jsonl'
+        step.write_text(json.dumps({'w': 'zzgo', 'rank': 1, 'n_senses': 50, 'reference': []}) + '\n', encoding='utf-8')
+        with mock.patch.object(flow, 'RUNS_DIR', tmp):
+            run = flow.Run.create('t1', step, 'en', ['en', 'vi'], 'batch')
+            run.state['words']['zzgo']['id'] = str(uuid.uuid4())
+            data = {'zzgo': [{'pos': 'verb', 'level': 'A1', 'definition': 'To move.', 'examples': ['We zzgo.']}], 'khac': []}
+            report = flow.import_agent_senses(run, data)
+        self.assertEqual(report['imported'], {'zzgo': 1})
+        self.assertEqual(report['unknown'], ['khac'])
+        self.assertEqual(run.state['words']['zzgo']['status'], 'drafted')
+        self.assertEqual(len(run.senses['zzgo']), 1)

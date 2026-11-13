@@ -31,7 +31,7 @@ services:
     #   --maxmemory 1024mb 
     #   --maxmemory-policy allkeys-lru
     environment:
-      - REDIS_ARGS=--maxmemory 1024mb --maxmemory-policy allkeys-lru
+      - REDIS_ARGS=--maxmemory 1024mb --maxmemory-policy volatile-lru
     # command: >
     #   redis-server 
     #   --maxmemory-policy allkeys-lru

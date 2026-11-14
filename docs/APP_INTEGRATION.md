@@ -233,6 +233,14 @@ Setting app nên dùng: `day_start_hour`, `first_review_hours`, `swipe_min_level
 - App lưu `key` (gửi kèm `audio` / `image` khi sửa nghĩa, `image` khi upload bộ); hiển thị bằng `url` hoặc `media_base_url + key`.
 - `GET /api/media/?kind` file của mình; `DELETE /api/media/{id}/`.
 
+## 9b. Nhận dạng giọng nói (máy không có bộ nhận dạng sẵn)
+
+- `POST /api/speech/recognize/` (multipart: `file` = âm thanh aac / mp3 / wav / ogg / flac ≤ 1MB, `lang` = mã ngôn ngữ người học nói) → 200 `{text, empty}`.
+  Backend hỏi Gemini (`utils/ai/speech.py`): chép đúng điều nghe được, KHÔNG sửa phát âm sai, `empty: true` khi không có tiếng nói. Âm thanh không được lưu.
+  Lỗi: 400 `invalid_lang` / `file_missing` / `invalid_file`, 413 `file_too_large`, 429 (throttle `speech`, mặc định 300/giờ), 503 `speech_unavailable`.
+- App chỉ gọi khi máy không có bộ nhận dạng của hệ điều hành dùng được (vd. iQOO / vivo bản Trung Quốc); chỉ gửi khi đã nghe thấy tiếng nói (âm thanh trống làm Gemini bịa chữ).
+- Chi phí đo: ~$0,00003 / lần ~3 giây (flash-lite); mỗi lần ~2-3 giây.
+
 ---
 
 ## 10. Report, góp ý

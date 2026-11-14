@@ -148,3 +148,12 @@ class SenseItemsThrottle(SimpleRateThrottle):
     def get_cache_key(self, request, view):
         ident = request.user.pk if request.user and request.user.is_authenticated else self.get_ident(request)
         return self.cache_format % {"scope": self.scope, "ident": ident}
+
+
+class SpeechThrottle(SimpleRateThrottle):
+    """Giới hạn số lần 1 người gửi âm thanh nhận dạng (mỗi lần là 1 lần gọi Gemini). Rate: DEFAULT_THROTTLE_RATES['speech']."""
+    scope = "speech"
+
+    def get_cache_key(self, request, view):
+        ident = request.user.pk if request.user and request.user.is_authenticated else self.get_ident(request)
+        return self.cache_format % {"scope": self.scope, "ident": ident}

@@ -186,6 +186,9 @@ AI_REFINE_MODELS = _env_list('AI_REFINE_MODELS', 'claude-haiku-5-5')
 AI_REFINE_EFFORT = os.getenv('AI_REFINE_EFFORT', 'low')
 # Nội dung nghĩa, dịch, metadata: Gemini flash-lite (lặp tên model = gọi lại khi 503)
 GEMINI_API_MODEL = _env_list('GEMINI_API_MODEL', 'gemini-2.5-flash-lite,gemini-2.5-flash-lite')
+# Nhận dạng giọng nói cho máy không có bộ nhận dạng sẵn (utils/ai/speech.py): flash-lite nhận âm thanh; model sau là dự phòng
+GEMINI_SPEECH_MODEL = _env_list('GEMINI_SPEECH_MODEL', 'gemini-2.5-flash-lite,gemini-3.1-flash-lite')
+AI_SPEECH_TIMEOUT = int(os.getenv('AI_SPEECH_TIMEOUT', '15')) # giây tối đa cho 1 lần gọi nhận dạng; quá hạn thì thử model kế
 # Dịch nghĩa (định nghĩa, ví dụ, bản dịch): 3.1 Flash-Lite + pos cho kết quả tốt nhất ở bench 20 từ; model sau là dự phòng khi lỗi / quá hạn
 GEMINI_TRANSLATE_MODEL = _env_list('GEMINI_TRANSLATE_MODEL', 'gemini-3.1-flash-lite,gemini-2.5-flash-lite')
 # Luồng seed batch: ai viết bản dịch, metadata và brief ảnh. 'gemini' = Gemini Batch (flash-lite); 'claude' = Claude Message Batches (AI_REFINE_MODELS[0], Haiku).
@@ -295,6 +298,7 @@ REST_FRAMEWORK = {
         'word_generate': os.getenv('THROTTLE_WORD_GENERATE', '60/hour'),
         'sense_propose': os.getenv('THROTTLE_SENSE_PROPOSE', '10/hour'), # đề xuất nghĩa mới: mỗi lần là 1 lần gọi Claude + Gemini
         'sense_items': os.getenv('THROTTLE_SENSE_ITEMS', '30/hour'), # thêm từ vào danh sách nghĩa: mỗi lần là 1 lần gọi Claude + Gemini
+        'speech': os.getenv('THROTTLE_SPEECH', '300/hour'), # nhận dạng giọng nói: mỗi lần là 1 lần gọi Gemini (~$0,00003)
         'feedback': os.getenv('THROTTLE_FEEDBACK', '20/day'),
         'auth': os.getenv('THROTTLE_AUTH', '20/minute'), # đăng nhập / đăng ký / quên mật khẩu, theo IP
         'export': os.getenv('THROTTLE_EXPORT', '5/day'), # tải toàn bộ dữ liệu của mình
